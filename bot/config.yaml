@@ -1,0 +1,206 @@
+timezone: US/Eastern
+app:
+  version: 0.2.0-swing
+  update_url: ''
+  auto_check_updates: false
+  description: "Oliver Velez Swing Trading Bot \u2014 1h/4h/daily timeframes"
+portfolio:
+  initial_cash: 100000
+broker:
+  sim:
+    enabled: true
+    starting_cash: 100000
+    slippage_bps: 1.0
+    commission_per_share: 0.0
+    commission_per_contract: 2.0
+  mode: paper
+  enable_live_trading: false
+  slippage_bps: 1.0
+  commission_per_share: 0.0
+  commission_per_contract: 2.0
+risk:
+  risk_per_trade: 0.005
+  max_dollar_risk_per_trade: 1000
+  max_daily_loss_pct: 0.02
+  max_consecutive_losses: 3
+  max_open_positions: 7
+  max_leverage: 2.0
+  max_order_qty: 10000
+  max_stop_pct: 0.05
+  circuit_breaker_atr_pct: 0.05
+  max_api_errors: 5
+  pyramid_add_fraction: 0.5
+webhook:
+  auth_required: true
+  secret_env: VELEZ_WEBHOOK_SECRET
+  execute_orders: true
+  paper_only: true
+  time_in_force: day
+  take_profit_r: null
+  dedupe_cache_size: 1000
+strategy:
+  sma_fast: 20
+  sma_slow: 200
+  atr_period: 14
+  slope_lookback: 20
+  ema_power: false
+  ema_power_window: 9
+  narrow_threshold: 0.004
+  wide_threshold: 0.008
+  narrow_bars: 10
+  breakout_atr_mult: 1.5
+  swing_lookback: 20
+  breakout_mode: either
+  momentum_atr_mult: 0.5
+  elephant:
+    enabled: false
+    range_atr_mult: 1.5
+    close_pos_pct: 0.7
+  entry:
+    use_limit: false
+  exits:
+    stop_type: atr
+    stop_atr_mult: 2.0
+    trail_type: atr
+    trail_atr_mult: 2.5
+    trail_debounce: 2
+    partials:
+      enabled: true
+      first_r: 1.0
+      second_r: 2.0
+      first_pct: 0.5
+      second_pct: 0.25
+      move_stop_to_breakeven: true
+    time_stop:
+      enabled: true
+      bars: 30
+      min_move_atr: 1.0
+  auto_flatten:
+    enabled: true
+    minutes_before_close: 15
+  partials_auto_execute:
+    enabled: true
+    first_r: 1.0
+    first_pct: 0.5
+    second_r: 2.0
+    second_pct: 0.25
+  correlation:
+    enabled: true
+    max_correlation: 0.7
+    sector_groups:
+      mega_tech:
+      - GOOGL
+      - AMZN
+      - NFLX
+      - MSFT
+      semiconductors:
+      - NVDA
+      consumer_tech:
+      - TSLA
+      indices:
+      - QQQ
+scanner:
+  enabled: true
+  auto_submit: true
+  symbols:
+  - GOOGL
+  - AMZN
+  - MSFT
+  - NFLX
+  - NVDA
+  - TSLA
+  - QQQ
+  interval_seconds: 900
+  pause_when_exposure_full: true
+  session_filter_enabled: true
+  rth_start: 09:35
+  rth_end: '15:45'
+  avoid_lunch: true
+  lunch_start: '11:45'
+  lunch_end: '13:30'
+velez_strategy:
+  sma_fast: 20
+  sma_slow: 200
+  atr_period: 14
+  slope_lookback: 5
+  history_bars: 240
+  near_sma_pct: 0.0025
+  near_sma_atr_mult: 0.35
+  extended_sma_pct: 0.012
+  extended_sma_atr_mult: 1.0
+  slope_tolerance: 1.0e-09
+  tick_size:
+    default: 0.01
+  entry:
+    no_chase_body_pct: 0.05
+  elephant:
+    enabled: true
+    body_lookback: 5
+    structure_lookback: 5
+    min_body_mult: 1.8
+    max_each_wick_pct: 0.2
+    max_total_wick_pct: 0.35
+    climactic_body_mult: 3.0
+    climactic_atr_mult: 2.2
+  one_eighty:
+    enabled: true
+    recover_pct: 0.8
+  tail:
+    enabled: true
+    min_tail_pct: 0.66
+    trend_bars: 3
+    prefer_tail_limit: true
+symbols:
+- symbol: NVDA
+  type: equity
+  contract_multiplier: 1
+  data_source: yfinance
+  timezone: US/Eastern
+  session: rth
+- symbol: QQQ
+  type: equity
+  contract_multiplier: 1
+  data_source: yfinance
+  timezone: US/Eastern
+  session: rth
+- symbol: GOOGL
+  type: equity
+  contract_multiplier: 1
+  data_source: yfinance
+  timezone: US/Eastern
+  session: rth
+- symbol: AMZN
+  type: equity
+  contract_multiplier: 1
+  data_source: yfinance
+  timezone: US/Eastern
+  session: rth
+- symbol: NFLX
+  type: equity
+  contract_multiplier: 1
+  data_source: yfinance
+  timezone: US/Eastern
+  session: rth
+- symbol: MSFT
+  type: equity
+  contract_multiplier: 1
+  data_source: yfinance
+  timezone: US/Eastern
+  session: rth
+- symbol: TSLA
+  type: equity
+  contract_multiplier: 1
+  data_source: yfinance
+  timezone: US/Eastern
+  session: rth
+optimize:
+  metric: total_pnl
+  params:
+    narrow_threshold:
+    - 0.003
+    - 0.004
+    - 0.005
+    wide_threshold:
+    - 0.007
+    - 0.008
+    - 0.009

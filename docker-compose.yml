@@ -1,0 +1,58 @@
+services:
+  webhook:
+    build:
+      context: .
+      dockerfile: bot/deploy/Dockerfile.webhook
+    image: velez-trading-bot-webhook:latest
+    container_name: velez-trading-bot-webhook
+    networks:
+      - default
+      - paper-order-bridge_default
+      - dendrix-ai_default
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./secrets:/opt/stacks/velez-trading-bot/secrets:ro
+      - ./data:/app/data
+      - ./bot/config.yaml:/app/bot/config.yaml:ro
+      - /opt/stacks/tba-repo/scripts/data/capitol_trades.db:/app/data/capitol_trades.db:ro
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.velez-trading-bot.entrypoints=websecure
+      - traefik.http.routers.velez-trading-bot.rule=Host(`${VELEZ_PUBLIC_HOST}`)
+      - traefik.http.routers.velez-trading-bot.tls.certresolver=letsencrypt
+      - traefik.http.services.velez-trading-bot.loadbalancer.server.port=8080
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: velez-trading-bot-ollama
+    restart: unless-stopped
+    profiles:
+      - ai
+    volumes:
+      - ollama:/root/.ollama
+
+  pockettts:
+    build:
+      context: ./pockettts-agent-bridge
+    image: trading-bull-pockettts:latest
+    container_name: trading-bull-pockettts
+    networks:
+      - default
+    restart: unless-stopped
+    profiles:
+      - voice
+    env_file:
+      - .env.pockettts
+    volumes:
+      - ./pockettts-agent-bridge/data:/app/data
+
+volumes:
+  ollama:
+
+networks:
+  paper-order-bridge_default:
+    external: true
+  dendrix-ai_default:
+    external: true

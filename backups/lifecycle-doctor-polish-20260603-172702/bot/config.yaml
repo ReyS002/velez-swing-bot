@@ -1,0 +1,248 @@
+# Educational use only. Not financial advice.
+
+timezone: US/Eastern
+
+app:
+  version: "0.1.0"
+  update_url: ""
+  auto_check_updates: false
+
+portfolio:
+  initial_cash: 100000
+
+broker:
+  mode: paper
+  enable_live_trading: false
+  slippage_bps: 1.0
+  commission_per_share: 0.0
+  commission_per_contract: 2.0
+
+risk:
+  risk_per_trade: 0.005
+  max_dollar_risk_per_trade: 1000
+  max_daily_loss_pct: 0.02
+  max_consecutive_losses: 3
+  max_open_positions: 3
+  max_leverage: 2.0
+  max_order_qty: 10000
+  max_stop_pct: 0.1
+  circuit_breaker_atr_pct: 0.05
+  max_api_errors: 5
+  pyramid_add_fraction: 0.5
+  lot_sizing:
+    enabled: true
+    max_lots: 4
+    lot_risk_fraction: 0.25
+    default_lots: 1
+    setup_base_lots:
+      elephant_bar: 2
+      bull_180: 2
+      bear_180: 2
+      bottoming_tail: 2
+      topping_tail: 2
+      opening_gap_go: 2
+      time_space_breakout: 2
+      opening_gap_fade: 1
+      velez_buy_setup: 1
+      velez_sell_setup: 1
+      nrb_acorn: 1
+      fab4_trap_breakout: 1
+      failed_new_high: 1
+      failed_new_low: 1
+    near_20_power_bonus_lots: 1
+    near_200_bonus_lots: 1
+    power_candle_bonus_lots: 1
+    high_quality_open_bonus_lots: 1
+    power_body_mult: 2.3
+    power_tail_pct: 0.75
+    power_recovery_pct: 0.95
+    high_quality_time_space_score: 0.8
+    missing_location_cap_lots: 1
+    chased_cap_lots: 2
+    extended_continuation_cap_lots: 1
+    wide_stop_cap_lots: 2
+    wide_stop_pct_of_max: 0.5
+    allow_alert_lot_override: false
+
+webhook:
+  auth_required: true
+  secret_env: VELEZ_WEBHOOK_SECRET
+  execute_orders: false
+  paper_only: true
+  time_in_force: day
+  take_profit_r:
+  dedupe_cache_size: 1000
+
+scanner:
+  enabled: true
+  auto_submit: true
+  timeframe: 1Min
+  interval_seconds: 60
+  history_bars: 260
+  max_symbols: 25
+  stock_feed: iex
+  adjustment: raw
+  closed_bar_delay_seconds: 15
+  timeout_seconds: 20
+  dedupe_cache_size: 1000
+  futures_provider: polygon
+  polygon_base_url: https://api.polygon.io
+  futures_resolution: 1min
+  futures_contracts:
+    ES: ESM6
+    NQ: NQM6
+    MES: MESM6
+    MNQ: MNQM6
+  exclude_symbols: []
+
+strategy:
+  sma_fast: 20
+  sma_slow: 200
+  atr_period: 14
+  slope_lookback: 20
+  ema_power: false
+  ema_power_window: 9
+
+  narrow_threshold: 0.004
+  wide_threshold: 0.008
+  narrow_bars: 10
+  breakout_atr_mult: 1.5
+  swing_lookback: 20
+  breakout_mode: either  # sma_cross | swing_break | either
+  momentum_atr_mult: 0.5
+
+  elephant:
+    enabled: false
+    range_atr_mult: 1.5
+    close_pos_pct: 0.7
+
+  entry:
+    use_limit: false
+
+  exits:
+    stop_type: atr
+    stop_atr_mult: 2.0
+    trail_type: atr  # atr | sma20
+    trail_atr_mult: 2.5
+    trail_debounce: 2
+    partials:
+      enabled: true
+      first_r: 1.0
+      second_r: 2.0
+      first_pct: 0.5
+      second_pct: 0.25
+      move_stop_to_breakeven: true
+    time_stop:
+      enabled: true
+      bars: 30
+      min_move_atr: 1.0
+
+velez_strategy:
+  sma_fast: 20
+  sma_slow: 200
+  atr_period: 14
+  slope_lookback: 5
+  history_bars: 240
+  near_sma_pct: 0.0025
+  near_sma_atr_mult: 0.35
+  extended_sma_pct: 0.012
+  extended_sma_atr_mult: 1.0
+  slope_tolerance: 0.000000001
+  tick_size:
+    default: 0.01
+  entry:
+    no_chase_body_pct: 0.05
+  elephant:
+    enabled: true
+    body_lookback: 5
+    structure_lookback: 5
+    min_body_mult: 1.8
+    max_each_wick_pct: 0.2
+    max_total_wick_pct: 0.35
+    climactic_body_mult: 3.0
+    climactic_atr_mult: 2.2
+  one_eighty:
+    enabled: true
+    recover_pct: 0.8
+  tail:
+    enabled: true
+    min_tail_pct: 0.66
+    trend_bars: 3
+    prefer_tail_limit: true
+  buy_sell_setup:
+    enabled: true
+    pullback_bars: 2
+  nrb_acorn:
+    enabled: true
+    range_lookback: 7
+    max_range_mult: 0.65
+    max_atr_mult: 0.55
+  color_change:
+    enabled: true
+    add_fraction: 0.5
+  fab4:
+    enabled: true
+    breakout_lookback: 5
+    max_sma_spread_pct: 0.006
+    max_sma_spread_atr_mult: 0.65
+    max_zone_atr_mult: 3.0
+  failed_breakout:
+    enabled: true
+    structure_lookback: 10
+    min_rejection_wick_pct: 0.35
+  opening_gap:
+    enabled: true
+    session_open_hour: 9
+    session_open_minute: 30
+    opening_window_minutes: 15
+    max_signal_bars: 3
+    min_gap_pct: 0.003
+    max_gap_pct: 0.08
+    target_gap_pct: 0.01
+    min_clean_space_pct: 0.004
+    breakout_space_bonus_pct: 0.008
+    min_time_space_score: 0.65
+    first_bar_close_position_pct: 0.65
+    fade_rejection_wick_pct: 0.35
+    min_gap_fill_space_pct: 0.002
+    structure_lookback: 30
+  time_space:
+    enabled: true
+    opening_window_minutes: 30
+    min_bars_after_open: 2
+    max_signal_bars: 6
+    max_neutral_gap_pct: 0.003
+    min_clean_space_pct: 0.004
+    breakout_space_bonus_pct: 0.008
+    min_time_space_score: 0.65
+    target_gap_pct: 0.01
+    structure_lookback: 30
+  management:
+    enabled: true
+    first_target_r: 1.0
+    second_target_r: 2.0
+    first_take_profit_pct: 0.5
+    trail_after_bars: 3
+    momentum_exhaustion_bars: 5
+
+symbols:
+  - symbol: SPY
+    type: equity
+    contract_multiplier: 1
+    data_source: yfinance
+    timezone: US/Eastern
+    session: rth
+
+  - symbol: ES
+    type: future
+    contract_multiplier: 50
+    data_source: csv
+    csv_path: bot/data/ES.csv
+    timezone: US/Eastern
+    session: full
+
+optimize:
+  metric: total_pnl
+  params:
+    narrow_threshold: [0.003, 0.004, 0.005]
+    wide_threshold: [0.007, 0.008, 0.009]

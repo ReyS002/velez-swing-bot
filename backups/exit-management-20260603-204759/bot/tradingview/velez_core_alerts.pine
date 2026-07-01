@@ -1,0 +1,307 @@
+//@version=6
+indicator("Velez Core Institutional Alerts", overlay = true, max_labels_count = 200)
+
+brokerSymbol = input.string("", "Broker symbol override")
+nearPct = input.float(0.0025, "Near SMA percent", minval = 0.0, step = 0.0001)
+extendedPct = input.float(0.012, "Extended from 20 SMA percent", minval = 0.0, step = 0.0005)
+bodyLookback = input.int(5, "Elephant body lookback", minval = 3, maxval = 20)
+structureLookback = input.int(5, "Structure lookback", minval = 3, maxval = 20)
+openingStructureLookback = input.int(30, "Opening structure lookback", minval = 5, maxval = 100)
+atrPeriod = input.int(14, "ATR period", minval = 2, maxval = 100)
+minBodyMult = input.float(1.8, "Elephant body multiplier", minval = 1.0, step = 0.1)
+wickPct = input.float(0.20, "Max single wick percent", minval = 0.0, maxval = 0.5, step = 0.01)
+recoverPct = input.float(0.80, "180 recovery percent", minval = 0.5, maxval = 1.0, step = 0.01)
+tailPct = input.float(0.66, "Tail minimum percent", minval = 0.5, maxval = 0.9, step = 0.01)
+trendBars = input.int(3, "Tail trend bars", minval = 2, maxval = 10)
+pullbackBars = input.int(2, "Buy/Sell setup pullback bars", minval = 1, maxval = 6)
+nrbLookback = input.int(7, "NRB/Acorn range lookback", minval = 3, maxval = 20)
+nrbRangeMult = input.float(0.65, "NRB/Acorn max range multiplier", minval = 0.1, maxval = 1.0, step = 0.05)
+fab4SpreadPct = input.float(0.006, "Fab 4 max 20/200 spread", minval = 0.0, maxval = 0.05, step = 0.0005)
+failWickPct = input.float(0.35, "Failed high/low rejection wick", minval = 0.1, maxval = 0.9, step = 0.05)
+noChaseBodyPct = input.float(0.05, "No-chase body percent", minval = 0.0, maxval = 0.5, step = 0.01)
+openingWindowMins = input.int(15, "Opening gap window minutes", minval = 2, maxval = 60)
+openingMaxBars = input.int(3, "Opening gap max signal bars", minval = 1, maxval = 10)
+gapMinPct = input.float(0.003, "Opening gap minimum percent", minval = 0.0, maxval = 0.10, step = 0.0005)
+gapMaxPct = input.float(0.08, "Opening gap maximum percent", minval = 0.01, maxval = 0.25, step = 0.005)
+spaceMinPct = input.float(0.004, "Minimum clean space percent", minval = 0.0, maxval = 0.10, step = 0.0005)
+breakoutSpaceBonusPct = input.float(0.008, "Breakout clean-space bonus percent", minval = 0.0, maxval = 0.10, step = 0.0005)
+targetGapPct = input.float(0.01, "Target gap percent for score", minval = 0.0001, maxval = 0.20, step = 0.0005)
+minTimeSpaceScore = input.float(0.65, "Minimum time-space score", minval = 0.0, maxval = 1.0, step = 0.05)
+openingClosePosPct = input.float(0.65, "Opening control close position", minval = 0.5, maxval = 0.95, step = 0.05)
+gapFadeWickPct = input.float(0.35, "Opening gap fade wick percent", minval = 0.1, maxval = 0.9, step = 0.05)
+minGapFillSpacePct = input.float(0.002, "Minimum gap-fill space percent", minval = 0.0, maxval = 0.05, step = 0.0005)
+timeSpaceWindowMins = input.int(30, "Time-space breakout window minutes", minval = 5, maxval = 90)
+timeSpaceMaxBars = input.int(6, "Time-space max opening bars", minval = 2, maxval = 20)
+tickSize = input.float(0.01, "Stop tick size", minval = 0.00000001)
+
+plot(close, "TradingView output heartbeat", display = display.none)
+
+sma20 = ta.sma(close, 20)
+sma200 = ta.sma(close, 200)
+body = math.abs(close - open)
+barRange = math.max(high - low, syminfo.mintick)
+upperWick = high - math.max(open, close)
+lowerWick = math.min(open, close) - low
+bodyMid = (open + close) / 2.0
+avgPrevBody = ta.sma(body[1], bodyLookback)
+priorHigh = ta.highest(high[1], structureLookback)
+priorLow = ta.lowest(low[1], structureLookback)
+openingPriorHigh = ta.highest(high[1], openingStructureLookback)
+openingPriorLow = ta.lowest(low[1], openingStructureLookback)
+atr = ta.atr(atrPeriod)
+
+near20 = not na(sma20) and (math.abs(close - sma20) / close <= nearPct or (low <= sma20 and high >= sma20))
+near200 = not na(sma200) and (math.abs(close - sma200) / close <= nearPct or (low <= sma200 and high >= sma200))
+extendedAbove20 = not na(sma20) and (close - sma20) / sma20 >= extendedPct
+extendedBelow20 = not na(sma20) and (sma20 - close) / sma20 >= extendedPct
+
+isElephant = not na(avgPrevBody) and body >= minBodyMult * avgPrevBody and upperWick / barRange <= wickPct and lowerWick / barRange <= wickPct
+bullCross = not na(sma20) and close > sma20 and close[1] <= sma20[1] and sma20 >= sma20[1]
+bearCross = not na(sma20) and close < sma20 and close[1] >= sma20[1] and sma20 <= sma20[1]
+bullElephant = close > open and isElephant and (close > priorHigh or bullCross) and (near20 or near200)
+bearElephant = close < open and isElephant and (close < priorLow or bearCross) and (near20 or near200)
+
+prevRed = close[1] < open[1]
+prevGreen = close[1] > open[1]
+bull180Mark = close[1] + (open[1] - close[1]) * recoverPct
+bear180Mark = close[1] - (close[1] - open[1]) * recoverPct
+bull180 = prevRed and close > open and close >= bull180Mark and (near20 or near200)
+bear180 = prevGreen and close < open and close <= bear180Mark and (near20 or near200)
+
+priorDecline = ta.falling(close[1], trendBars)
+priorRally = ta.rising(close[1], trendBars)
+bottomingTail = lowerWick / barRange >= tailPct and ((priorDecline and extendedBelow20) or (near200 and sma200 > sma200[1]))
+toppingTail = upperWick / barRange >= tailPct and ((priorRally and extendedAbove20) or (near200 and sma200 < sma200[1]))
+
+trendUp = not na(sma20) and (na(sma200) or sma20 >= sma200) and sma20 >= sma20[1]
+trendDown = not na(sma20) and (na(sma200) or sma20 <= sma200) and sma20 <= sma20[1]
+recentPullback = ta.falling(close[1], pullbackBars) or close[1] < open[1] or low[1] <= sma20
+recentPushup = ta.rising(close[1], pullbackBars) or close[1] > open[1] or high[1] >= sma20
+buySetup = trendUp and (near20 or near200) and recentPullback and close > open and (close > high[1] or close > sma20)
+sellSetup = trendDown and (near20 or near200) and recentPushup and close < open and (close < low[1] or close < sma20)
+
+prevRange = high[1] - low[1]
+avgRangePrev = ta.sma(high - low, nrbLookback)[1]
+prevNrb = not na(avgRangePrev) and prevRange <= nrbRangeMult * avgRangePrev
+nrbLong = trendUp and prevNrb and close > open and close > high[1]
+nrbShort = trendDown and prevNrb and close < open and close < low[1]
+
+var bool colorAddUsedLong = false
+var bool colorAddUsedShort = false
+if not na(sma20)
+    if close < sma20
+        colorAddUsedLong := false
+    if close > sma20
+        colorAddUsedShort := false
+rawColorChangeLong = trendUp and (near20 or near200) and close[1] < open[1] and close > open and close > high[1]
+rawColorChangeShort = trendDown and (near20 or near200) and close[1] > open[1] and close < open and close < low[1]
+colorChangeLong = rawColorChangeLong and not colorAddUsedLong
+colorChangeShort = rawColorChangeShort and not colorAddUsedShort
+
+fab4Compressed = not na(sma20) and not na(sma200) and math.abs(sma20 - sma200) / close <= fab4SpreadPct
+fab4Long = fab4Compressed and close > open and close > priorHigh and sma20 >= sma20[1]
+fab4Short = fab4Compressed and close < open and close < priorLow and sma20 <= sma20[1]
+
+failedNewHigh = high > priorHigh and close < priorHigh and (close < open or upperWick / barRange >= failWickPct) and (extendedAbove20 or near200)
+failedNewLow = low < priorLow and close > priorLow and (close > open or lowerWick / barRange >= failWickPct) and (extendedBelow20 or near200)
+
+prevDailyClose = request.security(syminfo.tickerid, "D", close[1], lookahead = barmerge.lookahead_off)
+minutesFromOpen = (hour(time, "America/New_York") * 60 + minute(time, "America/New_York")) - (9 * 60 + 30)
+inOpeningGapWindow = minutesFromOpen >= 0 and minutesFromOpen <= openingWindowMins
+inTimeSpaceWindow = minutesFromOpen >= 0 and minutesFromOpen <= timeSpaceWindowMins
+newDay = ta.change(time("D")) != 0
+var float firstOpen = na
+var float firstHigh = na
+var float firstLow = na
+var float firstClose = na
+var int openingBarsSeen = 0
+var bool openingGoUsed = false
+var bool openingFadeUsed = false
+var bool timeSpaceUsed = false
+if newDay
+    firstOpen := na
+    firstHigh := na
+    firstLow := na
+    firstClose := na
+    openingBarsSeen := 0
+    openingGoUsed := false
+    openingFadeUsed := false
+    timeSpaceUsed := false
+if inTimeSpaceWindow
+    if na(firstOpen)
+        firstOpen := open
+        firstHigh := high
+        firstLow := low
+        firstClose := close
+    openingBarsSeen := openingBarsSeen + 1
+
+gapPct = not na(firstOpen) and not na(prevDailyClose) and prevDailyClose != 0 ? (firstOpen - prevDailyClose) / prevDailyClose : na
+gapUp = not na(gapPct) and gapPct >= gapMinPct and gapPct <= gapMaxPct
+gapDown = not na(gapPct) and gapPct <= -gapMinPct and math.abs(gapPct) <= gapMaxPct
+firstRange = math.max(nz(firstHigh) - nz(firstLow), syminfo.mintick)
+openingClosePos = (close - nz(firstLow)) / firstRange
+openingWeakPos = (nz(firstHigh) - close) / firstRange
+cleanSpaceLong = na(openingPriorHigh) or close >= openingPriorHigh or (openingPriorHigh - close) / close >= spaceMinPct
+cleanSpaceShort = na(openingPriorLow) or close <= openingPriorLow or (close - openingPriorLow) / close >= spaceMinPct
+cleanSpacePctLong = na(openingPriorHigh) or close >= openingPriorHigh ? breakoutSpaceBonusPct : (openingPriorHigh - close) / close
+cleanSpacePctShort = na(openingPriorLow) or close <= openingPriorLow ? breakoutSpaceBonusPct : (close - openingPriorLow) / close
+gapFillSpacePctLong = not na(prevDailyClose) ? math.abs((close - prevDailyClose) / close) : na
+gapFillSpacePctShort = gapFillSpacePctLong
+gapUpFillSpacePct = not na(prevDailyClose) ? (close - prevDailyClose) / close : na
+gapDownFillSpacePct = not na(prevDailyClose) ? (prevDailyClose - close) / close : na
+timeScoreOpening = math.max(0.0, 1.0 - math.min(minutesFromOpen / math.max(openingWindowMins * 1.0, 1.0), 1.0))
+timeScoreBreakout = math.max(0.0, 1.0 - math.min(minutesFromOpen / math.max(timeSpaceWindowMins * 1.0, 1.0), 1.0))
+spaceScoreLong = spaceMinPct > 0 ? math.min(math.max(cleanSpacePctLong / spaceMinPct, 0.0), 1.0) : 1.0
+spaceScoreShort = spaceMinPct > 0 ? math.min(math.max(cleanSpacePctShort / spaceMinPct, 0.0), 1.0) : 1.0
+gapScore = not na(gapPct) ? math.min(math.abs(gapPct) / math.max(targetGapPct, 0.000000001), 1.0) : 0.0
+locationScoreLong = near20 or near200 ? 1.0 : extendedAbove20 ? 0.7 : 0.0
+locationScoreShort = near20 or near200 ? 1.0 : extendedBelow20 ? 0.7 : 0.0
+atrScore = not na(atr) and atr > 0 and firstRange > 0 ? math.min(firstRange / atr, 1.0) : 0.0
+scoreOpeningLong = (timeScoreOpening * 0.25) + (spaceScoreLong * 0.35) + (gapScore * 0.15) + (locationScoreLong * 0.2) + (atrScore * 0.05)
+scoreOpeningShort = (timeScoreOpening * 0.25) + (spaceScoreShort * 0.35) + (gapScore * 0.15) + (locationScoreShort * 0.2) + (atrScore * 0.05)
+scoreBreakoutLong = (timeScoreBreakout * 0.25) + (spaceScoreLong * 0.35) + (gapScore * 0.15) + (locationScoreLong * 0.2) + (atrScore * 0.05)
+scoreBreakoutShort = (timeScoreBreakout * 0.25) + (spaceScoreShort * 0.35) + (gapScore * 0.15) + (locationScoreShort * 0.2) + (atrScore * 0.05)
+openingLocationLong = near20 or near200 or extendedAbove20
+openingLocationShort = near20 or near200 or extendedBelow20
+
+gapGoLong = inOpeningGapWindow and openingBarsSeen <= openingMaxBars and gapUp and openingLocationLong and cleanSpaceLong and scoreOpeningLong >= minTimeSpaceScore and not openingGoUsed and ((openingBarsSeen == 1 and close > open and openingClosePos >= openingClosePosPct) or (openingBarsSeen > 1 and close > firstHigh and close > open))
+gapGoShort = inOpeningGapWindow and openingBarsSeen <= openingMaxBars and gapDown and openingLocationShort and cleanSpaceShort and scoreOpeningShort >= minTimeSpaceScore and not openingGoUsed and ((openingBarsSeen == 1 and close < open and openingWeakPos >= openingClosePosPct) or (openingBarsSeen > 1 and close < firstLow and close < open))
+gapFadeShort = inOpeningGapWindow and openingBarsSeen <= openingMaxBars and gapUp and (extendedAbove20 or near200 or not cleanSpaceLong) and not openingFadeUsed and close < open and (close < firstOpen or upperWick / barRange >= gapFadeWickPct or openingWeakPos >= openingClosePosPct) and gapUpFillSpacePct >= minGapFillSpacePct
+gapFadeLong = inOpeningGapWindow and openingBarsSeen <= openingMaxBars and gapDown and (extendedBelow20 or near200 or not cleanSpaceShort) and not openingFadeUsed and close > open and (close > firstOpen or lowerWick / barRange >= gapFadeWickPct or openingClosePos >= openingClosePosPct) and gapDownFillSpacePct >= minGapFillSpacePct
+neutralGap = not na(gapPct) and math.abs(gapPct) < gapMinPct
+timeSpaceLong = inTimeSpaceWindow and openingBarsSeen >= 2 and openingBarsSeen <= timeSpaceMaxBars and neutralGap and not timeSpaceUsed and trendUp and (near20 or near200) and cleanSpaceLong and scoreBreakoutLong >= minTimeSpaceScore and close > firstHigh and close > open
+timeSpaceShort = inTimeSpaceWindow and openingBarsSeen >= 2 and openingBarsSeen <= timeSpaceMaxBars and neutralGap and not timeSpaceUsed and trendDown and (near20 or near200) and cleanSpaceShort and scoreBreakoutShort >= minTimeSpaceScore and close < firstLow and close < open
+
+locationText = near200 ? "location_3_near_200_sma" : near20 ? "location_1_near_20_sma" : extendedAbove20 or extendedBelow20 ? "location_2_extended_from_20_sma" : "none"
+symbolOut = brokerSymbol == "" ? syminfo.ticker : brokerSymbol
+
+jsonNum(value) =>
+    na(value) ? "null" : str.tostring(value)
+
+jsonBool(value) =>
+    value ? "true" : "false"
+
+jsonMsg(play, side, entry, stop, orderType, extra) =>
+    msg = "{\"mode\":\"signal\""
+    msg := msg + ",\"source\":\"tradingview_pine\""
+    msg := msg + ",\"symbol\":\"" + symbolOut + "\""
+    msg := msg + ",\"timeframe\":\"" + timeframe.period + "\""
+    msg := msg + ",\"timestamp\":\"" + str.tostring(time) + "\""
+    msg := msg + ",\"play\":\"" + play + "\""
+    msg := msg + ",\"side\":\"" + side + "\""
+    msg := msg + ",\"order_type\":\"" + orderType + "\""
+    msg := msg + ",\"entry_price\":" + jsonNum(entry)
+    msg := msg + ",\"stop_price\":" + jsonNum(stop)
+    msg := msg + ",\"close\":" + jsonNum(close)
+    msg := msg + ",\"location\":\"" + locationText + "\""
+    msg := msg + (extra == "" ? "" : "," + extra)
+    msg + "}"
+
+longPlay = gapGoLong ? "opening_gap_go" : gapFadeLong ? "opening_gap_fade" : timeSpaceLong ? "time_space_breakout" : bullElephant ? "elephant_bar" : bull180 ? "bull_180" : bottomingTail ? "bottoming_tail" : failedNewLow ? "failed_new_low" : colorChangeLong ? "color_change_add" : buySetup ? "velez_buy_setup" : nrbLong ? "nrb_acorn" : fab4Long ? "fab4_trap_breakout" : ""
+shortPlay = gapGoShort ? "opening_gap_go" : gapFadeShort ? "opening_gap_fade" : timeSpaceShort ? "time_space_breakout" : bearElephant ? "elephant_bar" : bear180 ? "bear_180" : toppingTail ? "topping_tail" : failedNewHigh ? "failed_new_high" : colorChangeShort ? "color_change_add" : sellSetup ? "velez_sell_setup" : nrbShort ? "nrb_acorn" : fab4Short ? "fab4_trap_breakout" : ""
+
+longStop = gapGoLong or gapFadeLong or timeSpaceLong ? math.min(firstLow, low) - tickSize : bullElephant ? low - tickSize : bull180 ? math.min(low, low[1]) - tickSize : bottomingTail ? low - tickSize : failedNewLow ? low - tickSize : colorChangeLong ? math.min(low, low[1]) - tickSize : buySetup ? math.min(low, low[1]) - tickSize : nrbLong ? low[1] - tickSize : fab4Long ? priorLow - tickSize : low - tickSize
+shortStop = gapGoShort or gapFadeShort or timeSpaceShort ? math.max(firstHigh, high) + tickSize : bearElephant ? high + tickSize : bear180 ? math.max(high, high[1]) + tickSize : toppingTail ? high + tickSize : failedNewHigh ? high + tickSize : colorChangeShort ? math.max(high, high[1]) + tickSize : sellSetup ? math.max(high, high[1]) + tickSize : nrbShort ? high[1] + tickSize : fab4Short ? priorHigh + tickSize : high + tickSize
+
+longTrigger = gapGoLong or timeSpaceLong ? firstHigh : gapFadeLong ? firstOpen : bullElephant ? priorHigh : bull180 ? bull180Mark : failedNewLow ? priorLow : colorChangeLong ? high[1] : buySetup ? high[1] : nrbLong ? high[1] : fab4Long ? priorHigh : close
+shortTrigger = gapGoShort or timeSpaceShort ? firstLow : gapFadeShort ? firstOpen : bearElephant ? priorLow : bear180 ? bear180Mark : failedNewHigh ? priorHigh : colorChangeShort ? low[1] : sellSetup ? low[1] : nrbShort ? low[1] : fab4Short ? priorLow : close
+longChased = body > 0 and math.abs(close - longTrigger) > noChaseBodyPct * body
+shortChased = body > 0 and math.abs(close - shortTrigger) > noChaseBodyPct * body
+
+longOrderType = bottomingTail or longChased ? "limit" : "market"
+shortOrderType = toppingTail or shortChased ? "limit" : "market"
+longEntry = longOrderType == "limit" ? (bottomingTail ? low + lowerWick * 0.5 : bodyMid) : close
+shortEntry = shortOrderType == "limit" ? (toppingTail ? high - upperWick * 0.5 : bodyMid) : close
+bodyMult = not na(avgPrevBody) and avgPrevBody > 0 ? body / avgPrevBody : na
+lowerTailActual = lowerWick / barRange
+upperTailActual = upperWick / barRange
+bullRecoveryActual = prevRed and (open[1] - close[1]) != 0 ? (close - close[1]) / (open[1] - close[1]) : na
+bearRecoveryActual = prevGreen and (close[1] - open[1]) != 0 ? (close[1] - close) / (close[1] - open[1]) : na
+longTailActual = bottomingTail ? lowerTailActual : na
+shortTailActual = toppingTail ? upperTailActual : na
+longRecoveryActual = bull180 ? bullRecoveryActual : na
+shortRecoveryActual = bear180 ? bearRecoveryActual : na
+commonLongExtra = "\"body_mult\":" + jsonNum(bodyMult)
+commonLongExtra := commonLongExtra + ",\"body_range_pct\":" + jsonNum(body / barRange)
+commonLongExtra := commonLongExtra + ",\"upper_wick_pct\":" + jsonNum(upperWick / barRange)
+commonLongExtra := commonLongExtra + ",\"lower_wick_pct\":" + jsonNum(lowerWick / barRange)
+commonLongExtra := commonLongExtra + ",\"tail_pct\":" + jsonNum(longTailActual)
+commonLongExtra := commonLongExtra + ",\"recovery_pct\":" + jsonNum(longRecoveryActual)
+commonLongExtra := commonLongExtra + ",\"chased\":" + jsonBool(longChased)
+commonShortExtra = "\"body_mult\":" + jsonNum(bodyMult)
+commonShortExtra := commonShortExtra + ",\"body_range_pct\":" + jsonNum(body / barRange)
+commonShortExtra := commonShortExtra + ",\"upper_wick_pct\":" + jsonNum(upperWick / barRange)
+commonShortExtra := commonShortExtra + ",\"lower_wick_pct\":" + jsonNum(lowerWick / barRange)
+commonShortExtra := commonShortExtra + ",\"tail_pct\":" + jsonNum(shortTailActual)
+commonShortExtra := commonShortExtra + ",\"recovery_pct\":" + jsonNum(shortRecoveryActual)
+commonShortExtra := commonShortExtra + ",\"chased\":" + jsonBool(shortChased)
+colorAddExtra = "\"scale_action\":\"add_to_winner\",\"position_intent\":\"mandatory_add_after_first_color_change\",\"requires_existing_winner\":true,\"mandatory_add\":true,\"add_fraction\":0.5"
+longOpeningPlay = longPlay == "opening_gap_go" or longPlay == "opening_gap_fade" or longPlay == "time_space_breakout"
+shortOpeningPlay = shortPlay == "opening_gap_go" or shortPlay == "opening_gap_fade" or shortPlay == "time_space_breakout"
+longSignal = longPlay != ""
+shortSignal = shortPlay != ""
+activeOpeningIsLong = longOpeningPlay and longSignal
+activeOpeningIsBreakout = longPlay == "time_space_breakout" or shortPlay == "time_space_breakout"
+activeTimeScore = activeOpeningIsBreakout ? timeScoreBreakout : timeScoreOpening
+activeScore = activeOpeningIsLong ? (longPlay == "time_space_breakout" ? scoreBreakoutLong : scoreOpeningLong) : (shortPlay == "time_space_breakout" ? scoreBreakoutShort : scoreOpeningShort)
+activeSpaceScore = activeOpeningIsLong ? spaceScoreLong : spaceScoreShort
+activeLocationScore = activeOpeningIsLong ? locationScoreLong : locationScoreShort
+activeCleanSpace = activeOpeningIsLong ? cleanSpaceLong : cleanSpaceShort
+activeCleanSpacePct = activeOpeningIsLong ? cleanSpacePctLong : cleanSpacePctShort
+activeGapFillSpacePct = activeOpeningIsLong ? gapFillSpacePctLong : gapFillSpacePctShort
+activeObstaclePrice = activeOpeningIsLong ? openingPriorHigh : openingPriorLow
+playVariant = longPlay == "opening_gap_go" or shortPlay == "opening_gap_go" ? "gap_and_go" : longPlay == "opening_gap_fade" or shortPlay == "opening_gap_fade" ? "gap_fade_to_prior_close" : "opening_range_time_space_breakout"
+gapDirection = gapPct > 0 ? "up" : gapPct < 0 ? "down" : "flat"
+openingExtra = "\"setup_family\":\"opening_gap_time_space\""
+openingExtra := openingExtra + ",\"play_variant\":\"" + playVariant + "\""
+openingExtra := openingExtra + ",\"prior_close\":" + jsonNum(prevDailyClose)
+openingExtra := openingExtra + ",\"gap_direction\":\"" + gapDirection + "\""
+openingExtra := openingExtra + ",\"gap_pct\":" + jsonNum(gapPct)
+openingExtra := openingExtra + ",\"gap_fill_price\":" + jsonNum(prevDailyClose)
+openingExtra := openingExtra + ",\"first_open\":" + jsonNum(firstOpen)
+openingExtra := openingExtra + ",\"first_high\":" + jsonNum(firstHigh)
+openingExtra := openingExtra + ",\"first_low\":" + jsonNum(firstLow)
+openingExtra := openingExtra + ",\"first_close\":" + jsonNum(firstClose)
+openingExtra := openingExtra + ",\"opening_bars_seen\":" + str.tostring(openingBarsSeen)
+openingExtra := openingExtra + ",\"minutes_since_open\":" + str.tostring(minutesFromOpen)
+openingExtra := openingExtra + ",\"time_space_score\":" + jsonNum(activeScore)
+openingExtra := openingExtra + ",\"time_score\":" + jsonNum(activeTimeScore)
+openingExtra := openingExtra + ",\"space_score\":" + jsonNum(activeSpaceScore)
+openingExtra := openingExtra + ",\"gap_score\":" + jsonNum(gapScore)
+openingExtra := openingExtra + ",\"location_score\":" + jsonNum(activeLocationScore)
+openingExtra := openingExtra + ",\"clean_space\":" + jsonBool(activeCleanSpace)
+openingExtra := openingExtra + ",\"clean_space_pct\":" + jsonNum(activeCleanSpacePct)
+openingExtra := openingExtra + ",\"gap_fill_space_pct\":" + jsonNum(activeGapFillSpacePct)
+openingExtra := openingExtra + ",\"obstacle_price\":" + jsonNum(activeObstaclePrice)
+openingExtra := openingExtra + ",\"prior_structure_high\":" + jsonNum(openingPriorHigh)
+openingExtra := openingExtra + ",\"prior_structure_low\":" + jsonNum(openingPriorLow)
+openingExtra := openingExtra + ",\"atr\":" + jsonNum(atr)
+longExtra = commonLongExtra + (longPlay == "color_change_add" ? "," + colorAddExtra + ",\"color_change_direction\":\"buy\"" : longOpeningPlay ? "," + openingExtra : "")
+shortExtra = commonShortExtra + (shortPlay == "color_change_add" ? "," + colorAddExtra + ",\"color_change_direction\":\"sell\"" : shortOpeningPlay ? "," + openingExtra : "")
+
+if barstate.isconfirmed and longSignal
+    alert(jsonMsg(longPlay, "buy", longEntry, longStop, longOrderType, longExtra), alert.freq_once_per_bar_close)
+    if longPlay == "color_change_add"
+        colorAddUsedLong := true
+    if longPlay == "opening_gap_go"
+        openingGoUsed := true
+    if longPlay == "opening_gap_fade"
+        openingFadeUsed := true
+    if longPlay == "time_space_breakout"
+        timeSpaceUsed := true
+
+if barstate.isconfirmed and shortSignal
+    alert(jsonMsg(shortPlay, "sell", shortEntry, shortStop, shortOrderType, shortExtra), alert.freq_once_per_bar_close)
+    if shortPlay == "color_change_add"
+        colorAddUsedShort := true
+    if shortPlay == "opening_gap_go"
+        openingGoUsed := true
+    if shortPlay == "opening_gap_fade"
+        openingFadeUsed := true
+    if shortPlay == "time_space_breakout"
+        timeSpaceUsed := true
+
+plot(sma20, "20 SMA", color = color.new(color.yellow, 0), linewidth = 2)
+plot(sma200, "200 SMA", color = color.new(color.blue, 0), linewidth = 2)
+plotshape(longSignal, title = "Velez long", style = shape.triangleup, color = color.lime, location = location.belowbar, size = size.tiny)
+plotshape(shortSignal, title = "Velez short", style = shape.triangledown, color = color.red, location = location.abovebar, size = size.tiny)
