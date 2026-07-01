@@ -4252,6 +4252,104 @@ class TradingViewWebhookEngine:
             return WebhookDecision(status="rejected", reason=str(exc))
         return self._build_order_decision(signal, alert_id, dry_run=dry_run)
 
+    def _validate_lower_timeframe_signal(self, symbol: str, timeframe: str, side: str, metadata: dict) -> Optional[WebhookDecision]:
+        """Gate 2m/5m signals with volume, trend, and bar-size checks.
+
+        Returns None if the signal passes all gates, or a WebhookDecision
+        with status='rejected' if any gate fails.
+        """
+        tf = str(timeframe or "").strip()
+        if tf not in {"2", "5"}:
+            return None  # Only gate 2m and 5m — 15m passes through
+
+        cfg = self.config.get("velez_strategy", {}).get("lower_tf_filters", {})
+        if not cfg.get("enabled", True):
+            return None
+
+        vol_mult = float(cfg.get("volume_mult", 1.5))
+        range_mult = float(cfg.get("bar_range_mult", 1.0))
+        trend_align = bool(cfg.get("trend_alignment", True))
+        lookback = int(cfg.get("lookback_bars", 20))
+        higher_tf = str(cfg.get("higher_tf", "15m"))
+
+        try:
+            import yfinance as yf
+        except ImportError:
+            self.logger.warning("lower_tf_filter_skip_yfinance_missing", extra={"symbol": symbol})
+            return None  # Let signal through if yfinance isn't available
+
+        # Fetch recent bars at the signal's timeframe for volume/range checks
+        try:
+            interval_map = {"2": "2m", "5": "5m"}
+            interval = interval_map.get(tf, "5m")
+            df = yf.download(symbol, period="5d", interval=interval, progress=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.droplevel(1)
+            if df.empty or len(df) < max(lookback, 2):
+                self.logger.info("lower_tf_filter_skip_insufficient_data", extra={"symbol": symbol, "bars": len(df)})
+                return None
+        except Exception as exc:
+            self.logger.warning("lower_tf_filter_yfinance_error", extra={"symbol": symbol, "error": str(exc)})
+            return None  # Let signal through on data errors
+
+        import numpy as np
+        import pandas as pd
+
+        df["range"] = df["High"] - df["Low"]
+        df["body"] = abs(df["Close"] - df["Open"])
+        current = df.iloc[-1]
+        window = df.iloc[-(lookback + 1):-1] if len(df) > lookback else df.iloc[:-1]
+
+        # ── Gate 1: Volume ──
+        if "Volume" in df.columns and vol_mult > 0:
+            avg_vol = window["Volume"].mean()
+            current_vol = float(current.get("Volume", 0) or 0)
+            if avg_vol > 0 and current_vol < avg_vol * vol_mult:
+                msg = (f"low_volume:{symbol} vol={current_vol:.0f} < "
+                       f"{vol_mult}x avg={avg_vol:.0f}")
+                self.logger.info("lower_tf_filter_rejected", extra={"symbol": symbol, "reason": "low_volume", "gate": f"vol<{vol_mult}x_avg"})
+                return WebhookDecision("rejected", msg, symbol=symbol, side=side, play=str(metadata.get("play", "")))
+
+        # ── Gate 2: Bar size ──
+        if range_mult > 0:
+            avg_range = window["range"].mean()
+            current_range = float(current["range"])
+            if avg_range > 0 and current_range < avg_range * range_mult:
+                msg = (f"tiny_bar:{symbol} range={current_range:.4f} < "
+                       f"{range_mult}x avg={avg_range:.4f}")
+                self.logger.info("lower_tf_filter_rejected", extra={"symbol": symbol, "reason": "tiny_bar", "gate": f"range<{range_mult}x_avg"})
+                return WebhookDecision("rejected", msg, symbol=symbol, side=side, play=str(metadata.get("play", "")))
+
+        # ── Gate 3: Trend alignment (SMA20 vs SMA200 on higher timeframe) ──
+        if trend_align:
+            try:
+                htf_df = yf.download(symbol, period="1mo", interval=higher_tf, progress=False)
+                if isinstance(htf_df.columns, pd.MultiIndex):
+                    htf_df.columns = htf_df.columns.droplevel(1)
+                if not htf_df.empty and len(htf_df) >= 200:
+                    htf_df["sma20"] = htf_df["Close"].rolling(20).mean()
+                    htf_df["sma200"] = htf_df["Close"].rolling(200).mean()
+                    last = htf_df.iloc[-1]
+                    sma20 = float(last["sma20"])
+                    sma200 = float(last["sma200"])
+                    if not (np.isnan(sma20) or np.isnan(sma200)):
+                        trend_up = sma20 > sma200
+                        if side == "buy" and not trend_up:
+                            msg = (f"trend_opposed:{symbol} 15m SMA20({sma20:.2f}) < "
+                                   f"SMA200({sma200:.2f}) — rejecting buy")
+                            self.logger.info("lower_tf_filter_rejected", extra={"symbol": symbol, "reason": "trend_opposed", "gate": "sma20<sma200"})
+                            return WebhookDecision("rejected", msg, symbol=symbol, side=side, play=str(metadata.get("play", "")))
+                        if side == "sell" and trend_up:
+                            msg = (f"trend_opposed:{symbol} 15m SMA20({sma20:.2f}) > "
+                                   f"SMA200({sma200:.2f}) — rejecting sell")
+                            self.logger.info("lower_tf_filter_rejected", extra={"symbol": symbol, "reason": "trend_opposed", "gate": "sma20>sma200"})
+                            return WebhookDecision("rejected", msg, symbol=symbol, side=side, play=str(metadata.get("play", "")))
+            except Exception as exc:
+                self.logger.warning("lower_tf_filter_trend_error", extra={"symbol": symbol, "error": str(exc)})
+                # Let signal through on trend data errors
+
+        return None  # All gates passed
+
     def _build_order_decision(self, signal: Signal, alert_id: str, *, dry_run: bool = False) -> WebhookDecision:
         symbol = signal.symbol
         metadata = signal.metadata
@@ -4278,6 +4376,12 @@ class TradingViewWebhookEngine:
             stop_price = corrected
         if abs(entry_price - stop_price) / max(entry_price, 1e-9) > max_stop_pct:
             return WebhookDecision("rejected", "stop_distance_exceeds_guardrail", symbol=symbol, side=side, play=play)
+
+        # ── Lower-timeframe signal quality gates (2m/5m only) ──
+        tf = str(metadata.get("timeframe", ""))
+        tf_rejection = self._validate_lower_timeframe_signal(symbol, tf, side, metadata)
+        if tf_rejection is not None:
+            return tf_rejection
 
         if self.webhook_config.get("paper_only", True) and "paper-api.alpaca.markets" not in self.broker.config.base_url:
             return WebhookDecision("rejected", "non_paper_alpaca_endpoint_blocked", symbol=symbol, side=side, play=play)

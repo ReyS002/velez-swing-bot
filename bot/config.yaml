@@ -150,6 +150,13 @@ velez_strategy:
     min_tail_pct: 0.66
     trend_bars: 3
     prefer_tail_limit: true
+  lower_tf_filters:
+    enabled: true
+    volume_mult: 1.5
+    bar_range_mult: 1.0
+    trend_alignment: true
+    lookback_bars: 20
+    higher_tf: "15m"
 symbols:
 - symbol: NVDA
   type: equity
