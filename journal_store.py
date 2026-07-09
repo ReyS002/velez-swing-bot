@@ -42,6 +42,13 @@ class JournalStore:
 
     def record_decision(self, snapshot: dict, order_payload: Optional[dict] = None, broker_response: Optional[dict] = None) -> None:
         timestamp = str(snapshot.get("timestamp") or _utc_now().isoformat())
+        # location may arrive as a scalar string (single zone) or a list of zone
+        # values (multiple locations). SQLite can't bind a list, and the column is
+        # TEXT read back raw by _decision_row, so flatten lists to a readable
+        # comma-joined string. Existing string values pass through unchanged.
+        _loc = snapshot.get("location")
+        if isinstance(_loc, (list, tuple)):
+            _loc = ", ".join(str(x) for x in _loc)
         with self._connect() as db:
             db.execute(
                 """
@@ -65,7 +72,7 @@ class JournalStore:
                     snapshot.get("stop_price"),
                     snapshot.get("take_profit_price"),
                     snapshot.get("timeframe"),
-                    snapshot.get("location"),
+                    _loc,
                     snapshot.get("max_dollar_risk"),
                     _json_dumps(order_payload),
                     _json_dumps(broker_response),

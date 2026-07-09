@@ -157,6 +157,11 @@ velez_strategy:
     trend_alignment: true
     lookback_bars: 20
     higher_tf: "15m"
+  trifecta:
+    enabled: true
+    chains:
+      "60": ["240", "D"]
+      "240": ["D"]
 symbols:
 - symbol: NVDA
   type: equity

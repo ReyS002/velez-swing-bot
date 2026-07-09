@@ -33,6 +33,7 @@ from .calendar_feeds import CalendarFeedService
 from .core.risk import RiskManager
 from .core.types import Bar, OrderType, Side, Signal
 from .core.utils import get_logger, log_event
+from .core.trifecta import check_trifecta
 from .core.velez_strategy import VelezInstitutionalStrategy, calculate_pyramid_add_qty
 from .core.velez_lot_sizing import build_lot_plan, public_lot_config
 from .journal_store import JournalStore
@@ -4376,6 +4377,16 @@ class TradingViewWebhookEngine:
             stop_price = corrected
         if abs(entry_price - stop_price) / max(entry_price, 1e-9) > max_stop_pct:
             return WebhookDecision("rejected", "stop_distance_exceeds_guardrail", symbol=symbol, side=side, play=play)
+
+        # ── Trifecta multi-timeframe confluency gate ──
+        tf = str(metadata.get("timeframe", ""))
+        trifecta_rejection = check_trifecta(
+            symbol, tf, side,
+            config=self.config.get("velez_strategy", self.config.get("strategy", {})),
+            log=self.logger,
+        )
+        if trifecta_rejection is not None:
+            return WebhookDecision("rejected", trifecta_rejection, symbol=symbol, side=side, play=play)
 
         # ── Lower-timeframe signal quality gates (2m/5m only) ──
         tf = str(metadata.get("timeframe", ""))
