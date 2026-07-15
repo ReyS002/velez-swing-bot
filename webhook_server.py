@@ -27,6 +27,7 @@ from .core.risk import RiskManager
 from .core.types import Bar, OrderType, Side, Signal
 from .core.utils import get_logger, log_event
 from .core.velez_strategy import VelezInstitutionalStrategy
+from .core.velez_extensions import run_extensions
 from .journal_store import JournalStore
 
 
@@ -1261,6 +1262,12 @@ class TradingViewWebhookEngine:
             except Exception:
                 continue
             signals = strategy.on_bar(symbol, bar)
+            ctx = strategy.symbols.get(symbol)
+            if ctx is not None:
+                signals.extend(run_extensions(
+                    symbol, bar, list(ctx.bars), list(ctx.bodies),
+                    ctx.prev_sma20, ctx.atr.atr, self.config,
+                ))
             for signal in signals:
                 events.append(self._replay_signal_event(signal, equity))
         by_play = Counter(item["play"] for item in events)
@@ -1860,6 +1867,13 @@ class TradingViewWebhookEngine:
             return [WebhookDecision(status="rejected", reason=str(exc))]
 
         signals = self.strategy.on_bar(symbol, bar)
+        ctx = self.strategy.symbols.get(symbol)
+        if ctx is not None:
+            signals.extend(run_extensions(
+                symbol, bar, list(ctx.bars), list(ctx.bodies),
+                ctx.prev_sma20, ctx.atr.atr, self.config,
+                is_swing=True,
+            ))
         if not signals:
             return [WebhookDecision(status="ignored", reason="no_qualified_velez_signal", symbol=symbol)]
         return [self._build_order_decision(signal, alert_id) for signal in signals]

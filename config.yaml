@@ -31,6 +31,30 @@ webhook:
   time_in_force: day
   take_profit_r: null
   dedupe_cache_size: 1000
+w_shape:
+  enabled: true
+  decline_bars: 2
+  recovery_pct: 0.5
+  w_tolerance: 0.002
+deceleration:
+  enabled: true
+  lookback: 5
+  body_shrink_ratio: 0.7
+three_bar_play:
+  enabled: true
+pocket_pivot:
+  enabled: true
+give_me_a_c:
+  enabled: true
+stacking:
+  enabled: true
+  lookback: 20
+  gap_bars: 5
+wick_counting:
+  enabled: true
+  min_consecutive: 2
+  lookback: 8
+  wick_threshold: 0.5
 strategy:
   sma_fast: 20
   sma_slow: 200
