@@ -28,6 +28,9 @@ from .core.types import Bar, OrderType, Side, Signal
 from .core.utils import get_logger, log_event
 from .core.velez_strategy import VelezInstitutionalStrategy
 from .core.velez_extensions import run_extensions
+from .core.market_regime import classify_regime, regime_lot_multiplier
+from .core.performance_tracker import PerformanceTracker
+from .core.event_filter import EventFilter
 from .journal_store import JournalStore
 
 
@@ -876,6 +879,9 @@ class TradingViewWebhookEngine:
         self.symbol_config = {item["symbol"]: item for item in config.get("symbols", [])}
         self.logger = get_logger("tradingview_webhook")
         self.strategy = VelezInstitutionalStrategy(config.get("velez_strategy", config.get("strategy", {})), self.logger)
+        self.regime_cache: Dict[str, Any] = {"label": "unknown", "confidence": 0.0}
+        self.performance = PerformanceTracker(config)
+        self.event_filter = EventFilter(config)
         self.risk = RiskManager(self.risk_config)
         self.broker = broker or AlpacaPaperBroker()
         self.seen_alert_ids: Deque[str] = deque(maxlen=self.webhook_config.get("dedupe_cache_size", 1000))

@@ -63,6 +63,27 @@ volume_climax:
   lookback: 20
   climax_mult: 2.5
 mtf_alignment_scoring:
+
+market_regime:
+  enabled: true
+  lookback_bars: 50
+  atr_lookback: 14
+  trend_sma: 20
+  trend_strength_bars: 10
+  range_bound_pct: 0.015
+  volatile_atr_mult: 2.0
+  quiet_atr_mult: 0.5
+
+performance_tracker:
+  enabled: true
+
+event_filter:
+  enabled: true
+  skip_fomc: true
+  skip_macro: true
+  skip_earnings: false
+  window_minutes_before: 60
+  window_minutes_after: 30
   enabled: true
 strategy:
   sma_fast: 20
