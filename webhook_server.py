@@ -1265,7 +1265,7 @@ class TradingViewWebhookEngine:
             ctx = strategy.symbols.get(symbol)
             if ctx is not None:
                 signals.extend(run_extensions(
-                    symbol, bar, list(ctx.bars), list(ctx.bodies),
+                    symbol, bar, list(ctx.bars), list(ctx.bodies), list(ctx.volumes),
                     ctx.prev_sma20, ctx.atr.atr, self.config,
                 ))
             for signal in signals:
@@ -1870,7 +1870,7 @@ class TradingViewWebhookEngine:
         ctx = self.strategy.symbols.get(symbol)
         if ctx is not None:
             signals.extend(run_extensions(
-                symbol, bar, list(ctx.bars), list(ctx.bodies),
+                symbol, bar, list(ctx.bars), list(ctx.bodies), list(ctx.volumes),
                 ctx.prev_sma20, ctx.atr.atr, self.config,
                 is_swing=True,
             ))

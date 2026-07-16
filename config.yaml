@@ -55,6 +55,15 @@ wick_counting:
   min_consecutive: 2
   lookback: 8
   wick_threshold: 0.5
+post_elephant_pullback:
+  enabled: true
+  max_pullback_bars: 10
+volume_climax:
+  enabled: true
+  lookback: 20
+  climax_mult: 2.5
+mtf_alignment_scoring:
+  enabled: true
 strategy:
   sma_fast: 20
   sma_slow: 200
