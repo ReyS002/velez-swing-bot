@@ -3904,6 +3904,12 @@ class TradingViewWebhookEngine:
         result = self.journal.approve_pending_order(approval_id, approval_phrase, self.broker)
         if result.get("ok"):
             log_event(self.logger, "pending_order_approved", {"id": approval_id, "symbol": result.get("pending", {}).get("symbol")})
+            # P1: Immediately run lifecycle reconciliation to auto-place protective stop
+            lifecycle = self.lifecycle_payload(light=True, refresh=True)
+            auto_actions = lifecycle.get("summary", {}).get("needs_action", [])
+            if auto_actions:
+                log_event(self.logger, "lifecycle_auto_action_post_approval",
+                    {"actions": auto_actions, "symbol": result.get("pending", {}).get("symbol")})
         return result
 
     def _approval_from_prompt(self, prompt: str) -> Optional[dict]:
@@ -5415,7 +5421,34 @@ class TradingViewWebhookEngine:
             qty = self._position_qty_string(position)
 
             # P1: Auto-repair missing stops — also covers journal_decision when broker stop vanished (e.g. partial fills cancel bracket)
+            # P2: Deadline stop — if no broker stop linked within 2 min of entry, auto-close
             if stop_source in ("missing", "journal_decision") and entry_price is not None and qty:
+                # Check if position is > 2 min old — deadline stop
+                try:
+                    entry_ts = position.get("entry_timestamp") or (position.get("linked_decision") or {}).get("timestamp")
+                    if entry_ts:
+                        from datetime import datetime, timezone
+                        entry_dt = self._parse_datetime(entry_ts)
+                        if entry_dt and (datetime.now(timezone.utc) - entry_dt).total_seconds() > 120:
+                            exit_side = "sell" if side == "long" else "buy"
+                            deadline_payload = {
+                                "symbol": symbol,
+                                "qty": qty,
+                                "side": exit_side,
+                                "type": "market",
+                                "time_in_force": self.webhook_config.get("time_in_force", "day"),
+                                "client_order_id": f"velez-deadline-stop-{symbol.lower()}-{secrets.token_hex(6)}",
+                            }
+                            try:
+                                self.broker.submit_order_payload(deadline_payload)
+                                results.append({"action": "deadline_stop_close", "symbol": symbol, "status": "submitted"})
+                                log_event(self.logger, "auto_deadline_stop_close", {"symbol": symbol, "reason": "stop_not_linked_within_2min"})
+                            except Exception as exc:
+                                results.append({"action": "deadline_stop_close", "symbol": symbol, "status": "failed", "error": str(exc)})
+                            continue  # skip emergency stop — we're closing instead
+                except Exception:
+                    pass  # fall through to emergency stop repair
+                # Emergency stop placement (original logic)
                 linked = position.get("linked_decision") or {}
                 emergency_stop = self._float(linked.get("stop_price")) or stop_price
                 if emergency_stop is None and entry_price:
