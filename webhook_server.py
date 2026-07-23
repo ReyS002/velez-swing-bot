@@ -700,7 +700,7 @@ class WinstonAIService:
         model = os.getenv("WINSTON_LLM_MODEL", "").strip()
         if not base_url or not model:
             raise ValueError("openai_compatible_provider_not_configured")
-        url = f"{base_url}/chat/completions" if base_url.endswith("/v1") else f"{base_url}/v1/chat/completions"
+        url = f"{base_url}/chat/completions" if (base_url.endswith("/v1") or base_url.endswith("/openai")) else f"{base_url}/v1/chat/completions"
         api_key = os.getenv("WINSTON_LLM_API_KEY", "").strip()
         headers = {"Content-Type": "application/json"}
         if api_key:
@@ -724,7 +724,7 @@ class WinstonAIService:
         model = os.getenv("WINSTON_RESEARCH_LLM_MODEL", os.getenv("WINSTON_LLM_MODEL", "")).strip()
         if not base_url or not model:
             raise ValueError("openai_research_provider_not_configured")
-        url = f"{base_url}/chat/completions" if base_url.endswith("/v1") else f"{base_url}/v1/chat/completions"
+        url = f"{base_url}/chat/completions" if (base_url.endswith("/v1") or base_url.endswith("/openai")) else f"{base_url}/v1/chat/completions"
         api_key = os.getenv("WINSTON_RESEARCH_LLM_API_KEY", os.getenv("WINSTON_LLM_API_KEY", "")).strip()
         headers = {"Content-Type": "application/json"}
         if api_key:
