@@ -3364,7 +3364,8 @@ function winstonBrainLabel() {
   const provider = winstonState.brain?.provider || "winston_rule_based_v1";
   const model = String(winstonState.brain?.model || "").toLowerCase();
   if (provider === "ollama") return "Hermes local LLM";
-  if (provider === "openai_compatible" && model.includes("deepseek")) return "DeepSeek hybrid";
+  if (provider === "openai_compatible" && (model.includes("gpt-oss") || model.includes("qwen/"))) return "Groq cloud";
+  if (provider === "openai_compatible" && model.includes("deepseek")) return "Emergency DeepSeek";
   if (provider === "openai_compatible") return "AI provider";
   if (provider === "winston_trade_guardrail_v1") return "Trade guardrail";
   if (provider === "winston_rule_based_v1") return "Safe local rules";

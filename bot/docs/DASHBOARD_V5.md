@@ -40,10 +40,10 @@ Dashboard V6.21 keeps the Candidate C room as the main visual stage, keeps the f
 
 ## V6.17 Winston Hybrid Brain
 
-- Upgraded Winston phone mode to support OpenAI-compatible DeepSeek APIs with explicit thinking controls
-- Recommended `deepseek-v4-flash` for the live phone lane and `deepseek-v4-pro` for Research Mode
+- Updated Winston phone mode to use Groq's OpenAI-compatible API with explicit response-budget controls
+- Recommended `openai/gpt-oss-20b` for the live phone lane and `qwen/qwen3.6-27b` for Research Mode
 - Added local Ollama fallback configuration so Winston can still answer from the VPS if the cloud brain is unavailable
-- Updated the phone panel label to show the DeepSeek hybrid brain and fallback model
+- Updated the phone panel label to show the Groq cloud brain and fallback model
 
 ## V6.16 Reliability Pass
 
@@ -197,8 +197,8 @@ FOMC_CALENDAR_URL=https://www.federalreserve.gov/monetarypolicy/fomccalendars.ht
 
 - Added a deterministic Winston command router before the LLM for fast commands like `play Sade on the iPod`, `pause music`, `next track`, `turn volume down`, `what is playing`, and `open the journal`
 - Added browser-side execution of Winston actions so Apple Music commands search, queue, play, pause, skip, and adjust volume through the existing MusicKit session
-- Smoke-tested VPS Ollama models and selected `qwen3:1.7b` for phone mode because it balanced speed and safer desk readbacks better than the 1B models
-- Kept Winston Research Mode on `qwen3.5:2b` for deeper notes while the phone line stays quick
+- Smoke-tested VPS Ollama models and selected `qwen3:4b` for local fallback phone mode because it is the smallest retained Qwen model after cleanup
+- Kept local Winston Research fallback on `qwen3:8b` for deeper notes while the phone line stays quick
 
 ## V6.1 Desk Operations
 
@@ -280,9 +280,9 @@ Voice output uses Hermes PocketTTS when these environment variables are configur
 ```text
 WINSTON_LLM_PROVIDER=ollama
 WINSTON_LLM_BASE_URL=http://127.0.0.1:11434
-WINSTON_LLM_MODEL=qwen3:1.7b
+WINSTON_LLM_MODEL=qwen3:4b
 WINSTON_LLM_THINK=false
-WINSTON_RESEARCH_LLM_MODEL=qwen3.5:2b
+WINSTON_RESEARCH_LLM_MODEL=qwen3:8b
 WINSTON_RESEARCH_THINK=false
 WINSTON_RESEARCH_MAX_TOKENS=320
 WINSTON_RESEARCH_CONTEXT_CHARS=7000
@@ -299,8 +299,8 @@ The deploy compose file includes an optional Ollama service. On the VPS, start i
 
 ```bash
 docker compose --profile ai up -d ollama
-docker compose exec ollama ollama pull qwen3:1.7b
-docker compose exec ollama ollama pull qwen3.5:2b
+docker compose exec ollama ollama pull qwen3:4b
+docker compose exec ollama ollama pull qwen3:8b
 ```
 
 Then set:
@@ -308,11 +308,11 @@ Then set:
 ```text
 WINSTON_LLM_PROVIDER=ollama
 WINSTON_LLM_BASE_URL=http://ollama:11434
-WINSTON_LLM_MODEL=qwen3:1.7b
+WINSTON_LLM_MODEL=qwen3:4b
 WINSTON_LLM_TIMEOUT_SECONDS=20
 WINSTON_LLM_MAX_TOKENS=120
 WINSTON_LLM_THINK=false
-WINSTON_RESEARCH_LLM_MODEL=qwen3.5:2b
+WINSTON_RESEARCH_LLM_MODEL=qwen3:8b
 WINSTON_RESEARCH_THINK=false
 WINSTON_RESEARCH_MAX_TOKENS=320
 WINSTON_RESEARCH_CONTEXT_CHARS=7000

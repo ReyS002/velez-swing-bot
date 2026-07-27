@@ -125,7 +125,7 @@ def test_winston_can_use_ollama_provider(monkeypatch):
 def test_winston_can_disable_ollama_thinking(monkeypatch):
     clear_winston_env(monkeypatch)
     monkeypatch.setenv("WINSTON_LLM_PROVIDER", "ollama")
-    monkeypatch.setenv("WINSTON_LLM_MODEL", "qwen3.5:2b")
+    monkeypatch.setenv("WINSTON_LLM_MODEL", "qwen3:8b")
     monkeypatch.setenv("WINSTON_LLM_THINK", "false")
     engine = TradingViewWebhookEngine(winston_config())
 
@@ -140,7 +140,7 @@ def test_winston_can_disable_ollama_thinking(monkeypatch):
 
     def fake_post(url, json=None, timeout=None, headers=None):
         assert url.endswith("/api/chat")
-        assert json["model"] == "qwen3.5:2b"
+        assert json["model"] == "qwen3:8b"
         assert json["think"] is False
         return FakeResponse()
 
@@ -149,18 +149,17 @@ def test_winston_can_disable_ollama_thinking(monkeypatch):
     result = engine.winston_reply("status check")
 
     assert result["provider"] == "ollama"
-    assert result["model"] == "qwen3.5:2b"
+    assert result["model"] == "qwen3:8b"
     assert result["reply"] == "Winston is online with guarded voice execution."
 
 
-def test_winston_can_use_openai_compatible_deepseek_with_thinking_disabled(monkeypatch):
+def test_winston_can_use_openai_compatible_groq_with_extra_body(monkeypatch):
     clear_winston_env(monkeypatch)
-    monkeypatch.setenv("WINSTON_LLM_PROVIDER", "deepseek")
-    monkeypatch.setenv("WINSTON_LLM_BASE_URL", "https://api.deepseek.com/v1")
-    monkeypatch.setenv("WINSTON_LLM_MODEL", "deepseek-v4-flash")
-    monkeypatch.setenv("WINSTON_LLM_API_KEY", "deepseek-key")
-    monkeypatch.setenv("WINSTON_LLM_THINKING", "disabled")
-    monkeypatch.setenv("WINSTON_LLM_REASONING_EFFORT", "low")
+    monkeypatch.setenv("WINSTON_LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("WINSTON_LLM_BASE_URL", "https://api.groq.com/openai/v1")
+    monkeypatch.setenv("WINSTON_LLM_MODEL", "openai/gpt-oss-20b")
+    monkeypatch.setenv("WINSTON_LLM_API_KEY", "groq-key")
+    monkeypatch.setenv("WINSTON_LLM_EXTRA_BODY_JSON", '{"reasoning_format":"hidden"}')
     engine = TradingViewWebhookEngine(winston_config())
 
     class FakeResponse:
@@ -170,14 +169,13 @@ def test_winston_can_use_openai_compatible_deepseek_with_thinking_disabled(monke
             return None
 
         def json(self):
-            return {"choices": [{"message": {"content": "DeepSeek Winston is online."}}]}
+            return {"choices": [{"message": {"content": "Groq Winston is online."}}]}
 
     def fake_post(url, headers=None, json=None, timeout=None):
-        assert url == "https://api.deepseek.com/v1/chat/completions"
-        assert headers["Authorization"] == "Bearer deepseek-key"
-        assert json["model"] == "deepseek-v4-flash"
-        assert json["thinking"] == {"type": "disabled"}
-        assert json["reasoning_effort"] == "low"
+        assert url == "https://api.groq.com/openai/v1/chat/completions"
+        assert headers["Authorization"] == "Bearer groq-key"
+        assert json["model"] == "openai/gpt-oss-20b"
+        assert json["reasoning_format"] == "hidden"
         return FakeResponse()
 
     monkeypatch.setattr("bot.webhook_server.requests.post", fake_post)
@@ -185,20 +183,20 @@ def test_winston_can_use_openai_compatible_deepseek_with_thinking_disabled(monke
     result = engine.winston_reply("status check")
 
     assert result["provider"] == "openai_compatible"
-    assert result["model"] == "deepseek-v4-flash"
+    assert result["model"] == "openai/gpt-oss-20b"
     assert result["llm_used"] is True
-    assert result["reply"] == "DeepSeek Winston is online."
+    assert result["reply"] == "Groq Winston is online."
 
 
 def test_winston_falls_back_to_ollama_when_primary_cloud_brain_fails(monkeypatch):
     clear_winston_env(monkeypatch)
     monkeypatch.setenv("WINSTON_LLM_PROVIDER", "openai_compatible")
-    monkeypatch.setenv("WINSTON_LLM_BASE_URL", "https://api.deepseek.com/v1")
-    monkeypatch.setenv("WINSTON_LLM_MODEL", "deepseek-v4-flash")
-    monkeypatch.setenv("WINSTON_LLM_API_KEY", "deepseek-key")
+    monkeypatch.setenv("WINSTON_LLM_BASE_URL", "https://api.groq.com/openai/v1")
+    monkeypatch.setenv("WINSTON_LLM_MODEL", "openai/gpt-oss-20b")
+    monkeypatch.setenv("WINSTON_LLM_API_KEY", "groq-key")
     monkeypatch.setenv("WINSTON_LLM_FALLBACK_PROVIDER", "ollama")
     monkeypatch.setenv("WINSTON_LLM_FALLBACK_BASE_URL", "http://ollama:11434")
-    monkeypatch.setenv("WINSTON_LLM_FALLBACK_MODEL", "qwen3:1.7b")
+    monkeypatch.setenv("WINSTON_LLM_FALLBACK_MODEL", "qwen3:4b")
     monkeypatch.setenv("WINSTON_LLM_FALLBACK_THINK", "false")
     engine = TradingViewWebhookEngine(winston_config())
 
@@ -213,9 +211,9 @@ def test_winston_falls_back_to_ollama_when_primary_cloud_brain_fails(monkeypatch
 
     def fake_post(url, headers=None, json=None, timeout=None):
         if url.endswith("/chat/completions"):
-            raise RuntimeError("deepseek unavailable")
+            raise RuntimeError("groq unavailable")
         assert url == "http://ollama:11434/api/chat"
-        assert json["model"] == "qwen3:1.7b"
+        assert json["model"] == "qwen3:4b"
         assert json["think"] is False
         return FakeResponse()
 
@@ -224,21 +222,20 @@ def test_winston_falls_back_to_ollama_when_primary_cloud_brain_fails(monkeypatch
     result = engine.winston_reply("status check")
 
     assert result["provider"] == "ollama"
-    assert result["model"] == "qwen3:1.7b"
+    assert result["model"] == "qwen3:4b"
     assert result["llm_used"] is True
     assert result["degraded"] is True
     assert result["fallback_from"] == "openai_compatible"
     assert result["reply"] == "Local fallback Winston is ready."
 
 
-def test_winston_research_can_use_openai_compatible_deepseek_pro(monkeypatch):
+def test_winston_research_can_use_openai_compatible_groq_qwen(monkeypatch):
     clear_winston_env(monkeypatch)
     monkeypatch.setenv("WINSTON_RESEARCH_LLM_PROVIDER", "openai_compatible")
-    monkeypatch.setenv("WINSTON_RESEARCH_LLM_BASE_URL", "https://api.deepseek.com/v1")
-    monkeypatch.setenv("WINSTON_RESEARCH_LLM_MODEL", "deepseek-v4-pro")
+    monkeypatch.setenv("WINSTON_RESEARCH_LLM_BASE_URL", "https://api.groq.com/openai/v1")
+    monkeypatch.setenv("WINSTON_RESEARCH_LLM_MODEL", "qwen/qwen3.6-27b")
     monkeypatch.setenv("WINSTON_RESEARCH_LLM_API_KEY", "research-key")
-    monkeypatch.setenv("WINSTON_RESEARCH_THINKING", "enabled")
-    monkeypatch.setenv("WINSTON_RESEARCH_REASONING_EFFORT", "high")
+    monkeypatch.setenv("WINSTON_RESEARCH_LLM_EXTRA_BODY_JSON", '{"reasoning_format":"hidden"}')
     monkeypatch.setenv("WINSTON_RESEARCH_MAX_TOKENS", "900")
     engine = TradingViewWebhookEngine(winston_config())
 
@@ -249,15 +246,14 @@ def test_winston_research_can_use_openai_compatible_deepseek_pro(monkeypatch):
             return None
 
         def json(self):
-            return {"choices": [{"message": {"content": "DeepSeek Pro research note ready."}}]}
+            return {"choices": [{"message": {"content": "Groq Qwen research note ready."}}]}
 
     def fake_post(url, headers=None, json=None, timeout=None):
-        assert url == "https://api.deepseek.com/v1/chat/completions"
+        assert url == "https://api.groq.com/openai/v1/chat/completions"
         assert headers["Authorization"] == "Bearer research-key"
-        assert json["model"] == "deepseek-v4-pro"
+        assert json["model"] == "qwen/qwen3.6-27b"
         assert json["max_tokens"] == 900
-        assert json["thinking"] == {"type": "enabled"}
-        assert json["reasoning_effort"] == "high"
+        assert json["reasoning_format"] == "hidden"
         return FakeResponse()
 
     monkeypatch.setattr("bot.webhook_server.requests.post", fake_post)
@@ -265,18 +261,18 @@ def test_winston_research_can_use_openai_compatible_deepseek_pro(monkeypatch):
     result = engine.winston_research("SPY prep")
 
     assert result["provider"] == "openai_compatible"
-    assert result["model"] == "deepseek-v4-pro"
+    assert result["model"] == "qwen/qwen3.6-27b"
     assert result["research_used"] is True
-    assert result["reply"] == "DeepSeek Pro research note ready."
+    assert result["reply"] == "Groq Qwen research note ready."
 
 
 def test_winston_deep_research_uses_dedicated_model_and_budget(monkeypatch):
     clear_winston_env(monkeypatch)
-    monkeypatch.setenv("WINSTON_DEEP_RESEARCH_LLM_PROVIDER", "deepseek")
-    monkeypatch.setenv("WINSTON_DEEP_RESEARCH_LLM_BASE_URL", "https://api.deepseek.com/v1")
-    monkeypatch.setenv("WINSTON_DEEP_RESEARCH_LLM_MODEL", "deepseek-v4-pro")
+    monkeypatch.setenv("WINSTON_DEEP_RESEARCH_LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("WINSTON_DEEP_RESEARCH_LLM_BASE_URL", "https://api.groq.com/openai/v1")
+    monkeypatch.setenv("WINSTON_DEEP_RESEARCH_LLM_MODEL", "qwen/qwen3.6-27b")
     monkeypatch.setenv("WINSTON_DEEP_RESEARCH_LLM_API_KEY", "deep-research-key")
-    monkeypatch.setenv("WINSTON_DEEP_RESEARCH_THINKING", "disabled")
+    monkeypatch.setenv("WINSTON_DEEP_RESEARCH_LLM_EXTRA_BODY_JSON", '{"reasoning_format":"hidden"}')
     monkeypatch.setenv("WINSTON_DEEP_RESEARCH_MAX_TOKENS", "1500")
     engine = TradingViewWebhookEngine(winston_config())
 
@@ -290,11 +286,11 @@ def test_winston_deep_research_uses_dedicated_model_and_budget(monkeypatch):
             return {"choices": [{"message": {"content": "Deep research memo ready."}}]}
 
     def fake_post(url, headers=None, json=None, timeout=None):
-        assert url == "https://api.deepseek.com/v1/chat/completions"
+        assert url == "https://api.groq.com/openai/v1/chat/completions"
         assert headers["Authorization"] == "Bearer deep-research-key"
-        assert json["model"] == "deepseek-v4-pro"
+        assert json["model"] == "qwen/qwen3.6-27b"
         assert json["max_tokens"] == 1500
-        assert json["thinking"] == {"type": "disabled"}
+        assert json["reasoning_format"] == "hidden"
         assert "Deep Research Mode" in json["messages"][0]["content"]
         return FakeResponse()
 
@@ -303,7 +299,7 @@ def test_winston_deep_research_uses_dedicated_model_and_budget(monkeypatch):
     result = engine.winston_deep_research("SPY deep prep")
 
     assert result["provider"] == "openai_compatible"
-    assert result["model"] == "deepseek-v4-pro"
+    assert result["model"] == "qwen/qwen3.6-27b"
     assert result["mode"] == "deep_research"
     assert result["reply"] == "Deep research memo ready."
 
