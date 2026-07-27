@@ -5642,14 +5642,17 @@ class TradingViewWebhookEngine:
         result = {}
         for setup, stats in sorted(by_setup.items(), key=lambda x: x[1]["total_pnl"], reverse=True):
             trades = stats["trades"]
+            win_rate = round(stats["wins"] / max(trades, 1) * 100, 1)
+            total_pnl = round(stats["total_pnl"], 2)
+            avg_r = round(stats["total_r"] / max(trades, 1), 2)
             result[setup] = {
                 "trades": trades,
-                "win_rate": round(stats["wins"] / max(trades, 1) * 100, 1),
-                "total_pnl": round(stats["total_pnl"], 2),
-                "avg_r": round(stats["total_r"] / max(trades, 1), 2),
+                "win_rate": win_rate,
+                "total_pnl": total_pnl,
+                "avg_r": avg_r,
                 "wins": stats["wins"],
                 "losses": stats["losses"],
-                "grade": "elite" if stats["total_pnl"] > 1000 and stats["win_rate"] > 60 else "solid" if stats["total_pnl"] > 0 else "review",
+                "grade": "elite" if total_pnl > 1000 and win_rate > 60 else "solid" if total_pnl > 0 else "review",
             }
         return {"period_days": days, "setups": result, "total_pnl": round(sum(s["total_pnl"] for s in by_setup.values()), 2)}
 
