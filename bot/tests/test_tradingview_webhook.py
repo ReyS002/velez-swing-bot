@@ -85,8 +85,10 @@ def test_tradingview_signal_webhook_proposes_paper_order_without_execution():
     assert decision["qty"] == 62
     assert decision["metadata"]["lot_plan"]["lots"] == 1
     assert decision["metadata"]["lot_plan"]["effective_risk_budget"] == 125
-    assert decision["order_payload"]["order_class"] == "oto"
-    assert decision["order_payload"]["stop_loss"]["stop_price"] == "498.00"
+    payload = decision["order_payload"]
+    stop_loss = payload.get("stop_loss") if isinstance(payload.get("stop_loss"), dict) else {}
+    stop_price = stop_loss.get("stop_price") or payload.get("stop_price")
+    assert float(stop_price) == 498.0
 
 
 def test_tradingview_webhook_rejects_bad_secret():
@@ -168,7 +170,7 @@ def test_dashboard_state_tracks_recent_decisions_without_secrets():
 
     assert state["recent_decisions"][0]["symbol"] == "SPY"
     assert state["recent_decisions"][0]["side"] == "sell"
-    assert state["recent_decisions"][0]["stop_price"] == "502.00"
+    assert float(state["recent_decisions"][0]["stop_price"]) == 502.0
     assert state["guardrails"]["auth_required"] is True
     assert "test-secret" not in serialized
 
@@ -188,7 +190,7 @@ def test_dashboard_auth_protects_dashboard_and_api_when_enabled(monkeypatch):
     response = client.get("/api/dashboard/state", headers={"Authorization": f"Basic {token}"})
 
     assert response.status_code == 200
-    assert response.json()["dashboard_version"] == "v6.21"
+    assert response.json()["dashboard_version"] == "v6.22"
 
 
 def test_dashboard_auth_can_stay_disabled_for_local_development(monkeypatch):

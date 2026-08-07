@@ -30,6 +30,28 @@ risk:
   circuit_breaker_atr_pct: 0.05
   max_api_errors: 5
   pyramid_add_fraction: 0.5
+top_down:
+  enabled: true
+  profile: velez_swing
+  # Swing weights daily/weekly wind more heavily but stays advisory by default.
+  mode: advisory
+  cache_seconds: 300
+  daily_lookback: 120
+  weekly_lookback: 52
+  fast_sma: 20
+  slow_sma: 50
+  max_universe_symbols: 30
+  breadth:
+    symbols: [SPY, QQQ, IWM]
+    supportive_min: 2
+    hostile_min: 2
+  sector_leadership:
+    enabled: true
+    lookback_bars: 20
+  strategy_activation:
+    enabled: true
+    default_action: active
+    advisory_min_multiplier: 0.5
 webhook:
   auth_required: true
   secret_env: VELEZ_WEBHOOK_SECRET
@@ -98,7 +120,10 @@ strategy:
       consumer_tech:
       - TSLA
       indices:
+      - SPY
       - QQQ
+      - IWM
+      - TQQQ
 scanner:
   enabled: true
   auto_submit: true

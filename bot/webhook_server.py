@@ -36,6 +36,7 @@ from .core.utils import get_logger, log_event
 from .core.trifecta import check_trifecta
 from .core.velez_strategy import VelezInstitutionalStrategy, calculate_pyramid_add_qty
 from .core.velez_lot_sizing import build_lot_plan, public_lot_config
+from .core.top_down_brain import build_top_down_state, merged_top_down_config
 from .journal_store import JournalStore
 
 
@@ -920,6 +921,8 @@ class TradingViewWebhookEngine:
         self.strategy = VelezInstitutionalStrategy(config.get("velez_strategy", config.get("strategy", {})), self.logger)
         self.risk = RiskManager(self.risk_config)
         self.broker = broker or _create_broker()
+        self.top_down_cache: Dict[str, Any] = {}
+        self.top_down_lock = threading.Lock()
         self.seen_alert_ids: Deque[str] = deque(maxlen=self.webhook_config.get("dedupe_cache_size", 1000))
         self.recent_decisions: Deque[dict] = deque(maxlen=self.webhook_config.get("dashboard_decisions", 80))
         self.started_at = datetime.now(timezone.utc)
@@ -1032,6 +1035,7 @@ class TradingViewWebhookEngine:
                 "approval_mode_source": self._approval_mode_source(),
             },
             "symbols": symbols,
+            "top_down": self.top_down_state_payload(refresh=False, cached_only=True),
             "scanner": self.scanner_public_status(),
             "recent_decisions": recent,
             "pending_approvals": self.journal.public_pending_orders(),
@@ -1044,6 +1048,123 @@ class TradingViewWebhookEngine:
     def calendar_month(self) -> dict:
         self.calendar.config = {**self.config, "symbols": self.watchlist_symbols()}
         return self.calendar.month_payload()
+
+    def top_down_state_payload(
+        self,
+        symbol: str = "",
+        play: str = "",
+        side: str = "",
+        *,
+        confluence: Optional[dict] = None,
+        refresh: bool = False,
+        cached_only: bool = False,
+    ) -> dict:
+        cfg = merged_top_down_config(self.config)
+        cache_key = "|".join([
+            str(symbol or "").upper(),
+            str(play or ""),
+            str(side or "").lower(),
+            str((confluence or {}).get("action", "")),
+        ])
+        ttl = max(30, int(cfg.get("cache_seconds", 300) or 300))
+        now = time.monotonic()
+        with self.top_down_lock:
+            cached = self.top_down_cache.get(cache_key)
+            if not refresh and cached and now - float(cached.get("cached_at") or 0) < ttl:
+                return deepcopy(cached["payload"])
+            if cached_only:
+                return {
+                    "ok": True,
+                    "enabled": bool(cfg.get("enabled", True)),
+                    "version": "top_down_brain_v1",
+                    "mode": str(cfg.get("mode") or "advisory").lower(),
+                    "status": "not_loaded",
+                    "readback": "Top-down brain is configured; call /api/top-down?refresh=true or wait for the next signal to load fresh market context.",
+                }
+        try:
+            payload = build_top_down_state(
+                self.config,
+                self._top_down_universe_bars(symbol),
+                symbol=symbol,
+                play=play,
+                side=side,
+                confluence=confluence,
+                generated_at=datetime.now(timezone.utc),
+            )
+        except Exception as exc:
+            payload = {
+                "ok": False,
+                "enabled": bool(cfg.get("enabled", True)),
+                "version": "top_down_brain_v1",
+                "reason": f"top_down_unavailable:{type(exc).__name__}:{str(exc)[:160]}",
+                "mode": str(cfg.get("mode") or "advisory").lower(),
+                "guardrail": "Top-down evidence failed closed to advisory readback; order safety gates remain unchanged.",
+            }
+        with self.top_down_lock:
+            self.top_down_cache[cache_key] = {"cached_at": now, "payload": deepcopy(payload)}
+        return payload
+
+    def _top_down_universe_bars(self, symbol: str = "") -> Dict[str, List[Bar]]:
+        cfg = merged_top_down_config(self.config)
+        universe: List[str] = []
+        for item in [*cfg.get("breadth", {}).get("symbols", ["SPY", "QQQ", "IWM"]), symbol]:
+            cleaned = self._clean_top_down_symbol(str(item or ""))
+            if cleaned and cleaned not in universe:
+                universe.append(cleaned)
+        sector_groups = self.config.get("strategy", {}).get("correlation", {}).get("sector_groups", {}) or {}
+        watchlist = [str(item.get("symbol") or "").upper() for item in self.watchlist_symbols()]
+        for item in [*watchlist, *(sym for symbols in sector_groups.values() for sym in symbols)]:
+            cleaned = self._clean_top_down_symbol(str(item or ""))
+            if cleaned and "/" not in cleaned and cleaned not in universe:
+                universe.append(cleaned)
+        bars_by_symbol: Dict[str, List[Bar]] = {}
+        max_symbols = max(3, min(int(cfg.get("max_universe_symbols", 30) or 30), 60))
+        for ticker in universe[:max_symbols]:
+            try:
+                bars = self._fetch_top_down_daily_bars(ticker, days=max(120, int(cfg.get("daily_lookback", 120) or 120)))
+            except Exception as exc:
+                log_event(self.logger, "top_down_symbol_fetch_failed", {"symbol": ticker, "reason": str(exc)[:160]})
+                continue
+            if bars:
+                bars_by_symbol[ticker] = bars
+        return bars_by_symbol
+
+    def _clean_top_down_symbol(self, symbol: str) -> str:
+        cleaned = str(symbol or "").upper().strip()
+        return cleaned.replace("NASDAQ:", "").replace("NYSE:", "").replace("AMEX:", "")
+
+    def _fetch_top_down_daily_bars(self, symbol: str, *, days: int = 160) -> List[Bar]:
+        if self.broker.is_configured():
+            try:
+                now_et = datetime.now(ZoneInfo("America/New_York"))
+                data = self._alpaca_data_request(
+                    f"/v2/stocks/{symbol}/bars",
+                    params={
+                        "timeframe": "1Day",
+                        "start": (now_et.date() - timedelta(days=max(days * 2, 180))).isoformat(),
+                        "end": (now_et.date() + timedelta(days=1)).isoformat(),
+                        "limit": max(days, 120),
+                        "adjustment": "raw",
+                        "feed": str(self.scanner_config.get("stock_feed", "iex")),
+                    },
+                )
+                bars = [self._bar_from_alpaca(item) for item in data.get("bars") or []]
+                if bars:
+                    return bars[-days:]
+            except Exception as exc:
+                log_event(self.logger, "top_down_alpaca_daily_fallback", {"symbol": symbol, "reason": str(exc)[:160]})
+        from .core.trifecta import fetch_bars_yfinance
+
+        frame = fetch_bars_yfinance(symbol, "D", days_back=max(days * 2, 180))
+        if frame is None or frame.empty:
+            return []
+        bars: List[Bar] = []
+        for ts, row in frame.tail(days).iterrows():
+            pyts = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else self._timestamp(ts)
+            if pyts.tzinfo is None:
+                pyts = pyts.replace(tzinfo=ZoneInfo("America/New_York"))
+            bars.append(Bar(pyts, float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"]), float(row.get("Volume", 0) or 0)))
+        return bars
 
     def watchlist_symbols(self, include_disabled: bool = False) -> List[dict]:
         return [
@@ -4396,6 +4517,25 @@ class TradingViewWebhookEngine:
         )
         if trifecta_rejection is not None:
             return WebhookDecision("rejected", trifecta_rejection, symbol=symbol, side=side, play=play)
+        confluence = {
+            "enabled": True,
+            "action": "full_size",
+            "reason": "trifecta_higher_timeframes_aligned",
+            "signal_timeframe": tf,
+        }
+        top_down = self.top_down_state_payload(symbol=symbol, play=play, side=side, confluence=confluence)
+        metadata["top_down"] = top_down
+        activation = top_down.get("strategy_activation") if isinstance(top_down, dict) else {}
+        top_down_mode = str(top_down.get("mode") or "advisory").lower() if isinstance(top_down, dict) else "advisory"
+        if top_down_mode == "gate" and isinstance(activation, dict) and not activation.get("executable", True):
+            return WebhookDecision(
+                "rejected",
+                f"top_down_gate:{activation.get('status', 'inactive')}:{activation.get('reason', 'context_not_active')}",
+                symbol=symbol,
+                side=side,
+                play=play,
+                metadata={"top_down": top_down, "confluence": confluence},
+            )
 
         # ── Lower-timeframe signal quality gates (2m/5m only) ──
         tf = str(metadata.get("timeframe", ""))
@@ -4403,7 +4543,7 @@ class TradingViewWebhookEngine:
         if tf_rejection is not None:
             return tf_rejection
 
-        if self.webhook_config.get("paper_only", True) and "paper-api.alpaca.markets" not in self.broker.config.base_url:
+        if self.webhook_config.get("paper_only", True) and not self._paper_broker_endpoint():
             return WebhookDecision("rejected", "non_paper_alpaca_endpoint_blocked", symbol=symbol, side=side, play=play)
 
         account = {}
@@ -4486,6 +4626,18 @@ class TradingViewWebhookEngine:
             )
         if qty <= 0:
             return WebhookDecision("rejected", "position_size_zero", symbol=symbol, side=side, play=play)
+        if top_down_mode == "size" and isinstance(activation, dict):
+            top_down_multiplier = float(activation.get("size_multiplier") or 1.0)
+            if 0 < top_down_multiplier < 1.0:
+                before_top_down_qty = qty
+                qty = max(1, int(qty * top_down_multiplier))
+                max_dollar_risk = round(max_dollar_risk * (qty / max(before_top_down_qty, 1)), 2)
+                lot_plan = {
+                    **lot_plan,
+                    "top_down_multiplier": top_down_multiplier,
+                    "top_down_status": activation.get("status"),
+                    "top_down_reason": activation.get("reason"),
+                }
 
         take_profit_price = self._take_profit_price(side, entry_price, stop_price)
         client_order_id = f"velez-{hashlib.sha1(alert_id.encode('utf-8')).hexdigest()[:24]}"
@@ -4514,6 +4666,8 @@ class TradingViewWebhookEngine:
                 "max_dollar_risk": max_dollar_risk,
                 "max_risk_budget": max_risk_budget,
                 "lot_plan": lot_plan,
+                "confluence": confluence,
+                "top_down": top_down,
                 "alert_id": alert_id,
                 "source_metadata": metadata,
                 "scale_add": scale_metadata if scale_add else None,
@@ -4716,6 +4870,10 @@ class TradingViewWebhookEngine:
         env_enabled = os.getenv("VELEZ_EXECUTE_ORDERS", "false").lower() == "true"
         return bool(self.webhook_config.get("execute_orders", False) and env_enabled)
 
+    def _paper_broker_endpoint(self) -> bool:
+        base_url = str(getattr(getattr(self.broker, "config", None), "base_url", "") or "").strip().lower()
+        return base_url.startswith("https://paper-api.alpaca.markets") or base_url.startswith("sim://")
+
     def _requires_order_approval(self) -> bool:
         runtime_override = self.journal.get_setting("require_order_approval", None)
         if runtime_override is not None:
@@ -4853,6 +5011,8 @@ class TradingViewWebhookEngine:
             "max_dollar_risk": metadata.get("max_dollar_risk"),
             "max_risk_budget": metadata.get("max_risk_budget"),
             "lot_plan": metadata.get("lot_plan"),
+            "confluence": metadata.get("confluence"),
+            "top_down": metadata.get("top_down"),
             "payload_version": source.get("payload_version") or source.get("pine_version") or source.get("script_version") or source.get("version"),
             "alert_ref": hashlib.sha1(str(alert_id).encode("utf-8")).hexdigest()[:10],
             "chart_context": {
@@ -6447,6 +6607,16 @@ def create_app(config: dict):
     @app.get("/api/scanner/status")
     async def scanner_status() -> JSONResponse:
         return JSONResponse(content=engine.scanner_public_status(), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/top-down")
+    async def top_down_state(
+        symbol: str = Query("", max_length=20),
+        play: str = Query("", max_length=80),
+        side: str = Query("", max_length=10),
+        refresh: bool = Query(False),
+    ) -> JSONResponse:
+        result = await run_in_threadpool(engine.top_down_state_payload, symbol, play, side, refresh=refresh)
+        return JSONResponse(content=result, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/scanner/quality")
     async def scanner_quality(limit: int = Query(80, ge=1, le=200)) -> JSONResponse:
