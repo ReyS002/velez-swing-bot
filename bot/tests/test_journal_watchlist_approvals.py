@@ -262,7 +262,7 @@ def test_v61_journal_health_and_replay_payloads():
 
     health = engine.bot_health()
     assert health["ok"] is True
-    assert health["dashboard_version"] == "v6.21"
+    assert health["dashboard_version"] == "v6.22"
     assert any(item["name"] == "TradingView webhook" for item in health["components"])
 
     replay = engine.replay_payload({"symbol": "SPY", "scenario": "bull_elephant"})
@@ -504,6 +504,41 @@ def test_lifecycle_breakeven_action_replaces_due_stop(monkeypatch):
     assert broker.submitted[-1]["side"] == "sell"
     assert broker.submitted[-1]["type"] == "stop"
     assert broker.submitted[-1]["stop_price"] == "500.00"
+
+
+def test_lifecycle_readback_never_submits_or_cancels_without_explicit_auto_flags(monkeypatch):
+    monkeypatch.delenv("VELEZ_LIFECYCLE_AUTO_EXECUTE", raising=False)
+    monkeypatch.setenv("VELEZ_EXECUTE_ORDERS", "true")
+    cfg = config()
+    cfg["webhook"]["execute_orders"] = True
+    broker = FakeBroker(
+        positions=[
+            {
+                "symbol": "SPY",
+                "qty": "100",
+                "side": "long",
+                "avg_entry_price": "500.00",
+                "current_price": "503.00",
+            }
+        ],
+        orders=[
+            {
+                "id": "stop-1",
+                "symbol": "SPY",
+                "side": "sell",
+                "type": "stop",
+                "status": "new",
+                "qty": "100",
+                "stop_price": "498.00",
+            }
+        ],
+    )
+
+    lifecycle = TradingViewWebhookEngine(cfg, broker=broker).lifecycle_payload()
+
+    assert lifecycle["summary"]["open_positions"] == 1
+    assert broker.submitted == []
+    assert broker.canceled == []
 
 
 def test_lifecycle_partial_plan_and_needs_action_summary():
