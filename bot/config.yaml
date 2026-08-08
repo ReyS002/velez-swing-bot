@@ -227,7 +227,7 @@ velez_strategy:
       "60": ["240", "D"]
       "240": ["D"]
 symbols:
-- symbol: NVDA
+- symbol: SPY
   type: equity
   contract_multiplier: 1
   data_source: yfinance
@@ -239,19 +239,7 @@ symbols:
   data_source: yfinance
   timezone: US/Eastern
   session: rth
-- symbol: GOOGL
-  type: equity
-  contract_multiplier: 1
-  data_source: yfinance
-  timezone: US/Eastern
-  session: rth
-- symbol: AMZN
-  type: equity
-  contract_multiplier: 1
-  data_source: yfinance
-  timezone: US/Eastern
-  session: rth
-- symbol: NFLX
+- symbol: NVDA
   type: equity
   contract_multiplier: 1
   data_source: yfinance
@@ -263,7 +251,79 @@ symbols:
   data_source: yfinance
   timezone: US/Eastern
   session: rth
+- symbol: AAPL
+  type: equity
+  contract_multiplier: 1
+  data_source: yfinance
+  timezone: US/Eastern
+  session: rth
+- symbol: AMD
+  type: equity
+  contract_multiplier: 1
+  data_source: yfinance
+  timezone: US/Eastern
+  session: rth
 - symbol: TSLA
+  type: equity
+  contract_multiplier: 1
+  data_source: yfinance
+  timezone: US/Eastern
+  session: rth
+- symbol: AMZN
+  type: equity
+  contract_multiplier: 1
+  data_source: yfinance
+  timezone: US/Eastern
+  session: rth
+- symbol: META
+  type: equity
+  contract_multiplier: 1
+  data_source: yfinance
+  timezone: US/Eastern
+  session: rth
+- symbol: GOOGL
+  type: equity
+  contract_multiplier: 1
+  data_source: yfinance
+  timezone: US/Eastern
+  session: rth
+- symbol: PLTR
+  type: equity
+  contract_multiplier: 1
+  data_source: yfinance
+  timezone: US/Eastern
+  session: rth
+- symbol: HOOD
+  type: equity
+  contract_multiplier: 1
+  data_source: yfinance
+  timezone: US/Eastern
+  session: rth
+- symbol: MSTR
+  type: equity
+  contract_multiplier: 1
+  data_source: yfinance
+  timezone: US/Eastern
+  session: rth
+- symbol: COIN
+  type: equity
+  contract_multiplier: 1
+  data_source: yfinance
+  timezone: US/Eastern
+  session: rth
+- symbol: CRWD
+  type: equity
+  contract_multiplier: 1
+  data_source: yfinance
+  timezone: US/Eastern
+  session: rth
+- symbol: SHOP
+  type: equity
+  contract_multiplier: 1
+  data_source: yfinance
+  timezone: US/Eastern
+  session: rth
+- symbol: BABA
   type: equity
   contract_multiplier: 1
   data_source: yfinance
