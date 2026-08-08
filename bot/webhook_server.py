@@ -1078,6 +1078,28 @@ class TradingViewWebhookEngine:
         self.calendar.config = {**self.config, "symbols": self.watchlist_symbols()}
         return self.calendar.month_payload()
 
+    def vwap_state_payload(self, symbol: str = "") -> dict:
+        requested = str(symbol or "").upper().strip()
+        snapshot = self.strategy.indicator_snapshot(requested) if requested else {}
+        vwap = snapshot.get("vwap") if isinstance(snapshot, dict) else None
+        configured = self.config.get("velez_strategy", self.config.get("strategy", {})).get("vwap", {})
+        if not isinstance(vwap, dict) or not vwap:
+            return {
+                "ok": True,
+                "symbol": requested,
+                "enabled": bool(configured.get("enabled", True)),
+                "status": "not_loaded",
+                "readback": "VWAP is configured; it will populate after a completed bar for this symbol reaches the strategy engine.",
+            }
+        return {
+            "ok": True,
+            "symbol": requested,
+            "enabled": bool(vwap.get("enabled", True)),
+            "status": "ready" if vwap.get("available") else "unavailable",
+            "vwap": vwap,
+            "readback": str((vwap.get("reasons") or ["VWAP context available."])[0]),
+        }
+
     def top_down_state_payload(
         self,
         symbol: str = "",
@@ -2361,7 +2383,12 @@ class TradingViewWebhookEngine:
             "note": "TradingView Watchlist Alerts are configured inside TradingView. This panel confirms what the bot has actually received.",
         }
 
-    def lifecycle_payload(self, light: bool = False, refresh: bool = True) -> dict:
+    def lifecycle_payload(
+        self,
+        light: bool = False,
+        refresh: bool = True,
+        allow_auto_actions: bool = True,
+    ) -> dict:
         cached = self.journal.latest_lifecycle_snapshot()
         if not refresh:
             if cached:
@@ -2393,10 +2420,14 @@ class TradingViewWebhookEngine:
             },
         )
         # P1+V1+V2+P4: Auto-execute lifecycle actions
-        auto_results = self._auto_lifecycle_actions(
-            positions=positions,
-            open_orders=open_orders,
-            guardrails=guardrails,
+        auto_results = (
+            self._auto_lifecycle_actions(
+                positions=positions,
+                open_orders=open_orders,
+                guardrails=guardrails,
+            )
+            if allow_auto_actions
+            else []
         )
         # Filter guardrails to remove issues that were auto-repaired
         repaired_symbols = {
@@ -5523,18 +5554,20 @@ class TradingViewWebhookEngine:
     ) -> List[dict]:
         """Auto-execute lifecycle fixes: repair missing stops, move to breakeven, enforce time stops, force-close on max positions."""
         results: List[dict] = []
-        auto_execute = os.getenv("VELEZ_LIFECYCLE_AUTO_EXECUTE", "true").strip().lower() in {"1", "true", "yes", "on"}
-        if not auto_execute:
+        auto_execute = _bool_env("VELEZ_LIFECYCLE_AUTO_EXECUTE", False)
+        if not auto_execute or not self._execute_orders():
             return results
 
-        # P4: Force-close oldest position when max_positions exceeded
+        # Closing a position is materially different from protecting it. Keep it
+        # separately opt-in; otherwise the scanner pauses and the desk decides.
         max_positions = int(self.risk_config.get("max_open_positions") or 5)
-        if max_positions > 0 and len(positions) > max_positions:
+        auto_close_over_limit = _bool_env("VELEZ_LIFECYCLE_AUTO_CLOSE_OVER_LIMIT", False)
+        if auto_close_over_limit and max_positions > 0 and len(positions) > max_positions:
             excess = len(positions) - max_positions
             # Sort by timestamp (oldest first) using linked_decision or lifecycle data
             sorted_positions = sorted(
                 positions,
-                key=lambda p: str(p.get("linked_decision", {}).get("timestamp") or p.get("linked_alert_ref") or "z"),
+                key=lambda p: str((p.get("linked_decision") or {}).get("timestamp") or p.get("linked_alert_ref") or "z"),
             )
             for pos in sorted_positions[:excess]:
                 sym = str(pos.get("symbol") or "")
@@ -5568,8 +5601,7 @@ class TradingViewWebhookEngine:
         flatten_cfg = self.config.get("strategy", {}).get("exits", {}).get("auto_flatten", {})
         if flatten_cfg.get("enabled", True) and len(positions) > 0:
             try:
-                from datetime import datetime, timezone, timedelta
-                now_et = datetime.now(timezone.utc) - timedelta(hours=4)  # UTC to ET rough
+                now_et = datetime.now(ZoneInfo("America/New_York"))
                 minutes_before = int(flatten_cfg.get("minutes_before_close", 15))
                 # Market closes at 16:00 ET — flatten at 15:45 ET (19:45 UTC)
                 close_hour, close_min = 15, 60 - minutes_before  # 15:45
@@ -5612,40 +5644,11 @@ class TradingViewWebhookEngine:
             side = str(position.get("side") or "")
             qty = self._position_qty_string(position)
 
-            # P1: Auto-repair missing stops — also covers journal_decision when broker stop vanished (e.g. partial fills cancel bracket)
-            # P2: Deadline stop — if no broker stop linked within 2 min of entry, auto-close
-            if stop_source in ("missing", "journal_decision") and entry_price is not None and qty:
-                # Check if position is > 2 min old — deadline stop
-                try:
-                    entry_ts = position.get("entry_timestamp") or (position.get("linked_decision") or {}).get("timestamp")
-                    if entry_ts:
-                        from datetime import datetime, timezone
-                        entry_dt = self._parse_datetime(entry_ts)
-                        if entry_dt and (datetime.now(timezone.utc) - entry_dt).total_seconds() > 120:
-                            exit_side = "sell" if side == "long" else "buy"
-                            deadline_payload = {
-                                "symbol": symbol,
-                                "qty": qty,
-                                "side": exit_side,
-                                "type": "market",
-                                "time_in_force": self.webhook_config.get("time_in_force", "day"),
-                                "client_order_id": f"velez-deadline-stop-{symbol.lower()}-{secrets.token_hex(6)}",
-                            }
-                            try:
-                                self.broker.submit_order_payload(deadline_payload)
-                                results.append({"action": "deadline_stop_close", "symbol": symbol, "status": "submitted"})
-                                log_event(self.logger, "auto_deadline_stop_close", {"symbol": symbol, "reason": "stop_not_linked_within_2min"})
-                            except Exception as exc:
-                                results.append({"action": "deadline_stop_close", "symbol": symbol, "status": "failed", "error": str(exc)})
-                            continue  # skip emergency stop — we're closing instead
-                except Exception:
-                    pass  # fall through to emergency stop repair
-                # Emergency stop placement (original logic)
+            # Only repair an exact journaled structural stop. Never invent a
+            # protective price or auto-liquidate an unlinked position.
+            if stop_source == "journal_decision" and entry_price is not None and qty:
                 linked = position.get("linked_decision") or {}
-                emergency_stop = self._float(linked.get("stop_price")) or stop_price
-                if emergency_stop is None and entry_price:
-                    # Fallback: compute emergency stop at 5% from entry
-                    emergency_stop = round(entry_price * 0.95, 2) if side == "long" else round(entry_price * 1.05, 2)
+                emergency_stop = self._float(linked.get("stop_price"))
                 if emergency_stop is not None:
                     exit_side = "sell" if side == "long" else "buy"
                     stop_payload = {
@@ -6645,6 +6648,11 @@ def create_app(config: dict):
         refresh: bool = Query(False),
     ) -> JSONResponse:
         result = await run_in_threadpool(engine.top_down_state_payload, symbol, play, side, refresh=refresh)
+        return JSONResponse(content=result, headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/vwap")
+    async def vwap_state(symbol: str = Query("", max_length=20)) -> JSONResponse:
+        result = await run_in_threadpool(engine.vwap_state_payload, symbol)
         return JSONResponse(content=result, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/scanner/quality")

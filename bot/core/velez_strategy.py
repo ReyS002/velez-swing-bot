@@ -14,6 +14,7 @@ except Exception:  # pragma: no cover - keeps the strategy portable if zoneinfo 
 from .indicators import RollingATR, RollingSMA, RollingSlope
 from .types import Bar, OrderType, Signal, Side
 from .utils import safe_div
+from .vwap_engine import VWAPEngine, VWAPContext, attach_vwap_metadata, vwap_hard_filter_reason
 
 
 class VelezPlay(str, Enum):
@@ -93,6 +94,7 @@ class VelezContext:
     sma20_slope: RollingSlope
     sma200_slope: RollingSlope
     atr: RollingATR
+    vwap: VWAPEngine
     bars: Deque[Bar]
     bodies: Deque[float]
     volumes: Deque[float]
@@ -100,6 +102,7 @@ class VelezContext:
     prev_sma200: Optional[float] = None
     prev_close: Optional[float] = None
     last_location: Optional[LocationAssessment] = None
+    last_vwap: Optional[VWAPContext] = None
     color_add_used: Dict[str, bool] = field(default_factory=lambda: {"buy": False, "sell": False})
     opening_gap: OpeningGapState = field(default_factory=OpeningGapState)
 
@@ -152,6 +155,7 @@ class VelezInstitutionalStrategy:
             sma20_slope=RollingSlope(cfg.get("slope_lookback", 5)),
             sma200_slope=RollingSlope(cfg.get("slope_lookback", 5)),
             atr=RollingATR(cfg.get("atr_period", 14)),
+            vwap=VWAPEngine(cfg.get("vwap", {})),
             bars=deque(maxlen=history),
             bodies=deque(maxlen=history),
             volumes=deque(maxlen=history),
@@ -168,6 +172,8 @@ class VelezInstitutionalStrategy:
         slope20 = ctx.sma20_slope.update(sma20)
         slope200 = ctx.sma200_slope.update(sma200)
         atr = ctx.atr.update(bar)
+        vwap = ctx.vwap.update(bar, atr=atr)
+        ctx.last_vwap = vwap
         location = self._assess_location(bar, sma20, sma200, slope20, slope200, atr)
         ctx.last_location = location
         self._update_opening_gap_state(ctx, bar)
@@ -184,6 +190,12 @@ class VelezInstitutionalStrategy:
         signals.extend(self._nrb_acorn_signals(symbol, bar, shape, ctx, location, atr))
         signals.extend(self._fab4_trap_signals(symbol, bar, shape, ctx, location, atr))
         signals = self._prioritized_signals(signals)
+        signals = [
+            signal for signal in signals
+            if vwap_hard_filter_reason(vwap, signal.side, self.config.get("vwap", {})) is None
+        ]
+        for signal in signals:
+            attach_vwap_metadata(signal.metadata, vwap, signal.side, self.config.get("vwap", {}))
 
         ctx.prev_close = bar.close
         ctx.prev_sma20 = sma20
@@ -202,6 +214,7 @@ class VelezInstitutionalStrategy:
             "sma_slow": ctx.prev_sma200,
             "atr": ctx.atr.atr,
             "location": ctx.last_location,
+            "vwap": ctx.last_vwap.as_dict() if ctx.last_vwap is not None else {},
         }
 
     def _assess_location(

@@ -91,6 +91,42 @@ def test_tradingview_signal_webhook_proposes_paper_order_without_execution():
     assert float(stop_price) == 498.0
 
 
+def test_watchlist_allowlist_blocks_rogue_symbol_and_accepts_configured_symbol():
+    config = webhook_config()
+    config["scanner"] = {"symbols": ["NVDA"]}
+    engine = TradingViewWebhookEngine(config)
+
+    blocked = engine.handle_payload(
+        {"mode": "signal", "symbol": "OKTA", "side": "buy", "play": "elephant_bar", "entry_price": 100, "stop_price": 99},
+        path_token="test-secret",
+    )
+    allowed = engine.handle_payload(
+        {"mode": "signal", "symbol": "NVDA", "side": "buy", "play": "elephant_bar", "entry_price": 100, "stop_price": 99},
+        path_token="test-secret",
+    )
+
+    assert blocked["ok"] is False
+    assert blocked["decisions"][0]["reason"] == "symbol_not_in_watchlist:OKTA"
+    assert allowed["ok"] is True
+    assert allowed["decisions"][0]["status"] == "proposed"
+
+
+def test_vwap_readback_is_available_after_completed_strategy_bars():
+    config = webhook_config()
+    config["velez_strategy"] = {"vwap": {"weekly_vwap": True, "primary_variant": "weekly"}}
+    engine = TradingViewWebhookEngine(config, broker=ScannerBroker())
+    start = datetime(2026, 8, 3, 14, 30, tzinfo=timezone.utc)
+    engine.strategy.on_bar("SPY", Bar(start, 100, 100, 100, 100, 1_000))
+    engine.strategy.on_bar("SPY", Bar(start + timedelta(minutes=1), 101, 102, 101, 102, 1_000))
+
+    state = engine.vwap_state_payload("SPY")
+
+    assert state["ok"] is True
+    assert state["status"] == "ready"
+    assert state["vwap"]["session_vwap"] is not None
+    assert state["vwap"]["primary_variant"] == "weekly"
+
+
 def test_tradingview_webhook_rejects_bad_secret():
     config = {
         "risk": {"max_consecutive_losses": 3, "max_open_positions": 3, "max_daily_loss_pct": 0.02},

@@ -165,6 +165,27 @@ def test_elephant_bar_requires_location_and_builds_limit_when_chased():
     assert signal.metadata["location"]
 
 
+def test_vwap_metadata_is_advisory_and_disabled_mode_preserves_signal_identity():
+    bars = [
+        bar(0, 100.0, 100.4, 99.9, 100.2),
+        bar(1, 100.2, 100.5, 100.0, 100.3),
+        bar(2, 100.3, 100.6, 100.1, 100.4),
+        bar(3, 100.4, 100.7, 100.2, 100.5),
+        bar(4, 100.5, 100.8, 100.3, 100.6),
+        bar(5, 100.6, 103.3, 100.5, 103.2),
+    ]
+    enabled_signals = run_bars(VelezInstitutionalStrategy(cfg(), get_logger("test_swing_vwap_enabled")), bars)
+    disabled_signals = run_bars(
+        VelezInstitutionalStrategy(cfg(vwap={"enabled": False}), get_logger("test_swing_vwap_disabled")), bars
+    )
+    assert [(item.side, item.reason) for item in enabled_signals] == [(item.side, item.reason) for item in disabled_signals]
+    assert enabled_signals[0].metadata["vwap"]["available"] is True
+    assert enabled_signals[0].metadata["vwap_alert"].startswith("VWAP:")
+    assert disabled_signals[0].metadata["vwap_score"] == 0
+    assert disabled_signals[0].metadata["entry_price"] == enabled_signals[0].metadata["entry_price"]
+    assert disabled_signals[0].metadata["stop_price"] == enabled_signals[0].metadata["stop_price"]
+
+
 def test_no_location_blocks_otherwise_valid_elephant_bar():
     strategy = VelezInstitutionalStrategy(
         cfg(near_sma_pct=0.00001, near_sma_atr_mult=0.00001, extended_sma_pct=10.0, extended_sma_atr_mult=10.0),
