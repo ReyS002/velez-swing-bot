@@ -977,6 +977,12 @@ class TradingViewWebhookEngine:
             }
         self.seen_alert_ids.append(alert_id)
 
+        allowlist_decision = self._check_watchlist_allowlist(payload)
+        if allowlist_decision is not None:
+            self._remember_decisions([allowlist_decision], alert_id)
+            log_event(self.logger, "webhook_watchlist_rejected", {"symbol": allowlist_decision.symbol, "reason": allowlist_decision.reason})
+            return {"ok": False, "decisions": [allowlist_decision.__dict__]}
+
         mode = str(payload.get("mode", "signal")).lower()
         if mode == "bar":
             decisions = self._handle_bar_payload(payload, alert_id)
@@ -987,6 +993,29 @@ class TradingViewWebhookEngine:
 
         self._remember_decisions(decisions, alert_id)
         return {"ok": all(d.status not in {"rejected", "error"} for d in decisions), "decisions": [d.__dict__ for d in decisions]}
+
+    def _check_watchlist_allowlist(self, payload: dict) -> Optional["WebhookDecision"]:
+        """Reject TradingView-sourced signals for symbols not in the active watchlist.
+
+        Prevents stray/rogue Pine alerts (e.g. a forgotten alert on a chart that
+        isn't part of the curated watchlist) from placing trades that bypass the
+        volume/volatility screening applied to config.yaml's scanner.symbols list.
+        Internal scanner-originated signals never hit this path since they only
+        ever loop over scanner_config['symbols'] to begin with.
+        """
+        try:
+            symbol = self._symbol(payload)
+        except Exception:
+            return None  # Let normal payload validation handle malformed symbol fields
+        allowed = set(self.scanner_config.get("symbols", []) or [])
+        allowed |= set(self.symbol_config.keys())
+        if allowed and symbol not in allowed:
+            return WebhookDecision(
+                status="rejected",
+                reason=f"symbol_not_in_watchlist:{symbol}",
+                symbol=symbol,
+            )
+        return None
 
     def dashboard_state(self) -> dict:
         broker_status = self.broker.validate_connection() if self.broker.is_configured() else {"ok": False, "reason": "missing_credentials"}
