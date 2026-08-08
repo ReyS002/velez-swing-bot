@@ -91,6 +91,26 @@ def test_tradingview_signal_webhook_proposes_paper_order_without_execution():
     assert float(stop_price) == 498.0
 
 
+def test_watchlist_allowlist_blocks_rogue_symbol_and_accepts_configured_symbol():
+    config = webhook_config()
+    config["scanner"] = {"symbols": ["NVDA"]}
+    engine = TradingViewWebhookEngine(config)
+
+    blocked = engine.handle_payload(
+        {"mode": "signal", "symbol": "OKTA", "side": "buy", "play": "elephant_bar", "entry_price": 100, "stop_price": 99},
+        path_token="test-secret",
+    )
+    allowed = engine.handle_payload(
+        {"mode": "signal", "symbol": "NVDA", "side": "buy", "play": "elephant_bar", "entry_price": 100, "stop_price": 99},
+        path_token="test-secret",
+    )
+
+    assert blocked["ok"] is False
+    assert blocked["decisions"][0]["reason"] == "symbol_not_in_watchlist:OKTA"
+    assert allowed["ok"] is True
+    assert allowed["decisions"][0]["status"] == "proposed"
+
+
 def test_vwap_readback_is_available_after_completed_strategy_bars():
     config = webhook_config()
     config["velez_strategy"] = {"vwap": {"weekly_vwap": True, "primary_variant": "weekly"}}

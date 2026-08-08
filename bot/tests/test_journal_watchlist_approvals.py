@@ -87,7 +87,10 @@ def config():
             "paper_only": True,
             "time_in_force": "day",
         },
-        "symbols": [{"symbol": "SPY", "type": "equity", "contract_multiplier": 1, "session": "rth"}],
+        "symbols": [
+            {"symbol": "SPY", "type": "equity", "contract_multiplier": 1, "session": "rth"},
+            {"symbol": "NVDA", "type": "equity", "contract_multiplier": 1, "session": "rth"},
+        ],
         "velez_strategy": {},
     }
 

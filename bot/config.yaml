@@ -113,8 +113,9 @@ strategy:
       mega_tech:
       - GOOGL
       - AMZN
-      - NFLX
       - MSFT
+      - AAPL
+      - META
       semiconductors:
       - NVDA
       consumer_tech:
@@ -124,17 +125,35 @@ strategy:
       - QQQ
       - IWM
       - TQQQ
+      high_beta:
+      - PLTR
+      - HOOD
+      - MSTR
+      - COIN
+      - CRWD
+      - SHOP
+      - BABA
 scanner:
   enabled: true
   auto_submit: true
   symbols:
-  - GOOGL
-  - AMZN
-  - MSFT
-  - NFLX
-  - NVDA
-  - TSLA
+  - SPY
   - QQQ
+  - NVDA
+  - MSFT
+  - AAPL
+  - AMD
+  - TSLA
+  - AMZN
+  - META
+  - GOOGL
+  - PLTR
+  - HOOD
+  - MSTR
+  - COIN
+  - CRWD
+  - SHOP
+  - BABA
   interval_seconds: 900
   pause_when_exposure_full: true
   session_filter_enabled: true
