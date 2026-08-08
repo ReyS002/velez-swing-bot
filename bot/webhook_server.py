@@ -1049,6 +1049,28 @@ class TradingViewWebhookEngine:
         self.calendar.config = {**self.config, "symbols": self.watchlist_symbols()}
         return self.calendar.month_payload()
 
+    def vwap_state_payload(self, symbol: str = "") -> dict:
+        requested = str(symbol or "").upper().strip()
+        snapshot = self.strategy.indicator_snapshot(requested) if requested else {}
+        vwap = snapshot.get("vwap") if isinstance(snapshot, dict) else None
+        configured = self.config.get("velez_strategy", self.config.get("strategy", {})).get("vwap", {})
+        if not isinstance(vwap, dict) or not vwap:
+            return {
+                "ok": True,
+                "symbol": requested,
+                "enabled": bool(configured.get("enabled", True)),
+                "status": "not_loaded",
+                "readback": "VWAP is configured; it will populate after a completed bar for this symbol reaches the strategy engine.",
+            }
+        return {
+            "ok": True,
+            "symbol": requested,
+            "enabled": bool(vwap.get("enabled", True)),
+            "status": "ready" if vwap.get("available") else "unavailable",
+            "vwap": vwap,
+            "readback": str((vwap.get("reasons") or ["VWAP context available."])[0]),
+        }
+
     def top_down_state_payload(
         self,
         symbol: str = "",
@@ -6616,6 +6638,11 @@ def create_app(config: dict):
         refresh: bool = Query(False),
     ) -> JSONResponse:
         result = await run_in_threadpool(engine.top_down_state_payload, symbol, play, side, refresh=refresh)
+        return JSONResponse(content=result, headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/vwap")
+    async def vwap_state(symbol: str = Query("", max_length=20)) -> JSONResponse:
+        result = await run_in_threadpool(engine.vwap_state_payload, symbol)
         return JSONResponse(content=result, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/scanner/quality")

@@ -148,6 +148,45 @@ velez_strategy:
   sma_slow: 200
   atr_period: 14
   slope_lookback: 5
+  vwap:
+    # Swing VWAP uses the current week as its primary reference; the session
+    # value remains supplemental. No VWAP rule changes execution by default.
+    enabled: true
+    bias_enabled: true
+    scoring_enabled: true
+    setup_confluence_enabled: true
+    hard_filter_enabled: false
+    session_vwap: true
+    weekly_vwap: true
+    anchored_vwap: false
+    primary_variant: weekly
+    timezone: America/New_York
+    market_session: equity_rth
+    include_extended_hours: false
+    session_open: "09:30"
+    session_close: "16:00"
+    slope_lookback: 5
+    reclaim_confirmation_bars: 2
+    bounce_confirmation_bars: 2
+    score:
+      above_vwap: 5
+      aligned_slope: 3
+      reclaim: 4
+      bounce: 4
+      rejection: 4
+      strong_disagreement_penalty: -5
+      flat_choppy_penalty: -3
+      excessive_extension_penalty: -3
+    thresholds:
+      neutral_distance_pct: 0.001
+      compression_distance_atr: 0.20
+      compression_distance_pct: 0.001
+      compression_crosses: 2
+      compression_lookback: 5
+      extension_distance_atr: 1.50
+      extension_distance_pct: 0.015
+      slope_flat_atr_fraction: 0.02
+      slope_flat_price_pct: 0.0001
   history_bars: 240
   near_sma_pct: 0.0025
   near_sma_atr_mult: 0.35
