@@ -187,6 +187,9 @@ VELEZ_NOTIFY_TELEGRAM_AUDIO_TIMEOUT_SECONDS=20
 VELEZ_NOTIFY_MIN_SEVERITY=warn
 VELEZ_NOTIFY_COOLDOWN_SECONDS=1800
 VELEZ_LIFECYCLE_WARN_MISSING_STOP=true
+VELEZ_LIFECYCLE_AUTO_EXECUTE=false
+VELEZ_LIFECYCLE_UNPROTECTED_DEADLINE_ENABLED=true
+VELEZ_LIFECYCLE_UNPROTECTED_DEADLINE_SECONDS=120
 VELEZ_LIFECYCLE_AUTORECORD_OUTCOMES=true
 VELEZ_LIFECYCLE_FILL_LOOKBACK_DAYS=7
 VELEZ_LIFECYCLE_ORDER_LIMIT=100
@@ -196,6 +199,7 @@ Dashboard auth protects `/dashboard`, dashboard static assets, and `/api/*`. Kee
 
 Notification targets are optional but recommended for unattended operation. Lifecycle guardrails send deduped notifications when a file sink, generic webhook, Discord webhook, or Telegram bot/chat pair is configured.
 The authenticated `/api/notifications/test` endpoint and Risk Command Center test button can verify delivery. Lifecycle notifications also include new fills and position-count changes after the first baseline reconciliation.
+When `VELEZ_EXECUTE_ORDERS=true` and `VELEZ_LIFECYCLE_AUTO_EXECUTE=true`, any reconciled open position still missing a verified broker-side stop after `VELEZ_LIFECYCLE_UNPROTECTED_DEADLINE_SECONDS`, default `120`, is flattened with a market order as the deadline backstop.
 When PocketTTS is enabled, set `VELEZ_NOTIFY_TELEGRAM_AUDIO_ENABLED=true` to attach an MP3 spoken readback after Telegram text alerts. Use `POST /api/brief/daily/telegram` to push an on-demand daily brief with the same text-and-audio flow.
 
 Lot sizing is configured in `bot/config.yaml` under `risk.lot_sizing`. The live default is a 1-to-4 lot ladder where each lot is 25% of the max risk budget, so 4 lots equals full configured risk, not 4x risk.

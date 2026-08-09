@@ -5648,6 +5648,35 @@ class TradingViewWebhookEngine:
             side = str(position.get("side") or "")
             qty = self._position_qty_string(position)
 
+            deadline_action = self._unprotected_position_deadline_action(position)
+            if deadline_action:
+                try:
+                    self._cancel_symbol_stop_orders(position)
+                    self.broker.submit_order_payload(deadline_action["payload"])
+                    results.append(
+                        {
+                            "action": "deadline_stop_close",
+                            "symbol": symbol,
+                            "status": "submitted",
+                            "age_seconds": deadline_action["age_seconds"],
+                            "deadline_seconds": deadline_action["deadline_seconds"],
+                            "reason": deadline_action["reason"],
+                        }
+                    )
+                    log_event(
+                        self.logger,
+                        "auto_deadline_stop_close",
+                        {
+                            "symbol": symbol,
+                            "age_seconds": deadline_action["age_seconds"],
+                            "deadline_seconds": deadline_action["deadline_seconds"],
+                            "reason": deadline_action["reason"],
+                        },
+                    )
+                except Exception as exc:
+                    results.append({"action": "deadline_stop_close", "symbol": symbol, "status": "failed", "error": str(exc)})
+                continue
+
             # Only repair an exact journaled structural stop. Never invent a
             # protective price or auto-liquidate an unlinked position.
             if stop_source == "journal_decision" and entry_price is not None and qty:
@@ -5773,6 +5802,64 @@ class TradingViewWebhookEngine:
                         pass
 
         return results
+
+    def _unprotected_position_deadline_action(self, position: dict) -> Optional[dict]:
+        if not _bool_env("VELEZ_LIFECYCLE_UNPROTECTED_DEADLINE_ENABLED", True):
+            return None
+        symbol = str(position.get("symbol") or "").upper().strip()
+        if not symbol:
+            return None
+        stop_source = str(position.get("stop_source") or "").strip().lower()
+        if stop_source == "broker_open_order":
+            return None
+        if stop_source not in {"missing", "journal_decision"}:
+            return None
+        qty = self._position_qty_string(position)
+        if not qty:
+            return None
+        age_seconds = self._unprotected_position_age_seconds(position)
+        if age_seconds is None:
+            return None
+        deadline_seconds = self._int_env(
+            "VELEZ_LIFECYCLE_UNPROTECTED_DEADLINE_SECONDS",
+            int(self.config.get("lifecycle", {}).get("unprotected_deadline_seconds", 120) or 120),
+            minimum=30,
+            maximum=3600,
+        )
+        if age_seconds < deadline_seconds:
+            return None
+        side = str(position.get("side") or "")
+        return {
+            "age_seconds": age_seconds,
+            "deadline_seconds": deadline_seconds,
+            "reason": "position_still_unprotected_after_deadline",
+            "payload": {
+                "symbol": symbol,
+                "qty": qty,
+                "side": "sell" if side == "long" else "buy",
+                "type": "market",
+                "time_in_force": self.webhook_config.get("time_in_force", "day"),
+                "client_order_id": f"velez-deadline-stop-{symbol.lower()}-{secrets.token_hex(6)}",
+            },
+        }
+
+    def _unprotected_position_age_seconds(self, position: dict) -> Optional[int]:
+        linked = position.get("linked_decision") or {}
+        latest_fill = position.get("latest_fill") or {}
+        for value in (
+            position.get("entry_timestamp"),
+            linked.get("timestamp"),
+            latest_fill.get("transaction_time"),
+            latest_fill.get("timestamp"),
+            latest_fill.get("created_at"),
+            position.get("submitted_at"),
+            position.get("created_at"),
+        ):
+            if value:
+                seconds = self._seconds_since(value)
+                if seconds is not None:
+                    return seconds
+        return None
 
     def _partials_taken_for_symbol(self, symbol: str) -> set:
         taken_json = self.journal.get_setting(f"partials_taken.{symbol.upper()}", "[]")

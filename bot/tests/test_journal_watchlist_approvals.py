@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from bot.webhook_server import TradingViewWebhookEngine
@@ -507,6 +508,71 @@ def test_lifecycle_breakeven_action_replaces_due_stop(monkeypatch):
     assert broker.submitted[-1]["side"] == "sell"
     assert broker.submitted[-1]["type"] == "stop"
     assert broker.submitted[-1]["stop_price"] == "500.00"
+
+
+def test_lifecycle_deadline_closes_unprotected_position_after_120_seconds(monkeypatch):
+    monkeypatch.setenv("VELEZ_LIFECYCLE_AUTO_EXECUTE", "true")
+    monkeypatch.setenv("VELEZ_LIFECYCLE_UNPROTECTED_DEADLINE_SECONDS", "120")
+    monkeypatch.setenv("VELEZ_EXECUTE_ORDERS", "true")
+    cfg = config()
+    cfg["webhook"]["execute_orders"] = True
+    broker = FakeBroker()
+    engine = TradingViewWebhookEngine(cfg, broker=broker)
+    entry_ts = (datetime.now(timezone.utc) - timedelta(seconds=121)).isoformat()
+
+    actions = engine._auto_lifecycle_actions(
+        positions=[
+            {
+                "symbol": "SPY",
+                "qty": "100",
+                "side": "long",
+                "entry_price": 500.0,
+                "stop_source": "missing",
+                "entry_timestamp": entry_ts,
+            }
+        ],
+        open_orders=[],
+        guardrails=[],
+    )
+
+    assert actions[0]["action"] == "deadline_stop_close"
+    assert actions[0]["deadline_seconds"] == 120
+    assert actions[0]["reason"] == "position_still_unprotected_after_deadline"
+    assert broker.submitted[0]["symbol"] == "SPY"
+    assert broker.submitted[0]["side"] == "sell"
+    assert broker.submitted[0]["type"] == "market"
+    assert broker.submitted[0]["client_order_id"].startswith("velez-deadline-stop-spy-")
+
+
+def test_lifecycle_repairs_unprotected_position_before_deadline(monkeypatch):
+    monkeypatch.setenv("VELEZ_LIFECYCLE_AUTO_EXECUTE", "true")
+    monkeypatch.setenv("VELEZ_LIFECYCLE_UNPROTECTED_DEADLINE_SECONDS", "120")
+    monkeypatch.setenv("VELEZ_EXECUTE_ORDERS", "true")
+    cfg = config()
+    cfg["webhook"]["execute_orders"] = True
+    broker = FakeBroker()
+    engine = TradingViewWebhookEngine(cfg, broker=broker)
+    entry_ts = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
+
+    actions = engine._auto_lifecycle_actions(
+        positions=[
+            {
+                "symbol": "SPY",
+                "qty": "100",
+                "side": "long",
+                "entry_price": 500.0,
+                "stop_source": "journal_decision",
+                "entry_timestamp": entry_ts,
+                "linked_decision": {"timestamp": entry_ts, "stop_price": 498.0},
+            }
+        ],
+        open_orders=[],
+        guardrails=[],
+    )
+
+    assert actions[0]["action"] == "emergency_stop_repair"
+    assert broker.submitted[0]["type"] == "stop"
+    assert broker.submitted[0]["stop_price"] == "498.00"
 
 
 def test_lifecycle_readback_never_submits_or_cancels_without_explicit_auto_flags(monkeypatch):
