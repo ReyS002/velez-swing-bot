@@ -6753,6 +6753,41 @@ def create_app(config: dict):
     async def dashboard_state() -> dict:
         return engine.dashboard_state()
 
+    @app.get("/api/settings/trading-mode")
+    async def get_trading_mode() -> dict:
+        settings_path = "/app/data/trading_bull_settings.json"
+        if not os.path.exists(settings_path):
+            return {"trading_mode": "dual"}
+        try:
+            with open(settings_path, "r") as f:
+                settings = json.load(f)
+            return {"trading_mode": settings.get("trading_mode", "dual")}
+        except Exception as e:
+            return {"error": str(e), "trading_mode": "dual"}
+
+    @app.patch("/api/settings/trading-mode")
+    async def update_trading_mode(request: Request) -> dict:
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+        mode = str(body.get("trading_mode", "dual")).lower().strip()
+        if mode not in {"intraday", "swing", "dual"}:
+            raise HTTPException(status_code=400, detail="trading_mode must be 'intraday', 'swing', or 'dual'")
+        
+        settings_path = "/app/data/trading_bull_settings.json"
+        try:
+            settings = {}
+            if os.path.exists(settings_path):
+                with open(settings_path, "r") as f:
+                    settings = json.load(f)
+            settings["trading_mode"] = mode
+            with open(settings_path, "w") as f:
+                json.dump(settings, f, indent=2)
+            return {"ok": True, "trading_mode": mode}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to save settings: {e}")
+
     @app.get("/api/bot/health")
     async def bot_health() -> JSONResponse:
         result = await run_in_threadpool(engine.bot_health)
