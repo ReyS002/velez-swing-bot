@@ -30,6 +30,7 @@ except ImportError:  # pragma: no cover - deployment requirements install PyJWT.
 from .brokers.alpaca import AlpacaPaperBroker
 from .brokers.simulated import SimulatedBroker
 from .brokers.tradovate import TradovateBroker
+from .core.prop_manager import PropProfileManager
 from .calendar_feeds import CalendarFeedService
 from .core.risk import RiskManager
 from .core.types import Bar, OrderType, Side, Signal
@@ -931,6 +932,9 @@ class TradingViewWebhookEngine:
         self.recent_decisions: Deque[dict] = deque(maxlen=self.webhook_config.get("dashboard_decisions", 80))
         self.started_at = datetime.now(timezone.utc)
         self.journal = JournalStore(self.config)
+        self.prop_manager = PropProfileManager(self.journal)
+        self.prop_manager.apply_to_risk_manager(self.risk)
+        self.prop_manager.apply_to_broker(self.broker)
         self.winston = WinstonAIService(self)
         self.calendar = CalendarFeedService(self.broker, self.config, self.recent_decisions, journal=self.journal)
         self.scanner_strategy = VelezInstitutionalStrategy(config.get("velez_strategy", config.get("strategy", {})), self.logger)
@@ -6914,6 +6918,28 @@ def create_app(config: dict):
     async def risk_status() -> JSONResponse:
         result = await run_in_threadpool(engine.risk_status_payload)
         return JSONResponse(content=result, headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/prop/profiles")
+    async def prop_profiles() -> JSONResponse:
+        result = {
+            "active_key": engine.prop_manager.active_profile_key,
+            "active_profile": engine.prop_manager.get_active_profile(),
+            "profiles": engine.prop_manager.list_profiles()
+        }
+        return JSONResponse(content=result, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/prop/profile/select")
+    async def select_prop_profile(request: Request) -> JSONResponse:
+        try:
+            payload = await _payload_from_request(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        profile_key = str(payload.get("profile_key", "")).strip()
+        try:
+            profile = engine.prop_manager.select_profile(profile_key, risk_manager=engine.risk, broker=engine.broker)
+            return JSONResponse(content={"ok": True, "active_key": profile_key, "profile": profile})
+        except Exception as exc:
+            return JSONResponse(content={"ok": False, "reason": str(exc)}, status_code=400)
 
     @app.post("/api/risk/approval-mode")
     async def risk_approval_mode(request: Request) -> JSONResponse:
