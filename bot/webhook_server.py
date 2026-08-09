@@ -4916,7 +4916,13 @@ class TradingViewWebhookEngine:
         symbol = str(payload.get("broker_symbol") or payload.get("symbol") or "").upper().strip()
         if not symbol:
             raise ValueError("payload requires symbol or broker_symbol")
-        return symbol.replace("NASDAQ:", "").replace("NYSE:", "").replace("AMEX:", "")
+        symbol = symbol.replace("NASDAQ:", "").replace("NYSE:", "").replace("AMEX:", "")
+        # Strip exchange prefixes (e.g. CME_MINI:, CME:, CBOT:, COMEX:, NYMEX:, etc.)
+        symbol = re.sub(r'^[A-Z0-9_]+:', '', symbol)
+        # Strip continuous contract suffixes (e.g. 1!, 2!, !)
+        symbol = re.sub(r'\d+!$', '', symbol)
+        symbol = re.sub(r'!$', '', symbol)
+        return symbol
 
     def _risk_budget(self, equity: float) -> float:
         equity_risk = equity * float(self.risk_config.get("risk_per_trade", 0.005))

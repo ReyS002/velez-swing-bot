@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -72,6 +74,39 @@ class TradovateBroker:
 
     def is_configured(self) -> bool:
         return bool(self.config.username and self.config.password and self.config.app_id)
+
+    def tradovate_symbol(self, symbol: str) -> str:
+        if not symbol:
+            return ""
+        symbol = str(symbol).upper().strip()
+        symbol = re.sub(r'^[A-Z0-9_]+:', '', symbol)
+        symbol = re.sub(r'\d+!$', '', symbol)
+        symbol = re.sub(r'!$', '', symbol)
+        
+        mapping_str = os.getenv("TRADOVATE_SYMBOL_MAP", "{}")
+        try:
+            mapping = json.loads(mapping_str)
+            if isinstance(mapping, dict) and symbol in mapping:
+                return str(mapping[symbol])
+        except Exception:
+            pass
+        return symbol
+
+    def _inverse_tradovate_symbol(self, symbol: str) -> str:
+        if not symbol:
+            return ""
+        symbol = str(symbol).upper().strip()
+        
+        mapping_str = os.getenv("TRADOVATE_SYMBOL_MAP", "{}")
+        try:
+            mapping = json.loads(mapping_str)
+            if isinstance(mapping, dict):
+                for root, mapped in mapping.items():
+                    if str(mapped).upper().strip() == symbol:
+                        return root
+        except Exception:
+            pass
+        return symbol
 
     def _authenticate(self) -> None:
         if self.access_token and time.time() < self.token_expiry:
@@ -212,7 +247,7 @@ class TradovateBroker:
                     net_pos = int(p.get("netPos", 0))
                     if net_pos != 0:
                         raw_list.append({
-                            "symbol": p.get("contractId") or p.get("symbol", ""),
+                            "symbol": self._inverse_tradovate_symbol(p.get("contractId") or p.get("symbol", "")),
                             "qty": str(abs(net_pos)),
                             "side": "long" if net_pos > 0 else "short",
                             "avg_entry_price": str(p.get("avgPrice", 0.0)),
@@ -244,7 +279,7 @@ class TradovateBroker:
                     out.append({
                         "id": str(o.get("id")),
                         "client_order_id": str(o.get("clOrdId", f"tradovate-{o.get('id')}")),
-                        "symbol": str(o.get("symbol", "")),
+                        "symbol": self._inverse_tradovate_symbol(str(o.get("symbol", ""))),
                         "side": "buy" if o.get("action") == "Buy" else "sell",
                         "qty": str(o.get("orderQty", 1)),
                         "status": ord_status,
@@ -282,7 +317,7 @@ class TradovateBroker:
             raise ValueError("qty must be positive")
 
         return {
-            "symbol": symbol,
+            "symbol": self.tradovate_symbol(symbol),
             "action": "Buy" if side.lower() == "buy" else "Sell",
             "orderQty": qty,
             "orderType": "Market" if order_type.lower() == "market" else "Limit",
