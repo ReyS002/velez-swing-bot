@@ -29,6 +29,7 @@ except ImportError:  # pragma: no cover - deployment requirements install PyJWT.
 
 from .brokers.alpaca import AlpacaPaperBroker
 from .brokers.simulated import SimulatedBroker
+from .brokers.tradovate import TradovateBroker
 from .calendar_feeds import CalendarFeedService
 from .core.risk import RiskManager
 from .core.types import Bar, OrderType, Side, Signal
@@ -903,7 +904,10 @@ class WinstonAIService:
 
 
 def _create_broker():
-    """Auto-detect broker: Alpaca if keys present, Simulated otherwise."""
+    """Auto-detect broker: Tradovate if configured, Alpaca if configured, Simulated otherwise."""
+    tradovate = TradovateBroker()
+    if tradovate.is_configured():
+        return tradovate
     alpaca = AlpacaPaperBroker()
     if alpaca.is_configured():
         return alpaca
