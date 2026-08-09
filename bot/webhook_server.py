@@ -961,6 +961,32 @@ class TradingViewWebhookEngine:
             "today": self._scanner_today_summary(),
         }
 
+    def _check_trading_mode_allowed(self) -> bool:
+        """Read central trading mode settings and check if this bot's profile is allowed to execute.
+        
+        Profile is determined by config['top_down']['profile'].
+        - "velez_intraday" or "bull_pilot" -> Intraday
+        - "velez_swing" -> Swing
+        """
+        profile = self.config.get("top_down", {}).get("profile", "velez_intraday")
+        settings_path = "/app/data/trading_bull_settings.json"
+        if not os.path.exists(settings_path):
+            return True
+        try:
+            with open(settings_path, "r") as f:
+                settings = json.load(f)
+            mode = settings.get("trading_mode", "dual").lower().strip()
+            if mode == "dual":
+                return True
+            elif mode == "intraday":
+                return profile in {"velez_intraday", "bull_pilot"}
+            elif mode == "swing":
+                return profile == "velez_swing"
+            return True
+        except Exception as e:
+            self.logger.warning(f"Error reading central settings file: {e}")
+            return True
+
     def handle_payload(
         self,
         payload: dict,
@@ -984,6 +1010,16 @@ class TradingViewWebhookEngine:
                 "decisions": [decision.__dict__],
             }
         self.seen_alert_ids.append(alert_id)
+
+        # Check central trading mode toggle
+        if not self._check_trading_mode_allowed():
+            decision = WebhookDecision(
+                status="ignored",
+                reason="strategy_inactive_by_central_mode_setting"
+            )
+            self._remember_decisions([decision], alert_id)
+            log_event(self.logger, "webhook_mode_inactive", {"reason": f"Strategy profile {self.config.get('top_down', {}).get('profile')} inactive for mode settings"})
+            return {"ok": True, "decisions": [decision.__dict__]}
 
         allowlist_decision = self._check_watchlist_allowlist(payload)
         if allowlist_decision is not None:
