@@ -33,6 +33,7 @@ from .brokers.tradovate import TradovateBroker
 from .core.prop_manager import PropProfileManager
 from .calendar_feeds import CalendarFeedService
 from .core.risk import RiskManager
+from .core.bullwarden import BullWardenClient
 from .core.types import Bar, OrderType, Side, Signal
 from .core.utils import get_logger, log_event
 from .core.trifecta import check_trifecta
@@ -926,6 +927,7 @@ class TradingViewWebhookEngine:
         self.strategy = VelezInstitutionalStrategy(config.get("velez_strategy", config.get("strategy", {})), self.logger)
         self.risk = RiskManager(self.risk_config)
         self.broker = broker or _create_broker()
+        self.bullwarden = BullWardenClient()
         self.top_down_cache: Dict[str, Any] = {}
         self.top_down_lock = threading.Lock()
         self.seen_alert_ids: Deque[str] = deque(maxlen=self.webhook_config.get("dedupe_cache_size", 1000))
@@ -4791,6 +4793,18 @@ class TradingViewWebhookEngine:
             if requires_approval and self._execute_orders():
                 decision.reason = "approval_required"
             log_event(self.logger, "order_proposed", decision.__dict__)
+            return decision
+
+        bullwarden_guard = self.bullwarden.entry_allowed(
+            self.broker,
+            source="velez-swing",
+            order_ref=client_order_id,
+        )
+        decision.metadata["bullwarden"] = bullwarden_guard
+        if not bullwarden_guard.get("allowed"):
+            decision.status = "rejected"
+            decision.reason = f"bullwarden_entry_blocked:{bullwarden_guard.get('reason')}"
+            log_event(self.logger, "order_blocked_bullwarden", decision.__dict__)
             return decision
 
         try:
