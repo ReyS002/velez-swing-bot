@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from ..core.types import Fill, Order, OrderType, Position
+from .alpaca_retry import AlpacaStopRetryMixin
 
 
 @dataclass(frozen=True)
@@ -29,7 +30,7 @@ class AlpacaPaperConfig:
         )
 
 
-class AlpacaPaperBroker:
+class AlpacaPaperBroker(AlpacaStopRetryMixin):
     """Small REST adapter for Alpaca paper trading.
 
     The bot uses raw REST calls instead of an SDK so the paper-trading path stays

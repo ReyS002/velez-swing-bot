@@ -2664,28 +2664,29 @@ class TradingViewWebhookEngine:
         qty = self._position_qty_string(position)
         if not qty:
             return {"ok": False, "reason": "missing_position_qty", "symbol": cleaned_symbol}
-        payload = {
-            "symbol": cleaned_symbol,
-            "qty": qty,
-            "side": "sell" if str(position.get("side")) == "long" else "buy",
-            "type": "stop",
-            "time_in_force": self.webhook_config.get("time_in_force", "day"),
-            "stop_price": f"{stop_price:.2f}",
-            "client_order_id": f"manual-repair-stop-{cleaned_symbol.lower()}-{secrets.token_hex(8)}",
-        }
+        entry_side = "buy" if str(position.get("side")) == "long" else "sell"
+        client_order_id = f"manual-repair-stop-{cleaned_symbol.lower()}-{secrets.token_hex(8)}"
         try:
-            response = self.broker.submit_order_payload(payload)
+            response = self._submit_verified_protective_stop(
+                symbol=cleaned_symbol,
+                qty=qty,
+                entry_side=entry_side,
+                stop_price=stop_price,
+                client_order_id=client_order_id,
+            )
         except Exception as exc:
             return {"ok": False, "reason": f"broker_stop_repair_failed:{exc}", "symbol": cleaned_symbol}
+        if response.get("status") == "skipped_no_open_position":
+            return {"ok": True, "status": "position_flat_before_repair", "symbol": cleaned_symbol}
         self._notify_event(
             key=f"repair-stop:{cleaned_symbol}:{datetime.now(timezone.utc).isoformat()}",
             title="Trading Bull protective stop repaired",
-            detail=f"{cleaned_symbol} stop submitted at {payload['stop_price']}",
+            detail=f"{cleaned_symbol} stop verified at {stop_price:.2f}",
             severity="info",
             payload={"kind": "protective_stop_repair", "timestamp": datetime.now(timezone.utc).isoformat(), "symbol": cleaned_symbol, "order": response},
             ignore_cooldown=True,
         )
-        return {"ok": True, "status": "submitted", "symbol": cleaned_symbol, "order": response, "lifecycle": self.lifecycle_payload(light=True, refresh=True)}
+        return {"ok": True, "status": str(response.get("status") or "submitted"), "symbol": cleaned_symbol, "order": response, "lifecycle": self.lifecycle_payload(light=True, refresh=True)}
 
     def reduce_lifecycle_position(self, symbol: str, fraction: float, approval_token: str) -> dict:
         auth = self._authorize_approval_token(approval_token)
@@ -4821,20 +4822,19 @@ class TradingViewWebhookEngine:
                         has_stop_leg = True
                         break
             if not has_stop_leg:
-                # Submit standalone stop to protect the position
-                stop_side = "sell" if side == "buy" else "buy"
-                stop_payload = {
-                    "symbol": symbol,
-                    "qty": str(qty),
-                    "side": stop_side,
-                    "type": "stop",
-                    "time_in_force": self.webhook_config.get("time_in_force", "day"),
-                    "stop_price": f"{stop_price:.2f}",
-                    "client_order_id": f"velez-verify-stop-{symbol.lower()}-{secrets.token_hex(6)}",
-                }
                 try:
-                    self.broker.submit_order_payload(stop_payload)
-                    log_event(self.logger, "stop_verification_repair", {"symbol": symbol, "stop_price": stop_price, "reason": "bracket_stop_missing_from_response"})
+                    repair = self._submit_verified_protective_stop(
+                        symbol=symbol,
+                        qty=qty,
+                        entry_side=side,
+                        stop_price=stop_price,
+                        client_order_id=f"velez-verify-stop-{symbol.lower()}-{secrets.token_hex(6)}",
+                    )
+                    log_event(
+                        self.logger,
+                        "stop_verification_repair" if repair.get("verified") else "stop_verification_deferred",
+                        {"symbol": symbol, "stop_price": stop_price, "reason": "bracket_stop_missing_from_response", "result": repair},
+                    )
                 except Exception as stop_exc:
                     log_event(self.logger, "stop_verification_failed", {"symbol": symbol, "error": str(stop_exc)})
         # P3: Auto-claim lifecycle position so journal link never rots
@@ -4983,6 +4983,39 @@ class TradingViewWebhookEngine:
     def _paper_broker_endpoint(self) -> bool:
         base_url = str(getattr(getattr(self.broker, "config", None), "base_url", "") or "").strip().lower()
         return base_url.startswith("https://paper-api.alpaca.markets") or base_url.startswith("sim://")
+
+    def _submit_verified_protective_stop(
+        self,
+        *,
+        symbol: str,
+        qty: Any,
+        entry_side: str,
+        stop_price: float,
+        client_order_id: str,
+    ) -> dict:
+        """Place a stop only after the broker confirms an open position."""
+        retry = getattr(self.broker, "submit_standalone_stop_with_retry", None)
+        if callable(retry):
+            return retry(
+                symbol=symbol,
+                qty=qty,
+                side=entry_side,
+                stop_price=stop_price,
+                client_order_id=client_order_id,
+            )
+        stop_side = "sell" if entry_side == "buy" else "buy"
+        response = self.broker.submit_order_payload(
+            {
+                "symbol": symbol,
+                "qty": str(qty),
+                "side": stop_side,
+                "type": "stop",
+                "time_in_force": self.webhook_config.get("time_in_force", "day"),
+                "stop_price": f"{stop_price:.2f}",
+                "client_order_id": client_order_id,
+            }
+        )
+        return {**response, "status": "submitted", "verified": True}
 
     def _requires_order_approval(self) -> bool:
         runtime_override = self.journal.get_setting("require_order_approval", None)
@@ -5729,20 +5762,17 @@ class TradingViewWebhookEngine:
                 linked = position.get("linked_decision") or {}
                 emergency_stop = self._float(linked.get("stop_price"))
                 if emergency_stop is not None:
-                    exit_side = "sell" if side == "long" else "buy"
-                    stop_payload = {
-                        "symbol": symbol,
-                        "qty": qty,
-                        "side": exit_side,
-                        "type": "stop",
-                        "time_in_force": self.webhook_config.get("time_in_force", "day"),
-                        "stop_price": f"{emergency_stop:.2f}",
-                        "client_order_id": f"velez-emergency-stop-{symbol.lower()}-{secrets.token_hex(6)}",
-                    }
+                    entry_side = "buy" if side == "long" else "sell"
                     try:
-                        self.broker.submit_order_payload(stop_payload)
-                        results.append({"action": "emergency_stop_repair", "symbol": symbol, "stop_price": emergency_stop, "status": "submitted"})
-                        log_event(self.logger, "auto_emergency_stop", {"symbol": symbol, "stop_price": emergency_stop})
+                        repair = self._submit_verified_protective_stop(
+                            symbol=symbol,
+                            qty=qty,
+                            entry_side=entry_side,
+                            stop_price=emergency_stop,
+                            client_order_id=f"velez-emergency-stop-{symbol.lower()}-{secrets.token_hex(6)}",
+                        )
+                        results.append({"action": "emergency_stop_repair", "symbol": symbol, "stop_price": emergency_stop, "status": repair.get("status", "submitted")})
+                        log_event(self.logger, "auto_emergency_stop", {"symbol": symbol, "stop_price": emergency_stop, "result": repair})
                     except Exception as exc:
                         results.append({"action": "emergency_stop_repair", "symbol": symbol, "status": "failed", "error": str(exc)})
 
@@ -5756,20 +5786,16 @@ class TradingViewWebhookEngine:
                 if breakeven_due:
                     # Cancel existing stop orders and submit new breakeven stop
                     self._cancel_symbol_stop_orders(position)
-                    exit_side = "sell" if side == "long" else "buy"
-                    be_payload = {
-                        "symbol": symbol,
-                        "qty": qty,
-                        "side": exit_side,
-                        "type": "stop",
-                        "time_in_force": self.webhook_config.get("time_in_force", "day"),
-                        "stop_price": f"{entry_price:.2f}",
-                        "client_order_id": f"velez-be-stop-{symbol.lower()}-{secrets.token_hex(6)}",
-                    }
                     try:
-                        self.broker.submit_order_payload(be_payload)
-                        results.append({"action": "breakeven_stop_move", "symbol": symbol, "entry_price": entry_price, "status": "submitted"})
-                        log_event(self.logger, "auto_breakeven_stop", {"symbol": symbol, "current_r": current_r, "stop_moved_to": entry_price})
+                        repair = self._submit_verified_protective_stop(
+                            symbol=symbol,
+                            qty=qty,
+                            entry_side="buy" if side == "long" else "sell",
+                            stop_price=entry_price,
+                            client_order_id=f"velez-be-stop-{symbol.lower()}-{secrets.token_hex(6)}",
+                        )
+                        results.append({"action": "breakeven_stop_move", "symbol": symbol, "entry_price": entry_price, "status": repair.get("status", "submitted")})
+                        log_event(self.logger, "auto_breakeven_stop", {"symbol": symbol, "current_r": current_r, "stop_moved_to": entry_price, "result": repair})
                     except Exception as exc:
                         results.append({"action": "breakeven_stop_move", "symbol": symbol, "status": "failed", "error": str(exc)})
 
