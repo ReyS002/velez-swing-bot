@@ -84,7 +84,7 @@ class AlpacaStopRetryMixin:
             return {"status": "skipped_no_open_position", "symbol": symbol, "verified": True}
         base_client_order_id = str(client_order_id or f"stop-{symbol.lower()}-{uuid.uuid4().hex[:20]}")
         stop_client_order_id = f"{base_client_order_id[:43]}-stop"
-        
+
         payload = {
             "symbol": symbol,
             "qty": str(qty),
@@ -115,9 +115,9 @@ class AlpacaStopRetryMixin:
             except Exception as e:
                 last_exception = e
                 logger.warning(f"Attempt {attempt} failed to submit stop for {symbol}: {e}")
-            
+
             if attempt < max_retries:
                 sleep_time = backoff_factor ** attempt
                 time.sleep(sleep_time)
-                
+
         raise RuntimeError(f"Failed to submit standalone stop for {symbol} after {max_retries} attempts. Last error: {last_exception}")
