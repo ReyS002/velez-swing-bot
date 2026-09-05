@@ -17,7 +17,12 @@ class AlpacaStopRetryMixin:
         raise NotImplementedError
 
     def _position_matches_entry_side(self, symbol: str, entry_side: str) -> Optional[bool]:
-        """Return whether Alpaca still reports the expected open position."""
+        """Return whether Alpaca still reports the expected open position.
+
+        ``None`` keeps the mixin usable by small test doubles that do not expose
+        broker reads.  Production brokers do expose ``get_positions_raw`` and
+        therefore fail closed when the position is absent.
+        """
         get_positions = getattr(self, "get_positions_raw", None)
         if not callable(get_positions):
             return None
@@ -46,6 +51,7 @@ class AlpacaStopRetryMixin:
                 yield from AlpacaStopRetryMixin._iter_orders(legs)
 
     def _existing_protective_stop(self, symbol: str, stop_side: str) -> Optional[dict]:
+        """Find an already-open protective stop before submitting another one."""
         get_orders = getattr(self, "get_orders_raw", None)
         if not callable(get_orders):
             return None
@@ -69,7 +75,13 @@ class AlpacaStopRetryMixin:
         max_retries: int = 3,
         backoff_factor: float = 1.5
     ) -> Dict[str, Any]:
-        """Submit and reconcile an independent stop after a confirmed entry."""
+        """Submit and reconcile an independent stop after a confirmed entry.
+
+        A broker/network timeout is ambiguous: Alpaca may have accepted the
+        request.  Before every retry this method reads open orders, so it does
+        not create a second stop.  It also refuses to place an exit stop after
+        the position is already flat, preventing an accidental reversal.
+        """
         entry_side = str(side or "").lower()
         if entry_side not in {"buy", "sell"}:
             raise ValueError("side must be buy or sell")
@@ -82,13 +94,22 @@ class AlpacaStopRetryMixin:
         position_state = self._position_matches_entry_side(symbol, entry_side)
         if position_state is False:
             return {"status": "skipped_no_open_position", "symbol": symbol, "verified": True}
+
         base_client_order_id = str(client_order_id or f"stop-{symbol.lower()}-{uuid.uuid4().hex[:20]}")
         stop_client_order_id = f"{base_client_order_id[:43]}-stop"
+        position_intent = "buy_to_close" if stop_side == "buy" else "sell_to_close"
+        formatter = getattr(self, "_format_equity_quantity", None)
+        formatted_qty = (
+            formatter(qty, position_intent)
+            if callable(formatter)
+            else str(int(float(qty))) if position_intent == "buy_to_close" else str(round(float(qty), 4))
+        )
 
         payload = {
             "symbol": symbol,
-            "qty": str(qty),
+            "qty": formatted_qty,
             "side": stop_side,
+            "position_intent": position_intent,
             "type": "stop",
             "time_in_force": "gtc",
             "stop_price": self._price(stop_price),
@@ -100,15 +121,32 @@ class AlpacaStopRetryMixin:
             try:
                 existing = self._existing_protective_stop(symbol, stop_side)
                 if existing is not None:
-                    return {"id": existing.get("id"), "status": "verified_existing", "verified": True, "order": existing}
+                    logger.info("Protective stop already open for %s; retry not needed", symbol)
+                    return {
+                        "id": existing.get("id"),
+                        "status": "verified_existing",
+                        "verified": True,
+                        "order": existing,
+                    }
                 logger.info(f"Submitting standalone stop for {symbol} (Attempt {attempt}/{max_retries}) at {stop_price}")
                 response = self.submit_order_payload(payload)
+                # Production brokers must observe the stop in Alpaca's open
+                # order book.  Test doubles without broker reads keep the
+                # original response-based behavior.
                 if callable(getattr(self, "get_orders_raw", None)):
                     existing = self._existing_protective_stop(symbol, stop_side)
                     if existing is not None:
-                        return {"id": existing.get("id") or (response or {}).get("id"), "status": "verified", "verified": True, "order": existing, "submission": response}
+                        logger.info("Protective stop verified for %s, order ID: %s", symbol, existing.get("id"))
+                        return {
+                            "id": existing.get("id") or (response or {}).get("id"),
+                            "status": "verified",
+                            "verified": True,
+                            "order": existing,
+                            "submission": response,
+                        }
                     logger.warning("Stop submission for %s was not yet visible in Alpaca open orders", symbol)
                 elif response and (response.get("id") or response.get("status") in {"new", "accepted", "pending_new"}):
+                    logger.info("Stop accepted by test broker for %s, order ID: %s", symbol, response.get("id"))
                     return response
                 else:
                     logger.warning(f"Stop submission response lacked valid order ID for {symbol}: {response}")

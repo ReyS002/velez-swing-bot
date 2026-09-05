@@ -14,7 +14,7 @@ def _utc_now() -> datetime:
 
 
 def _json_dumps(value: Any) -> str:
-    return json.dumps(value or {}, default=str, sort_keys=True)
+    return json.dumps({} if value is None else value, default=str, sort_keys=True)
 
 
 def _json_loads(value: Any, fallback: Any) -> Any:
@@ -147,6 +147,36 @@ class JournalStore:
                 (start_iso, end_iso, max(1, min(int(limit), 5000))),
             ).fetchall()
         return [_json_loads(row["snapshot_json"], {}) for row in rows]
+
+    def mentor_decisions_between(self, start_iso: str, end_iso: str, limit: int = 5000) -> List[dict]:
+        """Return complete internal decision evidence for Velez Mentor.
+
+        The public journal payload deliberately omits broker/order bodies. Mentor
+        needs their non-secret execution metadata for schedule and fill-quality
+        analysis, so this internal read joins them without exposing credentials.
+        """
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT id, timestamp, alert_ref, status, reason, symbol, side, play, qty,
+                       order_type, entry_price, stop_price, take_profit_price, timeframe,
+                       location, max_dollar_risk, order_payload_json,
+                       broker_response_json, snapshot_json
+                FROM decisions
+                WHERE datetime(timestamp) >= datetime(?) AND datetime(timestamp) <= datetime(?)
+                ORDER BY datetime(timestamp) DESC, id DESC
+                LIMIT ?
+                """,
+                (start_iso, end_iso, max(1, min(int(limit), 10000))),
+            ).fetchall()
+        records: List[dict] = []
+        for row in rows:
+            item = self._decision_row(row)
+            item["journal_id"] = row["id"]
+            item["order_payload"] = _json_loads(row["order_payload_json"], {})
+            item["broker_response"] = _json_loads(row["broker_response_json"], {})
+            records.append(item)
+        return records
 
     def seed_watchlist(self, symbols: Iterable[dict]) -> None:
         now = _utc_now().isoformat()
@@ -321,7 +351,7 @@ class JournalStore:
             rows = db.execute(sql).fetchall()
         return [self._pending_row(row) for row in rows]
 
-    def approve_pending_order(self, approval_id: str, phrase: str, broker: Any) -> dict:
+    def approve_pending_order(self, approval_id: str, phrase: str, submitter: Any) -> dict:
         self.expire_pending_orders()
         pending = self.get_pending_order(approval_id)
         if not pending:
@@ -331,7 +361,8 @@ class JournalStore:
         if self._normalize_phrase(phrase) != self._normalize_phrase(pending["approval_phrase"]):
             return {"ok": False, "reason": "approval_phrase_mismatch", "pending": self._public_pending(pending)}
         try:
-            response = broker.submit_order_payload(pending["order_payload"])
+            callback = submitter if callable(submitter) else submitter.submit_order_payload
+            response = callback(pending["order_payload"])
         except Exception as exc:
             self._update_pending_status(pending["id"], "error", error=str(exc))
             return {"ok": False, "reason": f"broker_order_failed:{exc}", "pending": self._public_pending(pending)}
@@ -450,8 +481,378 @@ class JournalStore:
                 ORDER BY datetime(timestamp) DESC, id DESC
                 LIMIT ?
                 """,
-                (max(1, min(int(limit), 100)),),
+                (max(1, min(int(limit), 1000)),),
             ).fetchall()
+        return self._outcome_rows(rows)
+
+    def upsert_trade_review(self, alert_ref: str, review: dict) -> dict:
+        cleaned_ref = str(alert_ref or "").strip()[:128]
+        if not cleaned_ref:
+            raise ValueError("alert_ref is required")
+        existing = self.trade_review(cleaned_ref) or {}
+        now = _utc_now().isoformat()
+        created_at = str(existing.get("created_at") or now)
+        allowed_skip_classes = {
+            "",
+            "valid_setup_intentionally_skipped",
+            "valid_setup_missed",
+            "invalid_setup_correctly_avoided",
+            "setup_blocked_by_risk",
+            "setup_lacking_sufficient_data",
+        }
+        skip_classification = str(review.get("skip_classification") or "").strip().lower()
+        if skip_classification not in allowed_skip_classes:
+            raise ValueError("invalid skip_classification")
+
+        def optional_number(value: Any) -> Optional[float]:
+            if value in (None, ""):
+                return None
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("review price fields must be numeric") from exc
+            if parsed <= 0:
+                raise ValueError("review price fields must be positive")
+            return parsed
+
+        def optional_bool(key: str) -> Optional[bool]:
+            value = review.get(key)
+            return value if isinstance(value, bool) else None
+
+        setup_tags_value = review.get("setup_tags") or []
+        if isinstance(setup_tags_value, str):
+            setup_tags_value = [part.strip() for part in setup_tags_value.split(",")]
+        rule_broken_value = review.get("rule_broken") or []
+        if isinstance(rule_broken_value, str):
+            rule_broken_value = [part.strip() for part in rule_broken_value.split("\n")]
+        payload = {
+            "alert_ref": cleaned_ref,
+            "created_at": created_at,
+            "updated_at": now,
+            "strategy": str(review.get("strategy") or existing.get("strategy") or "")[:120],
+            "setup_tags": [str(item)[:80] for item in list(setup_tags_value)[:12] if str(item).strip()],
+            "rule_followed": optional_bool("rule_followed"),
+            "rule_broken": [str(item)[:240] for item in list(rule_broken_value)[:20] if str(item).strip()],
+            "entry_quality": str(review.get("entry_quality") or "")[:80],
+            "stop_quality": str(review.get("stop_quality") or "")[:80],
+            "target_quality": str(review.get("target_quality") or "")[:80],
+            "exit_quality": str(review.get("exit_quality") or "")[:80],
+            "actual_entry": optional_number(review.get("actual_entry")),
+            "actual_exit": optional_number(review.get("actual_exit")),
+            "stop_followed": optional_bool("stop_followed"),
+            "authorized_setup": optional_bool("authorized_setup"),
+            "skip_classification": skip_classification or None,
+            "valid_skip_followed": optional_bool("valid_skip_followed"),
+            "regime": str(review.get("regime") or "")[:120],
+            "notes": str(review.get("notes") or "")[:2000],
+            "source": "authenticated_operator_review",
+        }
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO trade_reviews (alert_ref, created_at, updated_at, review_json)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(alert_ref) DO UPDATE SET
+                    updated_at = excluded.updated_at,
+                    review_json = excluded.review_json
+                """,
+                (cleaned_ref, created_at, now, _json_dumps(payload)),
+            )
+        return payload
+
+    def trade_review(self, alert_ref: str) -> Optional[dict]:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT alert_ref, created_at, updated_at, review_json FROM trade_reviews WHERE alert_ref = ?",
+                (str(alert_ref or "").strip(),),
+            ).fetchone()
+        if not row:
+            return None
+        payload = _json_loads(row["review_json"], {})
+        return {**payload, "alert_ref": row["alert_ref"], "created_at": row["created_at"], "updated_at": row["updated_at"]}
+
+    def trade_reviews(self, limit: int = 1000) -> List[dict]:
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT alert_ref, created_at, updated_at, review_json FROM trade_reviews ORDER BY datetime(updated_at) DESC LIMIT ?",
+                (max(1, min(int(limit), 5000)),),
+            ).fetchall()
+        return [
+            {
+                **_json_loads(row["review_json"], {}),
+                "alert_ref": row["alert_ref"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
+
+    def upsert_symbol_note(self, symbol: str, note: dict) -> dict:
+        cleaned_symbol = "".join(char for char in str(symbol or "").upper().strip() if char.isalnum() or char in {".", "-", "/"})[:24]
+        if not cleaned_symbol:
+            raise ValueError("symbol is required")
+        existing = self.symbol_note(cleaned_symbol) or {}
+        now = _utc_now().isoformat()
+        created_at = str(existing.get("created_at") or now)
+        key_levels = []
+        for item in list(note.get("key_levels") or [])[:20]:
+            raw_price = item.get("price") if isinstance(item, dict) else item
+            try:
+                price = float(raw_price)
+            except (TypeError, ValueError):
+                continue
+            if price <= 0:
+                continue
+            label = str(item.get("label") or "Key level")[:80] if isinstance(item, dict) else "Key level"
+            key_levels.append({"label": label, "price": price})
+        risks_value = note.get("risks") or []
+        if isinstance(risks_value, str):
+            risks_value = [part.strip() for part in risks_value.split("\n")]
+        payload = {
+            "symbol": cleaned_symbol,
+            "created_at": created_at,
+            "updated_at": now,
+            "thesis": str(note.get("thesis") or "")[:1200],
+            "catalyst": str(note.get("catalyst") or "")[:800],
+            "key_levels": key_levels,
+            "risks": [str(item)[:240] for item in list(risks_value)[:20] if str(item).strip()],
+            "invalidation": str(note.get("invalidation") or "")[:800],
+            "source": "authenticated_private_note",
+        }
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO symbol_notes (symbol, created_at, updated_at, note_json)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(symbol) DO UPDATE SET
+                    updated_at = excluded.updated_at,
+                    note_json = excluded.note_json
+                """,
+                (cleaned_symbol, created_at, now, _json_dumps(payload)),
+            )
+        return payload
+
+    def symbol_note(self, symbol: str) -> Optional[dict]:
+        cleaned_symbol = str(symbol or "").upper().strip()
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT symbol, created_at, updated_at, note_json FROM symbol_notes WHERE symbol = ?",
+                (cleaned_symbol,),
+            ).fetchone()
+        if not row:
+            return None
+        payload = _json_loads(row["note_json"], {})
+        return {**payload, "symbol": row["symbol"], "created_at": row["created_at"], "updated_at": row["updated_at"]}
+
+    def symbol_notes(self, limit: int = 100) -> List[dict]:
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT symbol, created_at, updated_at, note_json FROM symbol_notes ORDER BY datetime(updated_at) DESC LIMIT ?",
+                (max(1, min(int(limit), 500)),),
+            ).fetchall()
+        return [
+            {
+                **_json_loads(row["note_json"], {}),
+                "symbol": row["symbol"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
+
+    def trade_outcomes_between(self, start_iso: str, end_iso: str, limit: int = 5000) -> List[dict]:
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT id, timestamp, alert_ref, symbol, status, r_multiple, pnl, notes, payload_json
+                FROM trade_outcomes
+                WHERE datetime(timestamp) >= datetime(?) AND datetime(timestamp) <= datetime(?)
+                ORDER BY datetime(timestamp) DESC, id DESC
+                LIMIT ?
+                """,
+                (start_iso, end_iso, max(1, min(int(limit), 10000))),
+            ).fetchall()
+        return self._outcome_rows(rows)
+
+    def save_trade_autopsy(self, autopsy: dict) -> dict:
+        event_key = str(autopsy.get("event_key") or "").strip()
+        if not event_key:
+            raise ValueError("trade autopsy event_key is required")
+        now = str(autopsy.get("created_at") or _utc_now().isoformat())
+        autopsy_id = str(autopsy.get("id") or uuid.uuid4().hex[:12].upper())
+        payload = {**autopsy, "id": autopsy_id, "created_at": now}
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO trade_autopsies (
+                    id, event_key, created_at, alert_ref, symbol, outcome_id,
+                    status, chart_path, report_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_key) DO UPDATE SET
+                    alert_ref = excluded.alert_ref,
+                    symbol = excluded.symbol,
+                    outcome_id = excluded.outcome_id,
+                    status = excluded.status,
+                    chart_path = excluded.chart_path,
+                    report_json = excluded.report_json
+                """,
+                (
+                    autopsy_id,
+                    event_key,
+                    now,
+                    payload.get("alert_ref"),
+                    str(payload.get("symbol") or "").upper().strip(),
+                    payload.get("outcome_id"),
+                    str(payload.get("status") or "complete")[:32],
+                    str(payload.get("chart_path") or "")[:1000],
+                    _json_dumps(payload),
+                ),
+            )
+            row = db.execute("SELECT * FROM trade_autopsies WHERE event_key = ?", (event_key,)).fetchone()
+        return self._trade_autopsy_row(row)
+
+    def trade_autopsy_by_event_key(self, event_key: str) -> Optional[dict]:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM trade_autopsies WHERE event_key = ? LIMIT 1",
+                (str(event_key or "").strip(),),
+            ).fetchone()
+        return self._trade_autopsy_row(row) if row else None
+
+    def trade_autopsy_by_id(self, autopsy_id: str) -> Optional[dict]:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM trade_autopsies WHERE id = ? LIMIT 1",
+                (str(autopsy_id or "").upper().strip(),),
+            ).fetchone()
+        return self._trade_autopsy_row(row) if row else None
+
+    def latest_trade_autopsies(self, limit: int = 20, alert_ref: str = "") -> List[dict]:
+        cleaned_ref = str(alert_ref or "").strip()
+        sql = "SELECT * FROM trade_autopsies"
+        params: List[Any] = []
+        if cleaned_ref:
+            sql += " WHERE alert_ref = ?"
+            params.append(cleaned_ref)
+        sql += " ORDER BY datetime(created_at) DESC, id DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 200)))
+        with self._connect() as db:
+            rows = db.execute(sql, tuple(params)).fetchall()
+        return [self._trade_autopsy_row(row) for row in rows]
+
+    def mentor_profile(self) -> dict:
+        return self.get_setting("velez_mentor.profile", {})
+
+    def save_mentor_profile(self, profile: dict) -> dict:
+        return self.set_setting("velez_mentor.profile", profile)
+
+    def save_mentor_report(self, report: dict) -> int:
+        with self._connect() as db:
+            cursor = db.execute(
+                """
+                INSERT INTO mentor_reports (
+                    timestamp, scope, period_start, period_end, mode,
+                    report_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(report.get("timestamp") or _utc_now().isoformat()),
+                    str(report.get("scope") or "custom")[:32],
+                    str(report.get("period", {}).get("start") or ""),
+                    str(report.get("period", {}).get("end") or ""),
+                    str(report.get("mode") or "retail")[:32],
+                    _json_dumps(report),
+                ),
+            )
+        return int(cursor.lastrowid)
+
+    def latest_mentor_reports(self, limit: int = 10) -> List[dict]:
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT id, timestamp, scope, report_json
+                FROM mentor_reports
+                ORDER BY datetime(timestamp) DESC, id DESC
+                LIMIT ?
+                """,
+                (max(1, min(int(limit), 50)),),
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "timestamp": row["timestamp"],
+                "scope": row["scope"],
+                **_json_loads(row["report_json"], {}),
+            }
+            for row in rows
+        ]
+
+    def upsert_mentor_drill(self, drill: dict) -> dict:
+        fingerprint = str(drill.get("fingerprint") or "").strip()
+        if not fingerprint:
+            raise ValueError("mentor drill fingerprint is required")
+        now = _utc_now().isoformat()
+        drill_id = str(drill.get("id") or uuid.uuid4().hex[:10].upper())
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO mentor_drills (
+                    id, fingerprint, created_at, updated_at, status, title,
+                    instruction, dimension, evidence_json
+                ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
+                ON CONFLICT(fingerprint) DO UPDATE SET
+                    updated_at = excluded.updated_at,
+                    title = excluded.title,
+                    instruction = excluded.instruction,
+                    dimension = excluded.dimension,
+                    evidence_json = excluded.evidence_json
+                """,
+                (
+                    drill_id,
+                    fingerprint,
+                    now,
+                    now,
+                    str(drill.get("title") or "Review drill")[:240],
+                    str(drill.get("instruction") or "")[:2000],
+                    str(drill.get("dimension") or "process")[:80],
+                    _json_dumps(drill.get("evidence") or []),
+                ),
+            )
+            row = db.execute("SELECT * FROM mentor_drills WHERE fingerprint = ?", (fingerprint,)).fetchone()
+        return self._mentor_drill_row(row)
+
+    def mentor_drills(self, include_completed: bool = False, limit: int = 20) -> List[dict]:
+        sql = "SELECT * FROM mentor_drills"
+        params: List[Any] = []
+        if not include_completed:
+            sql += " WHERE status = 'active'"
+        sql += " ORDER BY datetime(updated_at) DESC, id DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 100)))
+        with self._connect() as db:
+            rows = db.execute(sql, tuple(params)).fetchall()
+        return [self._mentor_drill_row(row) for row in rows]
+
+    def set_mentor_drill_status(self, drill_id: str, status: str) -> Optional[dict]:
+        cleaned_status = str(status or "").strip().lower()
+        if cleaned_status not in {"active", "completed", "dismissed"}:
+            raise ValueError("mentor drill status must be active, completed, or dismissed")
+        now = _utc_now().isoformat()
+        with self._connect() as db:
+            cursor = db.execute(
+                """
+                UPDATE mentor_drills
+                SET status = ?, updated_at = ?,
+                    acknowledged_at = CASE WHEN ? = 'completed' THEN ? ELSE acknowledged_at END
+                WHERE id = ?
+                """,
+                (cleaned_status, now, cleaned_status, now, str(drill_id or "").upper().strip()),
+            )
+            if cursor.rowcount <= 0:
+                return None
+            row = db.execute("SELECT * FROM mentor_drills WHERE id = ?", (str(drill_id).upper().strip(),)).fetchone()
+        return self._mentor_drill_row(row) if row else None
+
+    def _outcome_rows(self, rows: Iterable[sqlite3.Row]) -> List[dict]:
         outcomes: List[dict] = []
         for row in rows:
             payload = _json_loads(row["payload_json"], {})
@@ -614,11 +1015,68 @@ class JournalStore:
                 CREATE INDEX IF NOT EXISTS idx_outcomes_symbol ON trade_outcomes(symbol);
                 CREATE INDEX IF NOT EXISTS idx_outcomes_alert_ref ON trade_outcomes(alert_ref);
 
+                CREATE TABLE IF NOT EXISTS trade_reviews (
+                    alert_ref TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    review_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_trade_reviews_updated ON trade_reviews(updated_at);
+
+                CREATE TABLE IF NOT EXISTS symbol_notes (
+                    symbol TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    note_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_symbol_notes_updated ON symbol_notes(updated_at);
+
                 CREATE TABLE IF NOT EXISTS runtime_settings (
                     key TEXT PRIMARY KEY,
                     value_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS mentor_reports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    period_start TEXT,
+                    period_end TEXT,
+                    mode TEXT,
+                    report_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_mentor_reports_timestamp ON mentor_reports(timestamp);
+                CREATE INDEX IF NOT EXISTS idx_mentor_reports_scope ON mentor_reports(scope);
+
+                CREATE TABLE IF NOT EXISTS mentor_drills (
+                    id TEXT PRIMARY KEY,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    acknowledged_at TEXT,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    title TEXT NOT NULL,
+                    instruction TEXT NOT NULL,
+                    dimension TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_mentor_drills_status ON mentor_drills(status);
+
+                CREATE TABLE IF NOT EXISTS trade_autopsies (
+                    id TEXT PRIMARY KEY,
+                    event_key TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    alert_ref TEXT,
+                    symbol TEXT,
+                    outcome_id INTEGER,
+                    status TEXT NOT NULL,
+                    chart_path TEXT,
+                    report_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_trade_autopsies_created ON trade_autopsies(created_at);
+                CREATE INDEX IF NOT EXISTS idx_trade_autopsies_alert_ref ON trade_autopsies(alert_ref);
+                CREATE INDEX IF NOT EXISTS idx_trade_autopsies_symbol ON trade_autopsies(symbol);
                 """
             )
 
@@ -685,6 +1143,36 @@ class JournalStore:
             key: value
             for key, value in item.items()
             if key not in {"order_payload", "broker_response", "error"} or key == "error" and value
+        }
+
+    def _trade_autopsy_row(self, row: sqlite3.Row) -> dict:
+        payload = _json_loads(row["report_json"], {})
+        payload.update(
+            {
+                "id": row["id"],
+                "event_key": row["event_key"],
+                "created_at": row["created_at"],
+                "alert_ref": row["alert_ref"],
+                "symbol": row["symbol"],
+                "outcome_id": row["outcome_id"],
+                "status": row["status"],
+                "chart_path": row["chart_path"],
+            }
+        )
+        return payload
+
+    def _mentor_drill_row(self, row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"],
+            "fingerprint": row["fingerprint"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "acknowledged_at": row["acknowledged_at"],
+            "status": row["status"],
+            "title": row["title"],
+            "instruction": row["instruction"],
+            "dimension": row["dimension"],
+            "evidence": _json_loads(row["evidence_json"], []),
         }
 
     def _update_pending_status(

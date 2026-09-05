@@ -7,7 +7,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -128,6 +128,7 @@ class TradovateBroker:
             raise RuntimeError(f"Tradovate auth failed ({resp.status_code}): {resp.text}")
         data = resp.json()
         self.access_token = data.get("accessToken")
+        # Token valid for ~24 hours; set 23-hour buffer
         self.token_expiry = time.time() + 82800
         self._sync_account_id()
 
@@ -180,6 +181,7 @@ class TradovateBroker:
         resp = requests.get(url, headers=self._headers(), params=params, timeout=self.config.timeout_seconds)
         if resp.status_code == 200:
             acc = resp.json()
+            # Calculate equity and sync prop drawdown risk
             cash_bal = float(acc.get("balance", 0.0) or 0.0)
             self._update_prop_drawdown_risk(cash_bal)
             return {
@@ -203,12 +205,14 @@ class TradovateBroker:
         if current_equity > self.peak_equity:
             self.peak_equity = current_equity
 
+        # Trailing High-Water Mark Drawdown Check
         drawdown = self.peak_equity - current_equity
         if drawdown >= self.config.max_trailing_drawdown and self.config.max_trailing_drawdown > 0:
             self.breach_kill_switch = True
             self.breach_reason = f"Prop Trailing Drawdown Breached (${drawdown:.2f} >= ${self.config.max_trailing_drawdown:.2f})"
             logger.critical(self.breach_reason)
 
+        # Consistency Daily Profit Cap Check
         if self.config.daily_profit_cap > 0:
             daily_pnl = current_equity - self.day_start_equity
             if daily_pnl >= self.config.daily_profit_cap:
@@ -216,6 +220,7 @@ class TradovateBroker:
                 self.breach_reason = f"Daily Profit Target Cap Reached (${daily_pnl:.2f} >= ${self.config.daily_profit_cap:.2f})"
 
     def check_eod_flatness_window(self) -> bool:
+        """Returns True if within EOD cutoff window where new positions are blocked & existing should flat."""
         try:
             import zoneinfo
             et_zone = zoneinfo.ZoneInfo("America/New_York")
@@ -353,6 +358,7 @@ class TradovateBroker:
         res = resp.json()
         order_id = res.get("orderId") or res.get("id") or str(uuid.uuid4())
         
+        # Attach bracket stop-loss if stopPrice provided
         stop_price = payload.get("stopPrice")
         if stop_price:
             stop_action = "Sell" if payload.get("action") == "Buy" else "Buy"

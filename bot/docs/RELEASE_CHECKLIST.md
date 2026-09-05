@@ -34,6 +34,9 @@ curl -i http://127.0.0.1:8080/health
 curl -i http://127.0.0.1:8080/dashboard
 curl -fsS -u desk:local-test-password http://127.0.0.1:8080/api/bot/health
 curl -fsS -u desk:local-test-password http://127.0.0.1:8080/api/scanner/status
+curl -fsS -u desk:local-test-password http://127.0.0.1:8080/api/entitlements
+curl -fsS -u desk:local-test-password http://127.0.0.1:8080/api/readiness
+curl -fsS -u desk:local-test-password http://127.0.0.1:8080/api/market/context
 ```
 
 Confirm:
@@ -42,6 +45,8 @@ Confirm:
 - `/dashboard` returns `401` without credentials.
 - Authenticated dashboard APIs return JSON.
 - Local execution is not armed unless you are intentionally testing paper order submission.
+- Readiness and market context are advisory and contain source/unknown-state disclosures.
+- Planner verification uses only `/api/planner/preview`; it must report `can_stage=false` and `can_submit=false` and must not call approval or order routes.
 
 ## 3. VPS Backup
 
@@ -54,6 +59,8 @@ cp .env ".env.backup.$(date +%Y%m%d-%H%M%S)"
 ```
 
 Confirm the backup includes the SQLite data directory and current environment file.
+
+Record the current Git commit, webhook image ID, and these non-secret modes without printing the rest of `.env`: broker base URL, execution enabled, live-trading enabled, approval required, auto-stage, lifecycle auto-execute, WATCH_ONLY, shadow, and paper locks.
 
 ## 4. Deploy
 
@@ -83,6 +90,12 @@ curl -fsS -u "$VELEZ_DASHBOARD_USERNAME:$VELEZ_DASHBOARD_PASSWORD" "$VELEZ_PUBLI
 curl -fsS -u "$VELEZ_DASHBOARD_USERNAME:$VELEZ_DASHBOARD_PASSWORD" "$VELEZ_PUBLIC_URL/api/dashboard/state"
 curl -fsS -u "$VELEZ_DASHBOARD_USERNAME:$VELEZ_DASHBOARD_PASSWORD" "$VELEZ_PUBLIC_URL/api/scanner/status"
 curl -fsS -u "$VELEZ_DASHBOARD_USERNAME:$VELEZ_DASHBOARD_PASSWORD" "$VELEZ_PUBLIC_URL/api/lifecycle/state"
+curl -fsS -u "$VELEZ_DASHBOARD_USERNAME:$VELEZ_DASHBOARD_PASSWORD" "$VELEZ_PUBLIC_URL/api/risk/status"
+curl -fsS -u "$VELEZ_DASHBOARD_USERNAME:$VELEZ_DASHBOARD_PASSWORD" "$VELEZ_PUBLIC_URL/api/entitlements"
+curl -fsS -u "$VELEZ_DASHBOARD_USERNAME:$VELEZ_DASHBOARD_PASSWORD" "$VELEZ_PUBLIC_URL/api/readiness"
+curl -fsS -u "$VELEZ_DASHBOARD_USERNAME:$VELEZ_DASHBOARD_PASSWORD" "$VELEZ_PUBLIC_URL/api/market/context"
+curl -fsS -u "$VELEZ_DASHBOARD_USERNAME:$VELEZ_DASHBOARD_PASSWORD" "$VELEZ_PUBLIC_URL/api/playbook"
+curl -fsS -u "$VELEZ_DASHBOARD_USERNAME:$VELEZ_DASHBOARD_PASSWORD" "$VELEZ_PUBLIC_URL/api/annotations"
 ```
 
 Confirm:
@@ -94,6 +107,11 @@ Confirm:
 - Scanner status matches config.
 - Lifecycle guardrails are clear or intentionally handled.
 - `/dashboard` challenges without credentials.
+- The authenticated dashboard and both static assets report the expected version.
+- TradingView, mobile workflow hooks, Pro open/return hooks, and adjacent annotation hooks are present.
+- Entitlements report the expected owner tier; safety endpoints remain available at Core.
+- Before/after non-secret execution, endpoint, WATCH_ONLY, shadow, approval, and paper-lock modes are identical.
+- Service logs and broker/audit readbacks show no order placement, modification, cancellation, staging, or preview-submit caused by verification.
 
 ## 6. Rollback
 
@@ -108,4 +126,3 @@ docker compose --profile ai --profile voice up -d --build webhook
 ```
 
 Restore `.env` from the timestamped backup only if the failure came from environment changes.
-

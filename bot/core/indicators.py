@@ -97,3 +97,24 @@ class RollingSlope:
         if len(self.values) < self.window:
             return None
         return safe_div(self.values[-1] - self.values[0], self.window - 1)
+
+
+@dataclass
+class SessionVWAP:
+    """Intraday VWAP that resets on each new session date."""
+    _session_key: object = None
+    _cumulative_pv: float = 0.0
+    _cumulative_vol: float = 0.0
+    vwap: Optional[float] = None
+
+    def update(self, bar: Bar, session_key: object) -> Optional[float]:
+        if session_key != self._session_key:
+            self._session_key = session_key
+            self._cumulative_pv = 0.0
+            self._cumulative_vol = 0.0
+        tp = (bar.high + bar.low + bar.close) / 3.0
+        self._cumulative_pv += tp * bar.volume
+        self._cumulative_vol += bar.volume
+        if self._cumulative_vol > 0:
+            self.vwap = self._cumulative_pv / self._cumulative_vol
+        return self.vwap

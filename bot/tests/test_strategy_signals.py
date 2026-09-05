@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from bot.core.strategy import NarrowToWideStrategy
 from bot.core.types import Bar, Side
@@ -24,7 +24,7 @@ def test_strategy_generates_signal():
     logger = get_logger("test")
     strat = NarrowToWideStrategy(cfg, logger)
 
-    start = datetime.utcnow()
+    start = datetime.now(timezone.utc)
     bars = [
         Bar(start, 100, 101, 99.5, 100, 1000),
         Bar(start + timedelta(minutes=1), 100, 100.8, 99.7, 100.0, 1000),

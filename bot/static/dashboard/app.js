@@ -5,10 +5,14 @@ const PHOTO_WIDTH = 1680;
 const PHOTO_HEIGHT = 945;
 
 const roomHotspots = $("#room-hotspots");
+const deskPhoneObject = $("#desk-phone-object");
+const winstonAudioPlayer = $("#winston-audio-player");
 const screenTerminal = $("#screen-terminal");
 const tradingViewScreen = $("#tradingview-screen");
-const chartCanvas = $("#chart-screen");
-const chartCtx = chartCanvas.getContext("2d");
+const proConsole = $("#pro-console");
+const proTradingViewScreen = $("#pro-tradingview-screen");
+const proConsoleClose = $("#pro-console-close");
+const mobileTradingViewScreen = $("#mobile-tradingview-screen");
 const panelTitle = $("#panel-title");
 const panelKicker = $("#panel-kicker");
 const panelBody = $("#panel-body");
@@ -19,10 +23,18 @@ const executionPill = $("#execution-pill");
 const brokerPill = $("#broker-pill");
 const positionsPill = $("#positions-pill");
 const themeToggle = $("#theme-toggle");
+const tradingModeSelect = $("#trading-mode-select");
+const tradingModeStatus = $("#trading-mode-status");
 const navRevealZone = $("#nav-reveal-zone");
+const workflowButtons = $$(".workflow-button");
+const dataDisclosure = $("#data-disclosure");
+const dataDisclosureTitle = $("#data-disclosure-title");
+const dataDisclosureDetail = $("#data-disclosure-detail");
 
 let activePanel = "tv";
 let panelOpen = false;
+let activeWorkflow = "desk";
+let roomClear = true;
 let dashboardState = fallbackState();
 let calendarState = null;
 let calendarFetchedAt = 0;
@@ -37,6 +49,29 @@ let reviewState = null;
 let reviewRefreshPromise = null;
 let closeReportState = null;
 let closeReportRefreshPromise = null;
+let mentorState = null;
+let mentorRefreshPromise = null;
+let mentorAskState = null;
+let mentorEyesState = null;
+let mentorOpsState = {
+  sourceHealth: null,
+  setupWatch: null,
+  noTrade: null,
+  tradier: null,
+  autopsyBackfill: null,
+  pnlAttribution: null,
+  strategyDrift: null,
+  regimeCatalyst: null,
+  crossBotRisk: null,
+  replayLab: null,
+  dailyRootCause: null,
+  tradeQualityHeatmap: null,
+  guardrailReport: null,
+  brokerReconciliation: null,
+  botParity: null,
+  lastGoodWeekDelta: null,
+  drillScheduler: null,
+};
 let coverageState = null;
 let coverageRefreshPromise = null;
 let scannerQualityState = null;
@@ -47,10 +82,36 @@ let lifecycleState = null;
 let lifecycleRefreshPromise = null;
 let riskState = null;
 let riskRefreshPromise = null;
+let tradingModeState = {
+  ok: false,
+  trading_mode: "dual",
+  saving: false,
+  error: null,
+  timestamp: null,
+};
+let tradingModeRefreshPromise = null;
 let hardeningState = null;
 let hardeningRefreshPromise = null;
 let latencyState = null;
 let latencyRefreshPromise = null;
+let entitlementState = { ok: false, tier: "core", features: {} };
+let readinessState = null;
+let plannerState = null;
+let intelligenceState = null;
+let marketContextState = null;
+let playbookState = null;
+let symbolNoteState = null;
+let structuredReviewState = null;
+let annotationsState = null;
+let missedTradesState = null;
+let disciplineState = null;
+let decisionIntelligencePromise = null;
+let decisionIntelligenceFetchedAt = 0;
+let decisionIntelligenceKey = "";
+let playbookQuery = "";
+let dashboardRefreshController = null;
+let dashboardRefreshTimer = null;
+let dashboardDestroyed = false;
 let tradeReviewState = null;
 let tradeReviewPromise = null;
 let webhookTestState = null;
@@ -61,10 +122,14 @@ let watchlistDraft = { symbol: "", type: "equity" };
 let tradingViewCoverageDraft = localStorage.getItem("trading-bull-tv-coverage-symbols") || "";
 let chartCaptures = readLocalJson("trading-bull-chart-captures", []);
 let endOfDayRitual = readLocalJson("trading-bull-eod-ritual", null);
-let frame = 0;
 let roomTheme = localStorage.getItem("velez-room-theme") === "day" ? "day" : "night";
 let tradingViewLoaded = false;
 let tradingViewTimer = null;
+let proConsoleOpen = false;
+let proTradingViewLoaded = false;
+let proTradingViewTimer = null;
+let mobileTradingViewLoaded = false;
+let mobileTradingViewTimer = null;
 let appleMusicScriptPromise = null;
 let appleMusicInstance = null;
 let appleMusicReadyPromise = null;
@@ -73,7 +138,15 @@ let appleMusicPollTimer = null;
 const APPLE_MUSIC_URL = "https://music.apple.com/us/browse";
 const APPLE_MUSIC_FOCUS_URL = "https://music.apple.com/us/search?term=focus%20trading";
 const APPLE_MUSIC_SCRIPT_URL = "https://js-cdn.music.apple.com/musickit/v3/musickit.js";
-const APP_BUILD = "v6.21";
+const APP_BUILD = "v6.40.4";
+const WINSTON_REQUIRED_VOICE = "winston";
+const WINSTON_AUDIO_UNLOCK_CLIP =
+  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
+const TRADING_MODE_LABELS = {
+  intraday: "Intraday",
+  swing: "Swing",
+  dual: "Both",
+};
 const tradingViewSymbols = [
   { label: "SPY", symbol: "AMEX:SPY" },
   { label: "QQQ", symbol: "NASDAQ:QQQ" },
@@ -111,6 +184,7 @@ const winstonState = {
   message: "Phone line ready",
   speechRequestId: 0,
   audio: null,
+  speechController: null,
   brain: {
     provider: "winston_rule_based_v1",
     model: "local_guardrail_rules",
@@ -119,12 +193,14 @@ const winstonState = {
     detail: "Safe local Winston responses",
   },
   voice: {
-    provider: "browser",
-    configured: true,
-    available: true,
-    voice: "browser_default",
-    model: "Web Speech API",
-    detail: "Browser speech synthesis fallback",
+    provider: "pockettts",
+    configured: false,
+    available: false,
+    voice: WINSTON_REQUIRED_VOICE,
+    model: "tts-1",
+    detail: "Checking Winston voice service",
+    statusLoaded: false,
+    lastLatencyMs: null,
   },
   transcript: [
     {
@@ -136,48 +212,40 @@ const winstonState = {
   recognition: null,
 };
 
-const palette = {
-  ink: "#f4f1e8",
-  muted: "#aeb8b0",
-  green: "#68c783",
-  red: "#e46b61",
-  amber: "#e2aa4b",
-  blue: "#93c8ff",
-  grid: "rgba(244, 241, 232, 0.12)",
-};
-
 const panelCopy = {
-  tv: ["TradingView | V6.21", "Trading Screen"],
-  mission: ["Daily mission | V6.21", "Mission Card"],
-  laptop: ["Command center | V6.21", "Bot Console"],
-  journal: ["Journal + lifecycle | V6.21", "Trade Journal"],
-  calendar: ["Daily prep | V6.21", "Calendar"],
-  safe: ["Approval inbox | V6.21", "Safe"],
-  music: ["Apple Music | V6.21", "Music"],
-  phone: ["Winston lifecycle line | V6.21", "Desk Phone"],
-  bookshelf: ["Strategy library | V6.21", "Bookshelf"],
-  clock: ["Market sessions | V6.21", "Desk Clock"],
-  window: ["Market weather | V6.21", "Window View"],
-  lamp: ["Risk command | V6.21", "Desk Lamp"],
-  drawer: ["Backtest lab | V6.21", "Desk Drawer"],
-  notes: ["Bull Report | V6.21", "Bull Report"],
+  tv: ["TradingView | V6.23", "Trading Screen"],
+  mission: ["Daily mission | V6.23", "Mission Card"],
+  mentor: ["Eyes-on coaching | V6.26", "Velez Mentor AI"],
+  laptop: ["Command center | V6.23", "Bot Console"],
+  journal: ["Journal + broker ledger | V6.24", "Trade Journal"],
+  calendar: ["Daily prep | V6.23", "Calendar"],
+  safe: ["Approval inbox | V6.23", "Safe"],
+  music: ["Apple Music | V6.23", "Music"],
+  phone: ["Winston lifecycle line | V6.23", "Desk Phone"],
+  bookshelf: ["Strategy library | V6.23", "Bookshelf"],
+  clock: ["Market sessions | V6.23", "Desk Clock"],
+  window: ["Market weather | V6.23", "Window View"],
+  lamp: ["Risk command | V6.23", "Desk Lamp"],
+  drawer: ["Backtest lab | V6.23", "Desk Drawer"],
+  notes: ["Bull Report | V6.23", "Bull Report"],
 };
 
 const screenRegion = { x: 0.348, y: 0.413, w: 0.296, h: 0.233 };
+const phoneObjectRegion = { x: 0.08, y: 0.645, w: 0.26, h: 0.23 };
 const hotspotDefinitions = [
-  { panel: "laptop", label: "Command center", icon: "laptop", x: 0.365, y: 0.714, w: 0.31, h: 0.13 },
+  { panel: "laptop", label: "Command center", icon: "laptop", x: 0.455, y: 0.738, w: 0.075, h: 0.07 },
   { panel: "mission", label: "Daily mission", icon: "target", x: 0.45, y: 0.615, w: 0.12, h: 0.075 },
   { panel: "journal", label: "Trade journal", icon: "book-open", x: 0.72, y: 0.735, w: 0.14, h: 0.105 },
-  { panel: "calendar", label: "Calendar and P/L", icon: "calendar-days", x: 0.69, y: 0.58, w: 0.09, h: 0.1 },
-  { panel: "safe", label: "Credential safe", icon: "shield-check", x: 0.845, y: 0.565, w: 0.075, h: 0.18 },
-  { panel: "music", label: "Music", icon: "music", x: 0.222, y: 0.758, w: 0.09, h: 0.085 },
-  { panel: "phone", label: "Call Winston", icon: "phone-call", x: 0.192, y: 0.575, w: 0.068, h: 0.17 },
-  { panel: "bookshelf", label: "Strategy library", icon: "library", x: 0.025, y: 0.13, w: 0.125, h: 0.36 },
+  { panel: "calendar", label: "Calendar and P/L", icon: "calendar-days", x: 0.71, y: 0.575, w: 0.06, h: 0.085 },
+  { panel: "safe", label: "Credential safe", icon: "shield-check", x: 0.875, y: 0.57, w: 0.055, h: 0.15 },
+  { panel: "music", label: "Music", icon: "music", x: 0.315, y: 0.742, w: 0.065, h: 0.075 },
+  { panel: "phone", label: "Call Winston", icon: "phone-call", x: 0.13, y: 0.665, w: 0.17, h: 0.17 },
+  { panel: "bookshelf", label: "Strategy library", icon: "library", x: 0.035, y: 0.16, w: 0.07, h: 0.16 },
   { panel: "clock", label: "Market sessions", icon: "clock", x: 0.795, y: 0.13, w: 0.08, h: 0.12 },
-  { panel: "window", label: "Market weather", icon: "cloud-sun", x: 0.34, y: 0.12, w: 0.32, h: 0.24 },
+  { panel: "window", label: "Market weather", icon: "cloud-sun", x: 0.61, y: 0.18, w: 0.09, h: 0.1 },
   { panel: "lamp", label: "Risk mood light", icon: "lamp", x: 0.155, y: 0.355, w: 0.095, h: 0.115 },
-  { panel: "drawer", label: "Backtest drawer", icon: "archive", x: 0.67, y: 0.825, w: 0.28, h: 0.135 },
-  { panel: "notes", label: "Bull Report", icon: "file-text", x: 0.88, y: 0.44, w: 0.105, h: 0.12 },
+  { panel: "drawer", label: "Backtest drawer", icon: "archive", x: 0.89, y: 0.875, w: 0.065, h: 0.06 },
+  { panel: "notes", label: "Bull Report", icon: "file-text", x: 0.93, y: 0.425, w: 0.055, h: 0.085 },
 ];
 
 function fallbackState() {
@@ -187,30 +255,30 @@ function fallbackState() {
     uptime_seconds: 0,
     execution_armed: false,
     broker: { ok: false, reason: "loading" },
-    paper_endpoint: true,
+    paper_endpoint: null,
     positions: [],
     positions_error: null,
     summary: {
-      open_positions: 0,
-      unrealized_pl: 0,
-      symbols_watched: 0,
-      recent_decisions: 0,
+      open_positions: null,
+      unrealized_pl: null,
+      symbols_watched: null,
+      recent_decisions: null,
     },
     risk: {
-      risk_per_trade: 0.005,
-      max_dollar_risk_per_trade: 1000,
-      max_daily_loss_pct: 0.02,
-      max_open_positions: 3,
-      max_stop_pct: 0.1,
-      pyramid_add_fraction: 0.5,
+      risk_per_trade: null,
+      max_dollar_risk_per_trade: null,
+      max_daily_loss_pct: null,
+      max_open_positions: null,
+      max_stop_pct: null,
+      pyramid_add_fraction: null,
     },
     guardrails: {
-      paper_only: true,
-      time_in_force: "day",
+      paper_only: null,
+      time_in_force: null,
       take_profit_r: null,
-      auth_required: true,
-      approval_required: false,
-      approval_mode_source: "environment",
+      auth_required: null,
+      approval_required: null,
+      approval_mode_source: "Unknown",
     },
     symbols: [{ symbol: "SPY", type: "equity", contract_multiplier: 1, session: "rth" }],
     recent_decisions: [],
@@ -245,7 +313,7 @@ function fallbackState() {
     lifecycle: {
       ok: false,
       timestamp: new Date().toISOString(),
-      summary: { open_positions: 0, open_orders: 0, recent_fills: 0, guardrails: 0, management_actions: 0, unrealized_pl: 0, open_risk: 0, average_r_multiple: null },
+      summary: { open_positions: null, open_orders: null, recent_fills: null, guardrails: null, management_actions: null, unrealized_pl: null, open_risk: null, average_r_multiple: null },
       positions: [],
       open_orders: [],
       recent_fills: [],
@@ -272,12 +340,12 @@ function fallbackState() {
         detail: "Safe local Winston responses",
       },
       voice: {
-        provider: "browser",
-        configured: true,
-        available: true,
-        voice: "browser_default",
-        model: "Web Speech API",
-        detail: "Browser speech synthesis fallback",
+        provider: "pockettts",
+        configured: false,
+        available: false,
+        voice: "winston",
+        model: "tts-1",
+        detail: "Checking Winston voice service",
       },
     },
   };
@@ -296,9 +364,9 @@ function fallbackCalendarState() {
       timezone: "America/New_York",
     },
     pnl: {
-      month_pl: 0,
-      unrealized_pl: dashboardState?.summary?.unrealized_pl || 0,
-      equity_change: 0,
+      month_pl: null,
+      unrealized_pl: dashboardState?.ok && !dashboardState?.positions_error ? dashboardState?.summary?.unrealized_pl : null,
+      equity_change: null,
       detail: "Calendar feed loading",
     },
     alerts: {
@@ -435,6 +503,62 @@ function currentCloseReportState() {
   return closeReportState || fallbackCloseReportState();
 }
 
+function fallbackMentorState() {
+  return {
+    ok: false,
+    version: "bull_mentor_v1",
+    timestamp: dashboardState.timestamp,
+    scope: "weekly",
+    mode: "retail",
+    advisory_only: true,
+    headline: "Velez Mentor is reading the journal and building an evidence-backed scorecard.",
+    profile: {
+      experience_level: "developing",
+      primary_mode: "auto",
+      coaching_style: "concise",
+      goals: [],
+      local_only: true,
+    },
+    sample: {
+      decisions: { count: 0, confidence: "low" },
+      performance: { count: 0, confidence: "insufficient", note: "Closed-trade performance needs more evidence." },
+      execution: { count: 0, confidence: "low" },
+    },
+    scorecards: [
+      { key: "risk_discipline", label: "Risk discipline", score: null, status: "insufficient", sample: 0 },
+      { key: "setup_selection", label: "Setup selection", score: null, status: "insufficient", sample: 0 },
+      { key: "execution_quality", label: "Execution quality", score: null, status: "insufficient", sample: 0 },
+      { key: "process_consistency", label: "Process consistency", score: null, status: "insufficient", sample: 0 },
+    ],
+    metrics: {
+      discipline: { decisions: 0, actionable: 0, average_receipt_score: null },
+      performance: { terminal_trades: 0, sufficient_sample: false, expectancy_r: null },
+      execution: { planned_parents: 0, participation_breaches: 0, slippage_samples: 0 },
+      prop: { applicable: false },
+    },
+    patterns: [],
+    recommendation: {
+      title: "One-rule session",
+      instruction: "Collect qualified journal evidence, then let Velez Mentor identify the first measurable development edge.",
+      dimension: "process_consistency",
+    },
+    active_drills: [],
+    recent_autopsies: [],
+    evidence: [],
+    goals: [],
+    guardrails: {
+      can_submit_orders: false,
+      can_approve_orders: false,
+      can_change_risk: false,
+      facts_from_journal_only: true,
+    },
+  };
+}
+
+function currentMentorState() {
+  return mentorState || fallbackMentorState();
+}
+
 function fallbackCoverageState() {
   const rows = (dashboardState.symbols || []).map((item) => {
     const latest = (dashboardState.recent_decisions || []).find((decision) => decision.symbol === item.symbol);
@@ -470,18 +594,19 @@ function currentCoverageState() {
 
 function fallbackLifecycleState() {
   const openPositions = dashboardState?.positions || [];
-  const unrealized = dashboardState?.summary?.unrealized_pl || 0;
+  const verified = Boolean(dashboardState?.ok && !dashboardState?.positions_error);
+  const unrealized = verified ? dashboardState?.summary?.unrealized_pl : null;
   return {
     ok: false,
     timestamp: dashboardState?.timestamp || new Date().toISOString(),
     summary: {
-      open_positions: openPositions.length,
-      open_orders: 0,
-      recent_fills: 0,
-      guardrails: 0,
-      management_actions: 0,
+      open_positions: verified ? openPositions.length : null,
+      open_orders: null,
+      recent_fills: null,
+      guardrails: null,
+      management_actions: null,
       unrealized_pl: unrealized,
-      open_risk: 0,
+      open_risk: null,
       average_r_multiple: null,
     },
     positions: openPositions.map((item) => ({
@@ -712,7 +837,7 @@ function riskMood() {
   const armed = Boolean(dashboardState.execution_armed);
   const openPositions = Number(dashboardState.summary?.open_positions || dashboardState.positions?.length || 0);
   const maxPositions = Number(dashboardState.risk?.max_open_positions || 0);
-  const openRisk = Number(dashboardState.summary?.unrealized_pl || 0);
+  const openRisk = Number(currentLifecycleState().summary?.open_risk || 0);
   if (!brokerOk || health.overall === "red") {
     return { tone: "danger", label: "Red", headline: "Protective mode", detail: "Broker or core health needs attention before trusting automation." };
   }
@@ -1162,7 +1287,7 @@ function renderApprovalInbox() {
               <button class="symbol-button" type="button" data-open-panel="phone"><i data-lucide="phone-call"></i> Open phone approval</button>
               <button class="action-button" type="button" data-approve-order="${escapeHtml(item.id)}" data-approve-phrase="${escapeHtml(item.approval_phrase)}">
                 <i data-lucide="shield-check"></i>
-                <span>Approve Paper</span>
+                <span>${escapeHtml(item.submit_eligible === false ? "Conditions Not Met" : "Submit Reviewed Setup")}</span>
               </button>
             </article>
           `,
@@ -1188,27 +1313,23 @@ function deskPrepLines() {
 }
 
 function chartCaptureSummary() {
-  if (!chartCaptures.length) return "No browser chart capture saved yet";
+  if (!chartCaptures.length) return "No TradingView chart link saved yet";
   const latest = chartCaptures[0];
-  return `${latest.symbol || "Chart"} captured ${timeAgo(latest.timestamp)}`;
+  return `${latest.symbol || "Chart"} bookmarked ${timeAgo(latest.timestamp)}`;
 }
 
 function captureCurrentChart() {
-  try {
-    const dataUrl = chartCanvas.toDataURL("image/png");
-    const capture = {
-      id: `${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      symbol: tradingViewLabel(),
-      source: tradingViewLoaded ? "desk_canvas_with_tradingview_overlay" : "desk_canvas_fallback",
-      dataUrl,
-    };
-    chartCaptures = [capture, ...chartCaptures].slice(0, 8);
-    localStorage.setItem("trading-bull-chart-captures", JSON.stringify(chartCaptures));
-    winstonTranscript("system", "Chart capture saved in this browser.");
-  } catch (error) {
-    winstonTranscript("system", `Chart capture blocked: ${error?.message || "browser security"}.`);
-  }
+  const symbol = tradingViewLabel();
+  const capture = {
+    id: `${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    symbol,
+    source: "tradingview_symbol_link",
+    url: `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(symbol)}`,
+  };
+  chartCaptures = [capture, ...chartCaptures].slice(0, 8);
+  localStorage.setItem("trading-bull-chart-captures", JSON.stringify(chartCaptures));
+  winstonTranscript("system", "TradingView chart link saved. Cross-origin chart pixels were not captured.");
   renderPanel();
 }
 
@@ -1216,14 +1337,14 @@ function renderChartCaptureLane() {
   const latest = chartCaptures[0];
   return `
     <section class="tool-section">
-      <div class="section-title">Trade screenshot capture</div>
+      <div class="section-title">TradingView chart bookmark</div>
       <div class="data-list compact-list">
         ${row("Latest capture", chartCaptureSummary())}
         ${row("TradingView iframe", "Browser security prevents server-side iframe screenshots")}
       </div>
       <div class="actions">
-        <button class="symbol-button" type="button" data-chart-capture><i data-lucide="camera"></i> Capture desk chart</button>
-        ${latest?.dataUrl ? `<a class="symbol-button" href="${latest.dataUrl}" download="trading-bull-chart-${escapeHtml(latest.id)}.png"><i data-lucide="download"></i> Download latest</a>` : ""}
+        <button class="symbol-button" type="button" data-chart-capture><i data-lucide="bookmark"></i> Save chart link</button>
+        ${latest?.url ? `<a class="symbol-button" href="${escapeHtml(latest.url)}" target="_blank" rel="noopener noreferrer"><i data-lucide="external-link"></i> Open latest</a>` : ""}
       </div>
     </section>
   `;
@@ -1292,6 +1413,521 @@ function renderDailyReviewCard(title = "Winston after-action review") {
           ${reviewRefreshPromise ? "Reviewing" : "Refresh review"}
         </button>
       </div>
+    </section>
+  `;
+}
+
+function mentorScoreCard(item) {
+  const score = item.score === null || item.score === undefined ? "—" : `${item.score}`;
+  const tone = item.status === "strong" ? "good" : item.status === "focus" ? "bad" : "warn";
+  return `
+    <div class="health-card ${tone}">
+      <div>
+        <strong>${escapeHtml(item.label || item.key || "Mentor dimension")}</strong>
+        <span>${escapeHtml(item.explanation || `${item.sample || 0} evidence item(s)`)}</span>
+      </div>
+      <small>${escapeHtml(score === "—" ? "Needs data" : `${score}/100`)}</small>
+    </div>
+  `;
+}
+
+function mentorEdgeCard(title, body, badge = "active") {
+  return `
+    <article class="health-card good mentor-edge-card">
+      <div>
+        <strong>${escapeHtml(title)}</strong>
+        <span>${escapeHtml(body || "Collecting evidence.")}</span>
+      </div>
+      <small>${escapeHtml(badge)}</small>
+    </article>
+  `;
+}
+
+function renderMentorEdges(mentor) {
+  const edges = mentor.mentor_edges || {};
+  const governor = edges.response_governor || mentor.response_governor || {};
+  const fingerprint = edges.mistake_fingerprint || mentor.mistake_fingerprint || {};
+  const shadow = edges.shadow_book || mentor.shadow_book || {};
+  const challenge = edges.pre_trade_challenge || mentor.pre_trade_challenge || {};
+  const replay = edges.trade_replay_coach || mentor.replay_coach || {};
+  const institutional = edges.institutional_mode || mentor.institutional_read || {};
+  const drill = edges.one_tap_drill_builder || mentor.drill || {};
+  const persona = edges.personality_dial || mentor.personality || {};
+  return `
+    <section class="tool-section">
+      <div class="section-title">Mentor edge suite</div>
+      <div class="health-grid mentor-edge-grid">
+        ${mentorEdgeCard("Response Governor", `${governor.style || "leo concise"} · ${governor.word_cap || 65} word cap`, governor.mode || "coach")}
+        ${mentorEdgeCard("Mistake Fingerprint", fingerprint.readback || fingerprint.dominant?.label || "No recurring leak measured yet.", fingerprint.dominant?.key || "fingerprint")}
+        ${mentorEdgeCard("Shadow Book", shadow.readback || "Tracking skipped and rejected setups.", `${shadow.blocked_count || 0} skipped`)}
+        ${mentorEdgeCard("Pre-Trade Challenge", challenge.question || "One sharp stand-down question is ready.", challenge.dimension || "challenge")}
+        ${mentorEdgeCard("Replay Coach", replay.readback || "Select a trade to replay entry facts versus outcome.", replay.ready ? "ready" : "waiting")}
+        ${mentorEdgeCard("Institutional Lens", institutional.readback || "Liquidity, participation, slippage, and exposure checks.", institutional.applicable ? "active" : "standby")}
+        ${mentorEdgeCard("One-Tap Drill", drill.title || "Build the next drill from this scorecard.", drill.dimension || "drill")}
+        ${mentorEdgeCard("Personality Dial", persona.persona || "Leo concise: warm, sharp, no sermon.", persona.style || "leo_concise")}
+      </div>
+      <div class="actions">
+        <button class="symbol-button" type="button" data-mentor-build-drill><i data-lucide="dumbbell"></i> Build drill</button>
+        <button class="symbol-button" type="button" data-mentor-eyes><i data-lucide="eye"></i> Eyes on TradingView</button>
+      </div>
+    </section>
+  `;
+}
+
+function mentorStatusTone(status) {
+  const cleaned = String(status || "").toLowerCase();
+  if (["green", "high", "ok", "qualified_setup_detected"].includes(cleaned)) return "good";
+  if (["red", "low", "source_blocked"].includes(cleaned)) return "bad";
+  return "warn";
+}
+
+function renderMentorConfidenceMeter(confidence) {
+  if (!confidence) return "";
+  const score = Number(confidence.score || 0);
+  const level = confidence.level || "low";
+  return `
+    <article class="health-card ${mentorStatusTone(level)} mentor-confidence-card">
+      <div>
+        <strong>Mentor Confidence Meter</strong>
+        <span>${escapeHtml(confidence.readback || `Confidence ${score}/100`)}</span>
+      </div>
+      <small>${escapeHtml(`${score}/100 · ${level}`)}</small>
+    </article>
+  `;
+}
+
+function renderMentorSourceHealthCard(observation = null) {
+  const health = mentorOpsState.sourceHealth?.health || observation?.source_health || {};
+  const source = health.active_source || observation?.bars_source || "not checked";
+  const status = health.status || (observation?.bars_loaded ? "green" : "yellow");
+  const order = health.source_order || observation?.bars_source_order || [];
+  return `
+    <section class="tool-section">
+      <div class="section-title">Chart Source Health</div>
+      <div class="health-grid">
+        <article class="health-card ${mentorStatusTone(status)}">
+          <div>
+            <strong>${escapeHtml(source)}</strong>
+            <span>${escapeHtml(health.readback || observation?.readback || "Run a source check to verify chart bars.")}</span>
+          </div>
+          <small>${escapeHtml(status)}</small>
+        </article>
+        <article class="health-card ${mentorStatusTone(mentorOpsState.tradier?.status)}">
+          <div>
+            <strong>Tradier Diagnostics</strong>
+            <span>${escapeHtml(mentorOpsState.tradier?.readback || "Tradier is available as a fallback check.")}</span>
+          </div>
+          <small>${escapeHtml(mentorOpsState.tradier?.token_present ? "token present" : "masked check")}</small>
+        </article>
+      </div>
+      <div class="data-list compact-list">
+        ${order.slice(0, 4).map((item) => row(item.source || "source", `${item.ok ? "OK" : "No"} · ${item.rows ?? item.reason ?? "checked"}`)).join("") || row("Source order", "Alpaca → Tradier → yfinance")}
+      </div>
+      <div class="actions">
+        <button class="symbol-button" type="button" data-mentor-source-health><i data-lucide="activity"></i> Check source</button>
+        <button class="symbol-button" type="button" data-mentor-tradier-diagnostics><i data-lucide="shield-check"></i> Check Tradier</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderMentorSetupWatchCard(observation = null) {
+  const watch = mentorOpsState.setupWatch?.watch || observation?.setup_watch || {};
+  return `
+    <section class="tool-section">
+      <div class="section-title">Setup Watch Mode</div>
+      <div class="health-card ${mentorStatusTone(watch.state)}">
+        <div>
+          <strong>${escapeHtml((watch.state || "watch not armed").replaceAll("_", " "))}</strong>
+          <span>${escapeHtml(watch.readback || "Ask Mentor to watch the selected chart for a clean Velez setup.")}</span>
+        </div>
+        <small>${escapeHtml(watch.qualified ? "qualified" : "watch")}</small>
+      </div>
+      ${watch.blockers?.length ? `<div class="decision-meta">Blockers: ${escapeHtml(watch.blockers.join(", "))}</div>` : ""}
+      <div class="actions">
+        <button class="symbol-button" type="button" data-mentor-setup-watch><i data-lucide="radar"></i> Start watch</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderMentorNoTradeCoach(mentor) {
+  const coach = mentorOpsState.noTrade?.coach || mentor.no_trade_coach || {};
+  return `
+    <section class="tool-section">
+      <div class="section-title">No-trade Coach</div>
+      <div class="review-list">
+        <div class="review-line lesson">${escapeHtml(coach.question || "No-trade coaching will appear after blocked or ignored setups are journaled.")}</div>
+        <div class="review-line">${escapeHtml(coach.readback || "Run the no-trade review to study the setups Mentor kept you out of.")}</div>
+      </div>
+      <div class="actions">
+        <button class="symbol-button" type="button" data-mentor-no-trade><i data-lucide="ban"></i> Review no-trades</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderMentorIntelligenceLab(mentor) {
+  const pnl = mentorOpsState.pnlAttribution?.attribution || mentor.pnl_attribution || {};
+  const drift = mentorOpsState.strategyDrift?.drift || mentor.strategy_drift || {};
+  const regime = mentorOpsState.regimeCatalyst?.guardrail || mentor.regime_catalyst || {};
+  const mirror = mentorOpsState.crossBotRisk?.mirror || mentor.cross_bot_risk || {};
+  const replayLab = mentorOpsState.replayLab?.lab || {};
+  const pnlValue = pnl.total_pnl === null || pnl.total_pnl === undefined ? "—" : money(pnl.total_pnl);
+  const driftSeverity = drift.severity || "low";
+  const regimeStatus = regime.status || "unknown";
+  const mirrorStatus = mirror.status || "unknown";
+  const replayText = replayLab.readback || "Run Replay Lab on the latest journal trade to find the first invalidation candle.";
+  return `
+    <section class="tool-section">
+      <div class="section-title">Mentor intelligence lab</div>
+      <div class="health-grid mentor-edge-grid">
+        <article class="health-card ${mentorStatusTone(pnl.primary_drag ? "yellow" : "green")}">
+          <div>
+            <strong>P/L Attribution</strong>
+            <span>${escapeHtml(pnl.readback || "Explain money movement by setup, sizing, exit, fill, regime, and no-trade buckets.")}</span>
+          </div>
+          <small>${escapeHtml(pnlValue)}</small>
+        </article>
+        <article class="health-card ${mentorStatusTone(driftSeverity)}">
+          <div>
+            <strong>Strategy Drift</strong>
+            <span>${escapeHtml(drift.readback || "Compare current behavior against the bot's own baseline.")}</span>
+          </div>
+          <small>${escapeHtml(driftSeverity)}</small>
+        </article>
+        <article class="health-card ${mentorStatusTone(regimeStatus)}">
+          <div>
+            <strong>Regime + Catalyst</strong>
+            <span>${escapeHtml(regime.readback || "Check market regime and loaded macro/earnings catalysts.")}</span>
+          </div>
+          <small>${escapeHtml(regimeStatus)}</small>
+        </article>
+        <article class="health-card ${mentorStatusTone(mirrorStatus)}">
+          <div>
+            <strong>Cross-Bot Risk Mirror</strong>
+            <span>${escapeHtml(mirror.readback || "Mirror Velez exposure and configured Bull Pilot sources.")}</span>
+          </div>
+          <small>${escapeHtml(mirrorStatus)}</small>
+        </article>
+        <article class="health-card ${mentorStatusTone(replayLab.first_invalid ? "yellow" : "green")}">
+          <div>
+            <strong>Replay Lab</strong>
+            <span>${escapeHtml(replayText)}</span>
+          </div>
+          <small>${escapeHtml(replayLab.first_invalid ? "invalidated" : "ready")}</small>
+        </article>
+      </div>
+      <div class="actions">
+        <button class="symbol-button" type="button" data-mentor-pnl-attribution><i data-lucide="circle-dollar-sign"></i> Explain P/L</button>
+        <button class="symbol-button" type="button" data-mentor-strategy-drift><i data-lucide="git-compare-arrows"></i> Check drift</button>
+        <button class="symbol-button" type="button" data-mentor-regime-catalyst><i data-lucide="cloud-lightning"></i> Regime guard</button>
+        <button class="symbol-button" type="button" data-mentor-cross-bot-risk><i data-lucide="combine"></i> Risk mirror</button>
+        <button class="symbol-button" type="button" data-mentor-replay-lab><i data-lucide="film"></i> Replay Lab</button>
+      </div>
+      ${
+        pnl.buckets?.length
+          ? `<div class="data-list compact-list">${pnl.buckets.slice(0, 4).map((item) => row(item.label || item.bucket, `${money(item.pnl || 0)} · ${item.trades || 0} trade(s)`)).join("")}</div>`
+          : ""
+      }
+      ${
+        drift.flags?.length
+          ? `<div class="review-list">${drift.flags.slice(0, 3).map((item) => `<div class="review-line">${escapeHtml(item.readback || item.label || item.metric)}</div>`).join("")}</div>`
+          : ""
+      }
+      ${
+        replayLab.first_invalid
+          ? `<div class="review-line lesson">${escapeHtml(`First invalidation: ${replayLab.first_invalid.timestamp || "unknown"} · ${replayLab.first_invalid.reason || "review candle"}`)}</div>`
+          : ""
+      }
+    </section>
+  `;
+}
+
+function renderMentorSafeEnhancementLab(mentor) {
+  const root = mentorOpsState.dailyRootCause?.brief || mentor.daily_root_cause || {};
+  const heatmap = mentorOpsState.tradeQualityHeatmap?.heatmap || mentor.trade_quality_heatmap || {};
+  const guardrail = mentorOpsState.guardrailReport?.report || mentor.guardrail_do_not_touch || {};
+  const reconciliation = mentorOpsState.brokerReconciliation?.score || mentor.broker_reconciliation || {};
+  const parity = mentorOpsState.botParity?.matrix || mentor.bot_parity_matrix || {};
+  const changed = mentorOpsState.lastGoodWeekDelta?.delta || mentor.last_good_week_delta || {};
+  const scheduler = mentorOpsState.drillScheduler?.scheduler || mentor.drill_scheduler || {};
+  const worstHeatmap = heatmap.worst_rows?.[0] || heatmap.rows?.slice()?.sort((a, b) => Number(a.pnl || 0) - Number(b.pnl || 0))[0] || {};
+  const deltaValue = changed.delta?.pnl === null || changed.delta?.pnl === undefined ? "—" : money(changed.delta.pnl);
+  return `
+    <section class="tool-section">
+      <div class="section-title">Mentor safe enhancement lab</div>
+      <div class="health-grid mentor-edge-grid">
+        <article class="health-card ${mentorStatusTone(root.status)}">
+          <div>
+            <strong>Daily Root-Cause Brief</strong>
+            <span>${escapeHtml(root.readback || "Find the first thing worth reviewing today across P/L, drift, no-trades, data, and cross-bot exposure.")}</span>
+          </div>
+          <small>${escapeHtml(root.root_cause || "ready")}</small>
+        </article>
+        <article class="health-card ${mentorStatusTone(worstHeatmap.grade === "avoid" ? "red" : worstHeatmap.grade === "leaky_winner" ? "yellow" : "green")}">
+          <div>
+            <strong>Trade Quality Heatmap</strong>
+            <span>${escapeHtml(heatmap.readback || "Grade symbol/setup buckets by P/L, win rate, sample size, and cause bucket.")}</span>
+          </div>
+          <small>${escapeHtml(worstHeatmap.symbol ? `${worstHeatmap.symbol} · ${worstHeatmap.grade}` : "ready")}</small>
+        </article>
+        <article class="health-card ${mentorStatusTone(guardrail.status)}">
+          <div>
+            <strong>Do Not Touch Guardrails</strong>
+            <span>${escapeHtml(guardrail.readback || "Read-only list of guardrails Mentor recommends keeping fixed.")}</span>
+          </div>
+          <small>${escapeHtml(guardrail.changes_applied === false ? "read-only" : "ready")}</small>
+        </article>
+        <article class="health-card ${mentorStatusTone(reconciliation.status)}">
+          <div>
+            <strong>Broker/Data Reconciliation</strong>
+            <span>${escapeHtml(reconciliation.readback || "Score journal, broker, lifecycle, and approval queue alignment without taking broker actions.")}</span>
+          </div>
+          <small>${escapeHtml(reconciliation.score === undefined ? "ready" : `${reconciliation.score}/100`)}</small>
+        </article>
+        <article class="health-card ${mentorStatusTone(parity.status)}">
+          <div>
+            <strong>Bot-to-Bot Parity Matrix</strong>
+            <span>${escapeHtml(parity.readback || "Compare Velez Mentor features against configured Bull Pilot evidence sources.")}</span>
+          </div>
+          <small>${escapeHtml(parity.rows?.length ? `${parity.rows.length} checks` : "ready")}</small>
+        </article>
+        <article class="health-card ${mentorStatusTone(changed.last_good ? "yellow" : "low")}">
+          <div>
+            <strong>Last Good Week Delta</strong>
+            <span>${escapeHtml(changed.readback || "Compare this/latest week against the last positive week with enough closed trades.")}</span>
+          </div>
+          <small>${escapeHtml(deltaValue)}</small>
+        </article>
+        <article class="health-card ${mentorStatusTone("green")}">
+          <div>
+            <strong>Mentor Drill Scheduler</strong>
+            <span>${escapeHtml(scheduler.readback || "Recommend a daily drill from the highest-priority root cause.")}</span>
+          </div>
+          <small>${escapeHtml(scheduler.recommended?.dimension || "daily")}</small>
+        </article>
+      </div>
+      <div class="actions">
+        <button class="symbol-button" type="button" data-mentor-root-cause><i data-lucide="scan-search"></i> Root cause</button>
+        <button class="symbol-button" type="button" data-mentor-quality-heatmap><i data-lucide="grid-3x3"></i> Heatmap</button>
+        <button class="symbol-button" type="button" data-mentor-guardrail-report><i data-lucide="lock-keyhole"></i> Do-not-touch</button>
+        <button class="symbol-button" type="button" data-mentor-reconciliation><i data-lucide="scale"></i> Reconcile score</button>
+        <button class="symbol-button" type="button" data-mentor-bot-parity><i data-lucide="copy-check"></i> Bot parity</button>
+        <button class="symbol-button" type="button" data-mentor-last-good-week><i data-lucide="history"></i> What changed</button>
+        <button class="symbol-button" type="button" data-mentor-drill-scheduler><i data-lucide="calendar-clock"></i> Drill plan</button>
+        <button class="symbol-button" type="button" data-mentor-drill-scheduler-create><i data-lucide="dumbbell"></i> Create drill</button>
+      </div>
+      ${
+        root.evidence?.length
+          ? `<div class="review-list">${root.evidence.slice(0, 3).map((item) => `<div class="review-line">${escapeHtml(item.readback || item.label || item.signal)}</div>`).join("")}</div>`
+          : ""
+      }
+      ${
+        heatmap.worst_rows?.length
+          ? `<div class="data-list compact-list">${heatmap.worst_rows.slice(0, 4).map((item) => row(`${item.symbol} · ${item.setup}`, `${money(item.pnl || 0)} · ${item.grade} · ${item.trades} trade(s)`)).join("")}</div>`
+          : ""
+      }
+      ${
+        guardrail.rules?.length
+          ? `<div class="data-list compact-list">${guardrail.rules.slice(0, 4).map((item) => row(item.key, `${item.recommendation || "hold"} · ${item.reason || "Keep fixed"}`)).join("")}</div>`
+          : ""
+      }
+    </section>
+  `;
+}
+
+function renderMentor() {
+  const mentor = currentMentorState();
+  const profile = mentor.profile || {};
+  const discipline = mentor.metrics?.discipline || {};
+  const performance = mentor.metrics?.performance || {};
+  const execution = mentor.metrics?.execution || {};
+  const trade = mentor.trade || null;
+  const recommendation = mentor.recommendation || {};
+  const drills = mentor.active_drills || [];
+  const autopsies = mentor.recent_autopsies || [];
+  const evidence = mentor.evidence || [];
+  const response = mentorAskState?.reply || "";
+  const scorecards = mentor.scorecards || [];
+  const chartObservation = mentorEyesState?.chart_observation || mentor.chart_observation || null;
+  const goals = profile.goals || mentor.goals || [];
+  const selectedMode = profile.primary_mode || "auto";
+  const selectedExperience = profile.experience_level || "developing";
+  const selectedStyle = profile.coaching_style || "concise";
+  const option = (value, label, selected) => `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(label)}</option>`;
+  return `
+    ${renderCoachIntelligence()}
+    <div class="mood-card calm mentor-hero">
+      <i data-lucide="graduation-cap"></i>
+      <div>
+        <span>${escapeHtml(`${mentor.mode || "retail"} coaching | advisory only`)}</span>
+        <strong>${escapeHtml(mentor.headline || "Velez Mentor is building your scorecard.")}</strong>
+        <p>Every coaching claim comes from the local Velez journal. Velez Mentor cannot place orders, approve trades, or change risk.</p>
+      </div>
+    </div>
+    ${renderMentorEdges(mentor)}
+    <section class="tool-section">
+      <div class="section-title">Evidence confidence</div>
+      <div class="health-grid">
+        ${renderMentorConfidenceMeter(chartObservation?.confidence_meter || mentor.mentor_confidence)}
+        ${mentorEdgeCard("Evidence Mode", `Chart: ${chartObservation?.bars_source || "not checked"} · Journal: ${mentor.metrics?.discipline?.decisions || 0} decisions`, chartObservation?.source_health?.status || mentor.mentor_confidence?.level || "ready")}
+      </div>
+    </section>
+    ${
+      trade?.found
+        ? `<section class="tool-section">
+            <div class="section-title">Trade evidence review</div>
+            <div class="decision journal-card">
+              <div class="decision-top">
+                <span class="decision-title">${escapeHtml([trade.symbol, trade.setup].filter(Boolean).join(" | ") || "Journal trade")}</span>
+                <span class="badge">${escapeHtml(trade.status || "seen")}</span>
+              </div>
+              <div class="decision-meta">Alert ref ${escapeHtml(trade.alert_ref || "local")} | Estimated risk ${trade.estimated_risk === null || trade.estimated_risk === undefined ? "unavailable" : money(trade.estimated_risk)}</div>
+              <div class="review-line lesson">${escapeHtml(trade.lesson || "Trade evidence is ready for review.")}</div>
+              ${renderConfidenceReceipt(trade.receipt)}
+            </div>
+          </section>`
+        : ""
+    }
+    <div class="metric-grid">
+      ${metric("Journal sample", discipline.decisions || 0, `${mentor.sample?.decisions?.confidence || "low"} discipline confidence`)}
+      ${metric("Closed outcomes", performance.terminal_trades || 0, performance.sufficient_sample ? `${performance.expectancy_r ?? 0}R expectancy` : "Expectancy withheld")}
+      ${metric("Execution sample", execution.slippage_samples || 0, `${execution.participation_breaches || 0} participation breaches`)}
+      ${metric("Active drills", drills.length, recommendation.title || "One focused improvement")}
+    </div>
+    <section class="tool-section">
+      <div class="section-title">Development scorecard</div>
+      <div class="health-grid">
+        ${scorecards.map(mentorScoreCard).join("") || `<div class="empty-state compact">Scorecards need journal evidence.</div>`}
+      </div>
+      <div class="actions">
+        <button class="symbol-button" type="button" data-mentor-scope="today"><i data-lucide="sunrise"></i> Today</button>
+        <button class="symbol-button active" type="button" data-mentor-scope="weekly"><i data-lucide="calendar-range"></i> Weekly</button>
+        <button class="symbol-button" type="button" data-mentor-refresh><i data-lucide="refresh-cw"></i> ${mentorRefreshPromise ? "Reading" : "Refresh"}</button>
+      </div>
+    </section>
+    <section class="tool-section">
+      <div class="section-title">Current coaching edge</div>
+      <div class="review-list">
+        <div class="review-line lesson"><strong>${escapeHtml(recommendation.title || "One-rule session")}</strong><br />${escapeHtml(recommendation.instruction || "")}</div>
+        ${(mentor.patterns || []).slice(0, 5).map((item) => `<div class="review-line">${escapeHtml(`${String(item.severity || "info").toUpperCase()} | ${item.message || item.key}`)}</div>`).join("")}
+      </div>
+    </section>
+    ${renderMentorIntelligenceLab(mentor)}
+    ${renderMentorSafeEnhancementLab(mentor)}
+    ${renderMentorNoTradeCoach(mentor)}
+    ${renderMentorSourceHealthCard(chartObservation)}
+    ${renderMentorSetupWatchCard(chartObservation)}
+    <section class="tool-section">
+      <div class="section-title">TradingView eyes-on</div>
+      <div class="review-line">Mentor reads the selected TradingView symbol/timeframe through connected bars, scanner logic, journal context, and optional browser capture metadata.</div>
+      <div class="data-list compact-list">
+        ${row("Selected chart", `${tradingViewBrokerSymbol()} · 5Min`)}
+        ${row("Last read", chartObservation?.readback || mentorEyesState?.reply || "No chart observation requested yet")}
+        ${row("Vision", chartObservation?.vision?.pixel_vision_used ? `Pixel vision used · ${chartObservation?.vision?.model || "provider"}` : chartObservation?.vision?.reason || chartObservation?.vision?.status || "Optional provider disabled")}
+      </div>
+      <div class="actions">
+        <button class="symbol-button" type="button" data-mentor-eyes><i data-lucide="eye"></i> Ask about visible setup</button>
+        <button class="symbol-button" type="button" data-chart-capture><i data-lucide="camera"></i> Capture desk chart</button>
+      </div>
+    </section>
+    <section class="tool-section">
+      <div class="section-title">Post-trade autopsies</div>
+      ${
+        autopsies.length
+          ? `<div class="decision-list autopsy-list">${autopsies.slice(0, 5).map((autopsy) => `
+              <article class="decision autopsy-card">
+                <div class="decision-top">
+                  <span class="decision-title">${escapeHtml(`${autopsy.symbol || "Trade"} · ${(autopsy.bar_classification?.label || "entry review").replaceAll("_", " ")}`)}</span>
+                  <span class="badge">${escapeHtml(autopsy.outcome?.r_multiple === null || autopsy.outcome?.r_multiple === undefined ? autopsy.outcome?.status || "closed" : `${autopsy.outcome.r_multiple}R`)}</span>
+                </div>
+                <div class="decision-meta">${escapeHtml(`${timeAgo(autopsy.created_at)} | Ref ${autopsy.alert_ref || "local"} | ${autopsy.chart_source || "journal evidence"}`)}</div>
+                ${autopsy.chart_url ? `<img class="autopsy-chart" src="${escapeHtml(autopsy.chart_url)}" alt="${escapeHtml(`${autopsy.symbol || "Trade"} Velez Mentor entry chart`)}" loading="lazy" />` : ""}
+                <div class="review-list">
+                  ${(autopsy.bullets || []).slice(0, 3).map((item, index) => `<div class="review-line"><strong>${index + 1}. ${escapeHtml(item.title || "Review")}</strong><br />${escapeHtml(item.text || "")}</div>`).join("")}
+                </div>
+              </article>
+            `).join("")}</div>`
+          : `<div class="empty-state compact">No closed-trade transition has produced an autopsy yet. Velez Mentor adds one automatically after Alpaca confirms a position is flat, and the backfill button can generate missing reviews from closed journal outcomes.</div>`
+      }
+      ${mentorOpsState.autopsyBackfill?.readback ? `<div class="review-line lesson">${escapeHtml(mentorOpsState.autopsyBackfill.readback)}</div>` : ""}
+      <div class="actions">
+        <button class="symbol-button" type="button" data-mentor-autopsy-backfill><i data-lucide="history"></i> Backfill autopsies</button>
+      </div>
+    </section>
+    <section class="tool-section">
+      <div class="section-title">Voice briefing desk</div>
+      <div class="review-line">Scheduled morning and closing scripts combine Velez Mentor discipline, risk state, lifecycle state, P&amp;L, and market regime before PocketTTS sends a native Telegram voice note.</div>
+      <div class="actions">
+        <button class="symbol-button" type="button" data-mentor-briefing="morning"><i data-lucide="sunrise"></i> Send morning memo</button>
+        <button class="symbol-button" type="button" data-mentor-briefing="evening"><i data-lucide="moon-star"></i> Send closing memo</button>
+      </div>
+    </section>
+    <section class="tool-section">
+      <div class="section-title">Active drills</div>
+      ${
+        drills.length
+          ? `<div class="decision-list">${drills.slice(0, 5).map((drill) => `
+              <article class="decision">
+                <div class="decision-top">
+                  <span class="decision-title">${escapeHtml(drill.title)}</span>
+                  <span class="badge">${escapeHtml(drill.dimension || "process")}</span>
+                </div>
+                <div class="decision-meta">${escapeHtml(drill.instruction)}</div>
+                <div class="actions compact-actions">
+                  <button class="symbol-button" type="button" data-mentor-drill="${escapeHtml(drill.id)}" data-mentor-drill-status="completed"><i data-lucide="check"></i> Complete</button>
+                  <button class="symbol-button" type="button" data-mentor-drill="${escapeHtml(drill.id)}" data-mentor-drill-status="dismissed"><i data-lucide="x"></i> Dismiss</button>
+                </div>
+              </article>
+            `).join("")}</div>`
+          : `<div class="empty-state compact">No active drill. Refresh the scorecard to create the next evidence-based exercise.</div>`
+      }
+    </section>
+    <section class="tool-section">
+      <div class="section-title">Ask Velez Mentor</div>
+      <form class="winston-form" id="mentor-ask-form">
+        <input id="mentor-question" type="text" maxlength="500" placeholder="What pattern should I work on next?" autocomplete="off" />
+        <button class="icon-button primary" type="submit" title="Ask Velez Mentor" ${mentorAskState?.loading ? "disabled" : ""}><i data-lucide="send"></i></button>
+      </form>
+      ${response ? `<div class="review-list"><div class="review-line lesson">${escapeHtml(response)}</div></div>` : ""}
+    </section>
+    <section class="tool-section">
+      <div class="section-title">Coaching profile</div>
+      <form class="mentor-profile-form" id="mentor-profile-form">
+        <select id="mentor-experience" aria-label="Experience level">
+          ${option("beginner", "Beginner", selectedExperience)}
+          ${option("developing", "Developing", selectedExperience)}
+          ${option("advanced", "Advanced", selectedExperience)}
+          ${option("professional", "Professional", selectedExperience)}
+        </select>
+        <select id="mentor-mode" aria-label="Primary coaching mode">
+          ${option("auto", "Auto mode", selectedMode)}
+          ${option("retail", "Retail", selectedMode)}
+          ${option("institutional", "Institutional", selectedMode)}
+          ${option("prop", "Prop firm", selectedMode)}
+        </select>
+        <select id="mentor-style" aria-label="Coaching style">
+          ${option("leo_concise", "Leo concise", selectedStyle)}
+          ${option("concise", "Concise", selectedStyle)}
+          ${option("detailed", "Detailed", selectedStyle)}
+          ${option("socratic", "Socratic", selectedStyle)}
+          ${option("winston_analyst", "Winston analyst", selectedStyle)}
+          ${option("prop_risk_officer", "Prop risk officer", selectedStyle)}
+          ${option("velez_drill_sergeant", "Velez drill sergeant", selectedStyle)}
+        </select>
+        <input id="mentor-goals" type="text" maxlength="600" value="${escapeHtml(goals.join("; "))}" placeholder="Goals, separated by semicolons" />
+        <button class="action-button" type="submit"><i data-lucide="save"></i> Save profile</button>
+      </form>
+      <div class="decision-meta">Profile, reports, evidence, and drills stay in Velez's local journal.</div>
+    </section>
+    <section class="tool-section">
+      <div class="section-title">Evidence ledger</div>
+      ${
+        evidence.length
+          ? `<div class="data-list compact-list">${evidence.slice(0, 10).map((item) => row(item.symbol || item.source || "Journal", `${item.label || "Evidence"} | Ref ${item.alert_ref || item.journal_id || "local"}`)).join("")}</div>`
+          : `<div class="empty-state compact">No exception evidence in this scope. More journal decisions will improve confidence.</div>`
+      }
     </section>
   `;
 }
@@ -1377,8 +2013,9 @@ function escapeHtml(value) {
 }
 
 function money(value) {
+  if (value === null || value === undefined || value === "") return "Unavailable";
   const number = Number(value);
-  if (!Number.isFinite(number)) return "$0.00";
+  if (!Number.isFinite(number)) return "Unavailable";
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
@@ -1387,13 +2024,14 @@ function money(value) {
 }
 
 function percent(value) {
+  if (value === null || value === undefined || value === "") return "Unknown";
   const number = Number(value);
-  if (!Number.isFinite(number)) return "0%";
+  if (!Number.isFinite(number)) return "Unknown";
   return `${(number * 100).toFixed(2)}%`;
 }
 
 function compact(value) {
-  if (value === null || value === undefined || value === "") return "None";
+  if (value === null || value === undefined || value === "") return "Unavailable";
   return String(value);
 }
 
@@ -1464,10 +2102,408 @@ function tradingViewLabel() {
   return tradingViewSymbols.find((item) => item.symbol === tradingViewSymbol)?.label || tradingViewSymbol;
 }
 
+function tradingViewBrokerSymbol() {
+  const selected = tradingViewSymbols.find((item) => item.symbol === tradingViewSymbol);
+  return selected?.label || tradingViewSymbol.split(":").pop() || tradingViewSymbol;
+}
+
+function normalizeTradingMode(mode) {
+  const value = String(mode || "dual").toLowerCase().trim();
+  return Object.prototype.hasOwnProperty.call(TRADING_MODE_LABELS, value) ? value : "dual";
+}
+
+function renderTradingModeControl() {
+  if (!tradingModeSelect) return;
+
+  const mode = normalizeTradingMode(tradingModeState.trading_mode);
+  const wrapper = tradingModeSelect.closest(".mode-switcher");
+  const status = tradingModeState.saving ? "saving" : tradingModeState.ok ? "good" : tradingModeState.error ? "bad" : "warn";
+
+  if (document.activeElement !== tradingModeSelect) {
+    tradingModeSelect.value = mode;
+  }
+  tradingModeSelect.disabled = Boolean(tradingModeState.saving);
+
+  if (wrapper) {
+    wrapper.dataset.status = status;
+    wrapper.title = tradingModeState.error
+      ? `Trading mode sync failed: ${tradingModeState.error}`
+      : `Trading mode: ${TRADING_MODE_LABELS[mode]}`;
+  }
+  if (tradingModeStatus) {
+    tradingModeStatus.textContent = tradingModeState.saving ? "Saving" : tradingModeState.ok ? TRADING_MODE_LABELS[mode] : "Sync";
+  }
+}
+
+function marketDataDisclosureState() {
+  const source = dashboardState.market_data || dashboardState.data_source || {};
+  const verifiedLive =
+    source.live === true ||
+    source.is_live === true ||
+    dashboardState.live_market_data === true ||
+    dashboardState.is_live_market_data === true;
+  if (verifiedLive) {
+    return {
+      live: true,
+      title: "Live market data",
+      detail: source.provider ? `Verified source: ${source.provider}` : "The current feed reports a verified live state.",
+    };
+  }
+  return {
+    live: false,
+    title: dashboardState.ok ? "Market data not verified live" : "Not live market data",
+    detail: "Do not use displayed prices for execution until the source is verified.",
+  };
+}
+
+function announceDesk(message) {
+  const announcer = $("#desk-announcer");
+  if (!announcer || !message) return;
+  announcer.textContent = "";
+  requestAnimationFrame(() => {
+    announcer.textContent = String(message);
+  });
+}
+
+function featureAllowed(feature) {
+  return Boolean(entitlementState?.features?.[feature]?.allowed);
+}
+
+function currentDecisionSymbol() {
+  return String(latestDecision()?.symbol || tradingViewLabel() || "").toUpperCase().trim();
+}
+
+async function dashboardJson(url, options = {}) {
+  const response = await fetch(url, { cache: "no-store", ...options });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(payload.reason || payload.detail || `status ${response.status}`);
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
+  }
+  return payload;
+}
+
+function unavailableFeature(feature, label) {
+  return {
+    ok: false,
+    unavailable: true,
+    reason: featureAllowed(feature) ? "Unavailable" : "feature_not_entitled",
+    label,
+  };
+}
+
+async function refreshDecisionIntelligence(options = {}) {
+  const force = Boolean(options.force);
+  if (decisionIntelligencePromise) return decisionIntelligencePromise;
+  const selected = latestDecision() || {};
+  const symbol = String(selected.symbol || currentDecisionSymbol() || "");
+  const selectedKey = `${selected.alert_ref || ""}:${symbol}`;
+  const workflowDataLoaded =
+    (!["drawer", "bookshelf"].includes(activePanel) || playbookState) &&
+    (activePanel !== "journal" || intelligenceState) &&
+    (activePanel !== "mentor" || (missedTradesState && disciplineState));
+  if (!force && workflowDataLoaded && selectedKey === decisionIntelligenceKey && decisionIntelligenceFetchedAt && Date.now() - decisionIntelligenceFetchedAt < 30000) {
+    return readinessState;
+  }
+  const params = new URLSearchParams();
+  if (selected.alert_ref) params.set("alert_ref", selected.alert_ref);
+  if (symbol) params.set("symbol", symbol);
+
+  decisionIntelligencePromise = (async () => {
+    try {
+      entitlementState = await dashboardJson("/api/entitlements");
+    } catch (error) {
+      entitlementState = { ok: false, tier: "core", features: {}, reason: error.message };
+    }
+    const readinessParams = new URLSearchParams(params);
+    if (featureAllowed("advanced_readiness")) readinessParams.set("advanced", "true");
+    const contextParams = new URLSearchParams();
+    if (symbol) contextParams.set("symbol", symbol);
+    if (selected.play) contextParams.set("play", selected.play);
+    if (selected.side) contextParams.set("side", selected.side);
+    const jobs = [
+      ["readiness", `/api/readiness?${readinessParams.toString()}`],
+      ["market", `/api/market/context?${contextParams.toString()}`],
+      ["annotations", `/api/annotations?${params.toString()}`],
+    ];
+    if (["drawer", "bookshelf"].includes(activePanel)) jobs.push(["playbook", "/api/playbook"]);
+    if (activePanel === "journal" && featureAllowed("performance_attribution")) jobs.push(["intelligence", "/api/journal/intelligence"]);
+    if (activePanel === "mentor" && featureAllowed("missed_trade_analysis")) jobs.push(["missed", "/api/missed-trades?days=30"]);
+    if (activePanel === "mentor" && featureAllowed("discipline_score")) jobs.push(["discipline", "/api/discipline?days=90"]);
+    const results = await Promise.all(
+      jobs.map(async ([key, url]) => {
+        try {
+          return [key, await dashboardJson(url)];
+        } catch (error) {
+          return [key, { ok: false, unavailable: true, reason: error.message, status: error.status }];
+        }
+      }),
+    );
+    results.forEach(([key, payload]) => {
+      if (key === "readiness") readinessState = payload;
+      if (key === "market") marketContextState = payload;
+      if (key === "playbook") playbookState = payload;
+      if (key === "annotations") annotationsState = payload;
+      if (key === "intelligence") intelligenceState = payload;
+      if (key === "missed") missedTradesState = payload;
+      if (key === "discipline") disciplineState = payload;
+    });
+    if (!featureAllowed("performance_attribution")) intelligenceState = unavailableFeature("performance_attribution", "Performance attribution requires Pro.");
+    if (!featureAllowed("missed_trade_analysis")) missedTradesState = unavailableFeature("missed_trade_analysis", "Missed-trade analysis requires Pro.");
+    if (!featureAllowed("discipline_score")) disciplineState = unavailableFeature("discipline_score", "Discipline Score requires Pro.");
+    decisionIntelligenceFetchedAt = Date.now();
+    decisionIntelligenceKey = selectedKey;
+    updateWorkflowChrome();
+    renderDeskOverview();
+    renderMobileViews();
+    if (proConsoleOpen) renderProConsole();
+    if (!panelFormIsEditing()) renderPanel();
+    return readinessState;
+  })().finally(() => {
+    decisionIntelligencePromise = null;
+  });
+  return decisionIntelligencePromise;
+}
+
+function deskReadinessState() {
+  if (readinessState?.ok) {
+    const confidence = Number(readinessState.confidence || 0);
+    return {
+      score: Number(readinessState.score || 0),
+      label: readinessState.label || "Readiness available",
+      detail: confidence
+        ? `${confidence}% evidence confidence · advisory only`
+        : "Insufficient verified evidence · advisory only",
+      confidence,
+      components: readinessState.components || [],
+      timestamp: readinessState.timestamp,
+      authoritativeBlocked: Boolean(readinessState.authoritative_blocked),
+    };
+  }
+  const health = currentHealthState();
+  const lifecycle = currentLifecycleState();
+  let score = 0;
+  if (dashboardState.ok) score += 20;
+  if (dashboardState.broker?.ok) score += 25;
+  if (dashboardState.paper_endpoint) score += 20;
+  if (health.overall === "green") score += 20;
+  else if (health.overall === "yellow") score += 10;
+  if (lifecycle.ok) score += 15;
+
+  if (score >= 80) return { score, label: "System readiness only", detail: "Trade-specific evidence is loading" };
+  if (score >= 55) return { score, label: "System checks incomplete", detail: "Trade-specific evidence is loading" };
+  return { score, label: "Protective mode", detail: "Trade-specific evidence is unavailable" };
+}
+
+function panelWorkflow(panel) {
+  if (["tv", "laptop", "safe"].includes(panel)) return "trade";
+  if (["journal", "calendar", "notes"].includes(panel)) return "review";
+  if (["mentor", "phone"].includes(panel)) return "coach";
+  if (["drawer", "bookshelf"].includes(panel)) return "lab";
+  return "desk";
+}
+
+function updateWorkflowChrome() {
+  document.body.dataset.workflow = activeWorkflow;
+  document.body.classList.toggle("room-clear", roomClear);
+  workflowButtons.forEach((button) => {
+    const selected = !roomClear && button.dataset.workflow === activeWorkflow;
+    button.classList.toggle("active", selected);
+    if (selected) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+    const required = button.dataset.workflow === "coach" ? "coach_intelligence" : button.dataset.workflow === "lab" ? "replay_lab" : null;
+    const locked = Boolean(entitlementState.ok && required && !featureAllowed(required));
+    button.classList.toggle("entitlement-locked", locked);
+    if (locked) button.setAttribute("aria-label", `${button.textContent.trim()} — unavailable for this tier`);
+    else button.removeAttribute("aria-label");
+  });
+  $$('[data-pro-console-open], [data-mobile-pro-console-open]').forEach((button) => {
+    const locked = Boolean(entitlementState.ok && !featureAllowed("pro_console"));
+    button.classList.toggle("entitlement-locked", locked);
+    button.setAttribute("aria-disabled", String(locked));
+  });
+}
+
+function setActiveWorkflow(workflow) {
+  const workflowPanels = {
+    trade: "laptop",
+    review: "journal",
+    coach: "mentor",
+    lab: "drawer",
+  };
+  const nextWorkflow = Object.prototype.hasOwnProperty.call(workflowPanels, workflow) || workflow === "desk" ? workflow : "desk";
+  if (nextWorkflow === activeWorkflow && !roomClear) {
+    closePanel();
+    renderMobileViews();
+    return;
+  }
+  activeWorkflow = nextWorkflow;
+  roomClear = false;
+  updateWorkflowChrome();
+  if (activeWorkflow === "desk") {
+    closePanel({ clearRoom: false });
+    renderDeskOverview();
+    renderMobileViews();
+    return;
+  }
+  if (activeWorkflow === "trade" && window.matchMedia("(max-width: 760px)").matches) {
+    activePanel = "tv";
+    closePanel({ clearRoom: false });
+    updateActiveChrome();
+    renderMobileViews();
+    loadMobileTradingViewWidget();
+    return;
+  }
+  setActivePanel(workflowPanels[activeWorkflow], { syncWorkflow: false });
+}
+
+function renderDataDisclosure() {
+  if (!dataDisclosure || !dataDisclosureTitle || !dataDisclosureDetail) return;
+  const disclosure = marketDataDisclosureState();
+  dataDisclosure.classList.toggle("good", disclosure.live);
+  dataDisclosureTitle.textContent = disclosure.title;
+  dataDisclosureDetail.textContent = disclosure.detail;
+}
+
+function renderDeskOverview() {
+  const session = marketClock();
+  const readiness = deskReadinessState();
+  const lifecycle = currentLifecycleState();
+  const summary = lifecycle.summary || {};
+  const latest = latestDecision();
+  const openRisk = lifecycle.ok && Number.isFinite(Number(summary.open_risk)) ? Math.max(0, Number(summary.open_risk)) : null;
+  const unrealizedSource = lifecycle.ok ? summary.unrealized_pl : dashboardState.ok && !dashboardState.positions_error ? dashboardState.summary?.unrealized_pl : null;
+  const unrealized = Number.isFinite(Number(unrealizedSource)) && unrealizedSource !== null ? Number(unrealizedSource) : null;
+  const positionsSource = lifecycle.ok ? summary.open_positions : dashboardState.ok && !dashboardState.positions_error ? dashboardState.summary?.open_positions : null;
+  const openPositions = Number.isFinite(Number(positionsSource)) && positionsSource !== null ? Number(positionsSource) : null;
+  const maxPositions = Number(dashboardState.risk?.max_open_positions || 0);
+  const maxRisk = Number(dashboardState.risk?.max_dollar_risk_per_trade || 0);
+  const riskUsed = openRisk !== null && maxRisk > 0 ? Math.min(100, Math.round((openRisk / maxRisk) * 100)) : null;
+  const mode = normalizeTradingMode(tradingModeState.trading_mode);
+  const now = new Date();
+
+  const setText = (selector, value) => {
+    const element = $(selector);
+    if (element) element.textContent = value;
+  };
+
+  setText("#desk-date", new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }).format(now));
+  setText("#desk-time", `${new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }).format(now)} ET`);
+  setText("#desk-overview-title", session.phase === "Pre-market" ? "Morning Brief" : session.phase === "After-hours" ? "Closing Desk" : "Live Desk");
+  setText("#desk-guidance", session.phase === "Market open" ? "The session is active. Stay inside the plan and the guardrails." : session.next);
+  setText("#desk-score-value", readiness.score);
+  setText("#desk-readiness-label", readiness.label);
+  setText("#desk-readiness-detail", readiness.detail);
+  setText("#desk-session", session.phase);
+  setText("#desk-mode", TRADING_MODE_LABELS[mode]);
+  setText("#desk-broker", dashboardState.broker?.ok ? "Connected" : "Check");
+
+  const score = $("#desk-score");
+  if (score) score.style.setProperty("--score", readiness.score);
+
+  setText("#desk-setup-state", latest?.status ? String(latest.status).replaceAll("_", " ") : "Waiting");
+  setText("#desk-setup-title", latest ? [latest.symbol, latest.play].filter(Boolean).join(" · ") || "Latest decision" : "No decision loaded yet");
+  setText("#desk-setup-detail", latest?.reason || "The latest screened setup will appear here.");
+
+  setText("#desk-open-risk", openRisk === null ? "Unavailable" : money(openRisk));
+  setText("#desk-open-risk-detail", openRisk === null ? "Awaiting authoritative lifecycle state" : openRisk > 0 ? `${riskUsed}% of per-trade risk ceiling` : "Verified: no measured open risk");
+  setText("#desk-unrealized-pl", unrealized === null ? "Unavailable" : `${unrealized > 0 ? "+" : ""}${money(unrealized)}`);
+  setText("#desk-position-count", openPositions === null ? "Position state unavailable" : `${openPositions} open position${openPositions === 1 ? "" : "s"}`);
+  setText("#desk-daily-limit", dashboardState.risk?.max_daily_loss_pct == null ? "Unknown" : percent(dashboardState.risk.max_daily_loss_pct));
+  setText("#desk-max-positions", dashboardState.risk?.max_open_positions == null ? "Unknown" : maxPositions);
+  setText("#desk-approval-mode", dashboardState.guardrails?.approval_required == null ? "Unknown" : dashboardState.guardrails.approval_required ? "Required" : "Guarded");
+
+  const pnlMetric = $(".desk-risk-metric.pnl");
+  pnlMetric?.classList.toggle("positive", unrealized > 0);
+  pnlMetric?.classList.toggle("negative", unrealized < 0);
+  const meter = $("#desk-risk-meter-fill");
+  if (meter) meter.style.width = `${riskUsed ?? 0}%`;
+  const safe = openPositions !== null && dashboardState.broker?.ok && (!maxPositions || openPositions < maxPositions);
+  const riskState = $("#desk-risk-state");
+  if (riskState) {
+    riskState.textContent = safe ? "SAFE" : "CHECKING";
+    riskState.classList.toggle("safe", safe);
+  }
+  renderDataDisclosure();
+}
+
+function renderMobileViews() {
+  const mobileDesk = $("#mobile-desk-view");
+  const mobileTrade = $("#mobile-trade-view");
+  if (!mobileDesk && !mobileTrade) return;
+
+  const session = marketClock();
+  const readiness = deskReadinessState();
+  const lifecycle = currentLifecycleState();
+  const summary = lifecycle.summary || {};
+  const latest = latestDecision();
+  const disclosure = marketDataDisclosureState();
+  const openRisk = lifecycle.ok && Number.isFinite(Number(summary.open_risk)) ? Math.max(0, Number(summary.open_risk)) : null;
+  const unrealizedSource = lifecycle.ok ? summary.unrealized_pl : dashboardState.ok && !dashboardState.positions_error ? dashboardState.summary?.unrealized_pl : null;
+  const unrealized = Number.isFinite(Number(unrealizedSource)) && unrealizedSource !== null ? Number(unrealizedSource) : null;
+  const positionsSource = lifecycle.ok ? summary.open_positions : dashboardState.ok && !dashboardState.positions_error ? dashboardState.summary?.open_positions : null;
+  const openPositions = Number.isFinite(Number(positionsSource)) && positionsSource !== null ? Number(positionsSource) : null;
+  const maxRisk = Number(dashboardState.risk?.max_dollar_risk_per_trade || 0);
+  const riskUsed = openRisk !== null && maxRisk > 0 ? Math.min(100, Math.round((openRisk / maxRisk) * 100)) : null;
+  const now = new Date();
+  const setMobileText = (selector, value) => {
+    const element = $(selector);
+    if (element) element.textContent = value;
+  };
+
+  setMobileText("#mobile-date", new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }).format(now));
+  setMobileText("#mobile-time", `${new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }).format(now)} ET`);
+  setMobileText("#mobile-session", session.phase.toUpperCase());
+  setMobileText("#mobile-desk-guidance", session.phase === "Market open" ? "The session is active. Stay inside the plan and the guardrails." : session.next);
+  setMobileText("#mobile-score-value", readiness.score);
+  setMobileText("#mobile-readiness-label", readiness.label);
+  setMobileText("#mobile-readiness-detail", readiness.detail);
+  setMobileText("#mobile-open-risk", openRisk === null ? "Unavailable" : money(openRisk));
+  setMobileText("#mobile-risk-detail", openRisk === null ? "Authoritative risk unavailable" : openRisk > 0 ? `${riskUsed}% of per-trade risk ceiling` : "Verified: no measured open risk");
+  setMobileText("#mobile-unrealized-pl", unrealized === null ? "Unavailable" : `${unrealized > 0 ? "+" : ""}${money(unrealized)}`);
+  setMobileText("#mobile-position-count", openPositions === null ? "Position state unavailable" : `${openPositions} open position${openPositions === 1 ? "" : "s"}`);
+  setMobileText("#mobile-setup-state", latest?.status ? String(latest.status).replaceAll("_", " ").toUpperCase() : "WAITING");
+  setMobileText("#mobile-setup-title", latest ? [latest.symbol, latest.play].filter(Boolean).join(" · ") || "Latest decision" : "No decision loaded yet");
+  setMobileText("#mobile-setup-detail", latest?.reason || "The latest qualified setup will appear here.");
+
+  setMobileText("#mobile-data-title", disclosure.title);
+  setMobileText("#mobile-data-detail", disclosure.detail);
+  setMobileText("#mobile-chart-symbol", `${tradingViewLabel()} · 5 MIN`);
+  setMobileText("#mobile-trade-readiness", `${readiness.score}%`);
+  setMobileText("#mobile-trade-risk", openRisk === null ? "Unavailable" : money(openRisk));
+  setMobileText("#mobile-trade-pl", unrealized === null ? "Unavailable" : `${unrealized > 0 ? "+" : ""}${money(unrealized)}`);
+  setMobileText("#mobile-trade-setup-state", latest?.status ? String(latest.status).replaceAll("_", " ").toUpperCase() : "WAITING");
+  setMobileText("#mobile-trade-setup-title", latest ? [latest.symbol, latest.play].filter(Boolean).join(" · ") || "Latest decision" : "No setup selected");
+  setMobileText("#mobile-trade-setup-detail", latest?.reason || "A qualified setup will populate the review workflow.");
+  const regime = typeof marketContextState?.regime === "object" ? marketContextState.regime?.label : marketContextState?.regime;
+  setMobileText("#mobile-context-state", readinessState?.authoritative_blocked ? "BLOCKED" : readinessState?.ok ? "ADVISORY" : "UNKNOWN");
+  setMobileText(
+    "#mobile-context-summary",
+    readinessState?.ok
+      ? `${readinessState.label} · ${readinessState.confidence || 0}% evidence · Regime ${regime || "Unknown"}. ${readinessState.unknown_components?.length || 0} unknown component(s).`
+      : "Verified readiness, regime, and plan context is unavailable.",
+  );
+
+  const score = $("#mobile-score");
+  if (score) score.style.setProperty("--score", readiness.score);
+  $("#mobile-pnl-card")?.classList.toggle("positive", unrealized > 0);
+  $("#mobile-pnl-card")?.classList.toggle("negative", unrealized < 0);
+  $("#mobile-trade-pnl-wrap")?.classList.toggle("positive", unrealized > 0);
+  $("#mobile-trade-pnl-wrap")?.classList.toggle("negative", unrealized < 0);
+  $("#mobile-data-state")?.classList.toggle("good", disclosure.live);
+  $$('[data-mobile-symbol]').forEach((button) => button.classList.toggle("active", button.dataset.mobileSymbol === tradingViewSymbol));
+}
+
 function renderStatus() {
   const brokerOk = Boolean(dashboardState.broker?.ok);
   const armed = Boolean(dashboardState.execution_armed);
-  const openPositions = dashboardState.summary?.open_positions ?? dashboardState.positions?.length ?? 0;
+  const openPositions = dashboardState.ok && !dashboardState.positions_error
+    ? dashboardState.summary?.open_positions ?? dashboardState.positions?.length
+    : null;
+
+  renderTradingModeControl();
 
   executionPill.className = `status-pill ${armed ? "good" : "warn"}`;
   executionPill.textContent = armed ? "Execution Armed" : "Proposal Mode";
@@ -1475,8 +2511,11 @@ function renderStatus() {
   brokerPill.className = `status-pill ${brokerOk ? "good" : "bad"}`;
   brokerPill.textContent = brokerOk ? "Alpaca Paper" : "Broker Check";
 
-  positionsPill.className = `status-pill ${openPositions > 0 ? "good" : "warn"}`;
-  positionsPill.textContent = `${openPositions} Open`;
+  positionsPill.className = `status-pill ${openPositions === null || openPositions === undefined ? "bad" : openPositions > 0 ? "good" : "warn"}`;
+  positionsPill.textContent = openPositions === null || openPositions === undefined ? "Positions Unknown" : `${openPositions} Open`;
+  renderDeskOverview();
+  renderMobileViews();
+  if (proConsoleOpen) renderProConsole();
 }
 
 function decisionCard(decision) {
@@ -1505,17 +2544,18 @@ function decisionCard(decision) {
 function renderConfidenceReceipt(receipt) {
   if (!receipt) return "";
   const checks = receipt.checks || [];
+  const receiptScore = receipt.score === null || receipt.score === undefined ? "Unknown" : `${receipt.score}/100`;
   return `
     <div class="receipt-card">
-      <div class="decision-meta">${escapeHtml(receipt.summary || `Confidence ${receipt.score ?? 0}/100`)}</div>
+      <div class="decision-meta">${escapeHtml(receipt.summary || `Confidence ${receiptScore}`)}</div>
       <div class="data-list compact-list">
-        ${row("Receipt", `${receipt.score ?? 0}/100 | Grade ${receipt.grade || "N/A"}`)}
+        ${row("Receipt", `${receiptScore} | Grade ${receipt.grade || "Unknown"}`)}
         ${row("Risk readback", receipt.risk_readback || "Risk receipt pending")}
         ${row("Next", receipt.next_action || "Wait for qualified structure")}
       </div>
       ${
         checks.length
-          ? `<div class="health-grid receipt-grid">${checks.slice(0, 4).map((check) => healthComponentCard({ name: check.name, ok: check.ok, status: check.ok ? "pass" : "review", detail: check.detail || `${check.weight || 0} points` })).join("")}</div>`
+          ? `<div class="health-grid receipt-grid">${checks.slice(0, 4).map((check) => healthComponentCard({ name: check.name, ok: check.ok, status: check.ok ? "pass" : "review", detail: check.detail || (check.weight == null ? "Weight unavailable" : `${check.weight} points`) })).join("")}</div>`
           : ""
       }
     </div>
@@ -1549,6 +2589,10 @@ function journalCard(entry) {
         <button class="symbol-button" type="button" data-replay-setup="${escapeHtml(entry.setup || entry.play || "")}" data-replay-symbol="${escapeHtml(entry.symbol || "SPY")}">
           <i data-lucide="play"></i>
           Replay setup
+        </button>
+        <button class="symbol-button" type="button" data-mentor-trade="${escapeHtml(entry.alert_ref || "")}">
+          <i data-lucide="graduation-cap"></i>
+          Mentor
         </button>
       </div>
       ${
@@ -1597,6 +2641,7 @@ function renderTradeReview() {
             <i data-lucide="play"></i>
             Replay this setup
           </button>
+          <button class="symbol-button" type="button" data-mentor-trade="${escapeHtml(entry.alert_ref || "")}"><i data-lucide="graduation-cap"></i> Mentor review</button>
           ${entry.chart_context?.url ? `<a class="symbol-button" href="${escapeHtml(entry.chart_context.url)}" target="_blank" rel="noreferrer"><i data-lucide="external-link"></i> Open chart</a>` : ""}
         </div>
       </div>
@@ -1638,18 +2683,18 @@ function renderRiskCommandCenter() {
     <section class="tool-section">
       <div class="section-title">Risk command center</div>
       <div class="metric-grid">
-        ${metric("Paper trading", state.execution_armed ? "Armed" : "Off", state.execution_armed ? "Qualified alerts can submit" : "Proposal mode")}
-        ${metric("Approval gate", approvalRequired ? "Required" : "Current mode", state.approval_mode_source || "environment")}
-        ${metric("Max risk", money(risk.max_dollar_risk_per_trade || 0), `${percent(risk.risk_per_trade)} equity cap`)}
-        ${metric("Lot flow", lotSizing.enabled === false ? "Off" : `1-${lotSizing.max_lots || 4} lots`, `${percent(lotSizing.lot_risk_fraction || 0.25)} risk per lot`)}
+        ${metric("Paper trading", state.ok ? (state.execution_armed ? "Armed" : "Off") : "Unknown", state.ok ? (state.execution_armed ? "Qualified alerts can submit" : "Proposal mode") : "Risk state unavailable")}
+        ${metric("Approval gate", state.ok ? (approvalRequired ? "Required" : "Current mode") : "Unknown", state.approval_mode_source || "Unknown")}
+        ${metric("Max risk", money(risk.max_dollar_risk_per_trade), `${percent(risk.risk_per_trade)} equity cap`)}
+        ${metric("Lot flow", lotSizing.enabled === false ? "Off" : lotSizing.max_lots == null ? "Unknown" : `1-${lotSizing.max_lots} lots`, `${percent(lotSizing.lot_risk_fraction)} risk per lot`)}
       </div>
       <div class="data-list compact-list">
-        ${row("Daily loss", `${percent(risk.max_daily_loss_pct)} | ${risk.max_open_positions || 0} max positions`)}
+        ${row("Daily loss", `${percent(risk.max_daily_loss_pct)} | ${risk.max_open_positions ?? "Unknown"} max positions`)}
         ${row("Paper only", compact(guardrails.paper_only))}
         ${row("Webhook auth", compact(guardrails.auth_required))}
         ${row("Max stop", percent(risk.max_stop_pct))}
-        ${row("Pyramid add", percent(risk.pyramid_add_fraction ?? 0.5))}
-        ${row("Full core", `${lotSizing.max_lots || 4} lots = configured max risk`)}
+        ${row("Pyramid add", percent(risk.pyramid_add_fraction))}
+        ${row("Full core", lotSizing.max_lots == null ? "Unknown" : `${lotSizing.max_lots} lots = configured max risk`)}
       </div>
       <div class="actions">
         <button class="action-button" type="button" data-risk-approval-toggle="${String(nextMode)}" ${approvalToken && !riskUpdatePromise ? "" : "disabled"} aria-pressed="${approvalRequired ? "true" : "false"}">
@@ -1676,15 +2721,17 @@ function renderLifecycleCommandCenter() {
   const partialPlans = lifecycle.partial_plans || [];
   const reductionPlan = lifecycle.reduction_plan || {};
   const scannerReopen = lifecycle.scanner_reopen || {};
+  const performance = dashboardState.performance || {};
   const avgR = summary.average_r_multiple === null || summary.average_r_multiple === undefined ? "N/A" : `${Number(summary.average_r_multiple).toFixed(2)}R`;
   return `
     <section class="tool-section lifecycle-section">
       <div class="section-title">Trade lifecycle command center</div>
       <div class="metric-grid">
-        ${metric("Active trades", summary.open_positions || 0, `${summary.open_orders || 0} open broker orders`)}
-        ${metric("Open risk", money(summary.open_risk || 0), `${money(summary.unrealized_pl || 0)} unrealized`)}
-        ${metric("Avg R", avgR, `${summary.management_actions || 0} rule checks`)}
-        ${metric("Guardrails", summary.guardrails || guardrails.length || 0, lifecycle.ok ? "Broker reconciliation online" : "Needs refresh")}
+        ${metric("Active trades", summary.open_positions ?? "Unavailable", `${summary.open_orders ?? "Unavailable"} open broker orders`)}
+        ${metric("Open risk", money(summary.open_risk), `${money(summary.unrealized_pl)} unrealized`)}
+        ${metric("Avg R", avgR, `${summary.management_actions ?? "Unavailable"} rule checks`)}
+        ${metric("Guardrails", summary.guardrails ?? (lifecycle.ok ? guardrails.length : "Unavailable"), lifecycle.ok ? "Broker reconciliation online" : "Needs refresh")}
+        ${metric("Today P/L", performance.daily_pnl === null || performance.daily_pnl === undefined ? "N/A" : money(performance.daily_pnl), performance.source ? "Alpaca account" : "Broker read pending")}
       </div>
       <div class="actions">
         <button class="symbol-button" type="button" data-lifecycle-refresh>
@@ -1720,6 +2767,7 @@ function renderLifecycleCommandCenter() {
         ${row("Readback", lifecycle.readback || "Lifecycle readback pending")}
         ${row("Needs action", needsAction.readback || "No lifecycle action is due.")}
         ${row("Scanner reopen", scannerReopen.readback || "Run Position Doctor for scanner reopen status.")}
+        ${row("Win rate", performance.win_rate === null || performance.win_rate === undefined ? "Not shown until completed broker lots exist." : `${(Number(performance.win_rate) * 100).toFixed(1)}% — ${performance.win_rate_status || "broker fill ledger"}`)}
         ${row("Updated", timeAgo(lifecycle.timestamp))}
         ${row("Mode", lifecycle.note || "Read-only lifecycle watch")}
       </div>
@@ -1926,8 +2974,8 @@ function renderLatencyPanel() {
       <div class="metric-grid">
         ${metric("Status", String(latency.overall || "loading").toUpperCase(), latency.summary || "Probe status")}
         ${metric("Uptime", latency.uptime_seconds ? `${Math.floor(latency.uptime_seconds / 60)}m` : "Loading", "Webhook container")}
-        ${metric("Average", `${latency.average_latency_ms || 0}ms`, "Probe average")}
-        ${metric("Worst", `${latency.worst_latency_ms || 0}ms`, `Warn over ${latency.warn_threshold_ms || 1200}ms`)}
+        ${metric("Average", latency.average_latency_ms == null ? "Unavailable" : `${latency.average_latency_ms}ms`, "Probe average")}
+        ${metric("Worst", latency.worst_latency_ms == null ? "Unavailable" : `${latency.worst_latency_ms}ms`, latency.warn_threshold_ms == null ? "Warning threshold unknown" : `Warn over ${latency.warn_threshold_ms}ms`)}
       </div>
       <div class="actions">
         <button class="symbol-button" type="button" data-latency-refresh><i data-lucide="gauge"></i> Refresh latency</button>
@@ -1979,6 +3027,11 @@ function renderTradingScreen() {
       ${metric("Watchlist", watched || "None", `${dashboardState.summary?.symbols_watched || 0} symbols`)}
     </div>
     <div class="actions">${symbolButtons}</div>
+    <div class="actions">
+      <button class="symbol-button" type="button" data-pro-console-open><i data-lucide="maximize-2"></i> Open Pro Console</button>
+      <button class="symbol-button" type="button" data-mentor-eyes><i data-lucide="eye"></i> Ask Mentor about this setup</button>
+      <button class="symbol-button" type="button" data-open-panel="mentor"><i data-lucide="graduation-cap"></i> Open Mentor</button>
+    </div>
     <div class="data-list">
       ${row("Feed", dashboardState.ok ? "Dashboard API online" : "Waiting for bot state")}
       ${row("Decision", last?.status || "Standing by")}
@@ -2084,20 +3137,270 @@ async function removeWatchlistSymbol(symbol) {
   renderPanel();
 }
 
+function evidenceValue(value, suffix = "") {
+  return value === null || value === undefined || value === "" ? "Unavailable" : `${value}${suffix}`;
+}
+
+function renderReadinessIntelligence() {
+  if (!readinessState?.ok) {
+    return `<section class="decision-surface"><div class="section-title">Trade Readiness Score</div><div class="empty-state compact">Unavailable: verified trade evidence is still loading.</div></section>`;
+  }
+  const unknown = readinessState.unknown_components?.length || 0;
+  return `
+    <section class="decision-surface" data-feature="advanced-readiness">
+      <div class="decision-heading">
+        <div><small>ADVISORY · ${escapeHtml(timeAgo(readinessState.timestamp))}</small><h3>Trade Readiness Score</h3></div>
+        <div class="decision-score ${readinessState.authoritative_blocked ? "blocked" : ""}">${escapeHtml(readinessState.score)}<small>/ 100</small></div>
+      </div>
+      <p class="decision-summary"><strong>${escapeHtml(readinessState.label || "Unknown")}</strong> · ${escapeHtml(readinessState.confidence || 0)}% evidence confidence${unknown ? ` · ${unknown} unknown` : ""}</p>
+      <div class="decision-components">
+        ${(readinessState.components || [])
+          .map(
+            (item) => `<details class="decision-component">
+              <summary><span>${escapeHtml(item.label)}</span><strong>${escapeHtml(evidenceValue(item.score, item.score === null || item.score === undefined ? "" : "%"))}</strong></summary>
+              <p>${escapeHtml(item.reason || "No explanation available.")}</p>
+              ${item.why_this_matters ? `<small><b>Why this matters:</b> ${escapeHtml(item.why_this_matters)}</small>` : ""}
+              <em>${escapeHtml(item.source || "Unavailable")}${item.timestamp ? ` · ${escapeHtml(timeAgo(item.timestamp))}` : ""}</em>
+            </details>`,
+          )
+          .join("")}
+      </div>
+      <p class="surface-guardrail">${escapeHtml(readinessState.guardrail || "This score is advisory and does not change execution permissions.")}</p>
+    </section>`;
+}
+
+function renderMarketContextSurface() {
+  const context = marketContextState;
+  if (!context?.ok) {
+    return `<section class="decision-surface"><div class="section-title">Market context</div><div class="empty-state compact">Unavailable: the verified top-down context engine has not returned current evidence.</div></section>`;
+  }
+  const regime = typeof context.regime === "object" ? context.regime?.label : context.regime;
+  const daily = context.higher_timeframe_bias?.daily?.label || context.higher_timeframe_bias?.daily;
+  const weekly = context.higher_timeframe_bias?.weekly?.label || context.higher_timeframe_bias?.weekly;
+  const breadth = typeof context.breadth === "object" ? context.breadth?.label || context.breadth?.state || context.breadth?.summary : context.breadth;
+  const sector = typeof context.sector_leadership === "object" ? context.sector_leadership?.label || context.sector_leadership?.leader || context.sector_leadership?.summary : context.sector_leadership;
+  return `
+    <section class="decision-surface">
+      <div class="section-title">Market context <small>${escapeHtml(timeAgo(context.timestamp))}</small></div>
+      <div class="context-grid">
+        ${metric("Regime", evidenceValue(regime), context.advisory_only ? "Advisory context" : "Existing rule context")}
+        ${metric("Daily / weekly", `${evidenceValue(daily)} / ${evidenceValue(weekly)}`, "Higher-timeframe bias")}
+        ${metric("Breadth", evidenceValue(breadth), "Existing top-down engine")}
+        ${metric("Sector lead", evidenceValue(sector), context.symbol_sector || "Unavailable")}
+      </div>
+      <p class="decision-summary">${escapeHtml(context.explanation || context.readback || "Explanation unavailable.")}</p>
+      <p class="surface-guardrail"><b>Why this matters:</b> ${escapeHtml(context.guardrail || "Advisory context does not replace hard risk rules.")} · Source: ${escapeHtml(context.source || "Unavailable")}</p>
+    </section>`;
+}
+
+function plannerInitialValue(key, fallback = "") {
+  const latest = latestDecision() || {};
+  const planned = plannerState?.plan || {};
+  const mapping = {
+    symbol: plannerState?.symbol || latest.symbol || currentDecisionSymbol(),
+    direction: plannerState?.direction || (latest.side === "short" ? "sell" : latest.side),
+    planned_entry: planned.planned_entry ?? latest.entry_price,
+    stop: planned.stop ?? latest.stop_price,
+    target_one: planned.target_one ?? latest.target_one,
+    target_two: planned.target_two ?? latest.target_two ?? latest.take_profit_price ?? latest.target_price,
+    invalidation_reason: planned.invalidation_reason ?? latest.invalidation_reason,
+  };
+  return mapping[key] ?? fallback;
+}
+
+function renderPlannerResult() {
+  if (!plannerState) return `<div class="empty-state compact">Enter a complete plan to calculate broker-informed estimates. No planner action can stage or submit an order.</div>`;
+  const messages = [...(plannerState.errors || []), ...(plannerState.warnings || [])];
+  const risk = plannerState.risk || {};
+  const plan = plannerState.plan || {};
+  return `
+    <div class="planner-result ${plannerState.ok ? "ready" : "blocked"}" role="status">
+      <strong>${plannerState.ok ? "Ready for human review" : "Skip trade"}</strong>
+      <span>${escapeHtml(plannerState.endpoint || "Unknown endpoint")} · Approval ${escapeHtml(plannerState.approval_state || "Unknown")}</span>
+      <div class="planner-metrics">
+        ${metric("Position size", evidenceValue(risk.calculated_position_size), risk.fractional_estimate ? "Calculated fractional estimate" : "Calculated whole-share estimate")}
+        ${metric("Max planned loss", risk.maximum_planned_loss == null ? "Unavailable" : money(risk.maximum_planned_loss), `${percent(risk.configured_risk_percentage || 0)} configured risk`)}
+        ${metric("Target 1", evidenceValue(plan.target_one_r, "R"), "Calculated estimate")}
+        ${metric("Target 2", evidenceValue(plan.target_two_r, "R"), "Calculated estimate")}
+        ${metric("Equity", risk.account_equity == null ? "Unavailable" : money(risk.account_equity), risk.account_equity_source || "Unavailable")}
+        ${metric("Buying power", risk.buying_power == null ? "Unavailable" : money(risk.buying_power), risk.buying_power_source || "Unavailable")}
+      </div>
+      ${messages.length ? `<div class="planner-messages">${messages.map((item) => `<article><strong>${escapeHtml(String(item.code || "review").replaceAll("_", " "))}</strong><span>${escapeHtml(item.detail || "Review required.")}</span><small><b>Why this matters:</b> ${escapeHtml(item.why_this_matters || "Verify this evidence before committing risk.")}</small></article>`).join("")}</div>` : ""}
+      <p class="surface-guardrail">${escapeHtml(plannerState.estimate_disclosure || "Calculated estimates are distinct from broker-confirmed values.")} ${escapeHtml(plannerState.guardrail || "")}</p>
+    </div>`;
+}
+
+function renderExecutionPlanner() {
+  return `
+    <section class="decision-surface" data-feature="basic-planner">
+      <div class="section-title">Risk and Execution Planner <small>READ-ONLY</small></div>
+      <form id="execution-planner-form" class="planner-form">
+        <label>Symbol<input name="symbol" required maxlength="20" autocomplete="off" value="${escapeHtml(plannerInitialValue("symbol"))}" /></label>
+        <label>Direction<select name="direction" required><option value="buy" ${plannerInitialValue("direction", "buy") === "buy" ? "selected" : ""}>Long / buy</option><option value="sell" ${plannerInitialValue("direction") === "sell" ? "selected" : ""}>Short / sell</option></select></label>
+        <label>Planned entry<input name="planned_entry" required inputmode="decimal" type="number" min="0.0001" step="any" value="${escapeHtml(plannerInitialValue("planned_entry"))}" /></label>
+        <label>Stop<input name="stop" required inputmode="decimal" type="number" min="0.0001" step="any" value="${escapeHtml(plannerInitialValue("stop"))}" /></label>
+        <label>Target one<input name="target_one" inputmode="decimal" type="number" min="0.0001" step="any" value="${escapeHtml(plannerInitialValue("target_one"))}" /></label>
+        <label>Target two<input name="target_two" inputmode="decimal" type="number" min="0.0001" step="any" value="${escapeHtml(plannerInitialValue("target_two"))}" /></label>
+        <label class="planner-wide">Invalidation reason<textarea name="invalidation_reason" required maxlength="500" rows="2" placeholder="What evidence makes this plan invalid?">${escapeHtml(plannerInitialValue("invalidation_reason"))}</textarea></label>
+        <label class="check-label"><input name="allow_fractional" type="checkbox" ${plannerState?.risk?.fractional_estimate ? "checked" : ""} /> Allow fractional-share estimate</label>
+        <button class="symbol-button primary" type="submit"><i data-lucide="calculator"></i> Calculate plan</button>
+      </form>
+      ${renderPlannerResult()}
+    </section>`;
+}
+
+function performanceValue(value, kind = "number") {
+  if (value === null || value === undefined) return "Unavailable";
+  if (kind === "money") return money(value);
+  if (kind === "percent") return `${Number(value).toFixed(1)}%`;
+  return String(value);
+}
+
+function renderPerformanceIntelligence() {
+  if (intelligenceState?.reason === "feature_not_entitled") return `<section class="decision-surface locked-surface"><div class="section-title">Performance intelligence <small>PRO</small></div><div class="empty-state compact">Server-side entitlement keeps advanced performance attribution in Pro. Basic journal and all safety state remain available.</div></section>`;
+  if (!intelligenceState?.ok) return `<section class="decision-surface"><div class="section-title">Performance intelligence</div><div class="empty-state compact">Unavailable: persisted performance records are still loading.</div></section>`;
+  const overall = intelligenceState.overall || {};
+  const windows = intelligenceState.rolling_windows || {};
+  const breakdownGroups = Object.entries(intelligenceState.breakdowns || {});
+  return `
+    <section class="decision-surface" data-feature="performance-attribution">
+      <div class="section-title">Journal intelligence <small>${escapeHtml(intelligenceState.sample_size)} CLOSED RECORDS</small></div>
+      ${intelligenceState.warning ? `<div class="sample-warning">${escapeHtml(intelligenceState.warning)} Metrics remain descriptive until the configured threshold is met.</div>` : ""}
+      <div class="performance-grid">
+        ${metric("Expectancy", performanceValue(overall.expectancy_r, "number") + (overall.expectancy_r == null ? "" : "R"), `${overall.r_sample_size || 0} R records`)}
+        ${metric("Win rate", performanceValue(overall.win_rate, "percent"), `${overall.pnl_sample_size || 0} P/L records`)}
+        ${metric("Avg win / loss", `${performanceValue(overall.average_win, "money")} / ${performanceValue(overall.average_loss, "money")}`, "Persisted dollar P/L")}
+        ${metric("Profit factor", performanceValue(overall.profit_factor), overall.profit_factor_state || "Persisted P/L")}
+        ${metric("Drawdown", performanceValue(overall.max_drawdown, "money"), "Peak-to-trough persisted P/L")}
+        ${metric("Net P/L", performanceValue(overall.net_pnl, "money"), "Not sample data")}
+      </div>
+      <div class="rolling-grid">${["7", "30", "90"].map((days) => `<article><small>${days} DAYS</small><strong>${performanceValue(windows[days]?.expectancy_r)}${windows[days]?.expectancy_r == null ? "" : "R"}</strong><span>${windows[days]?.sample_size || 0} records · ${performanceValue(windows[days]?.win_rate, "percent")} wins</span></article>`).join("")}</div>
+      <details class="breakdown-details"><summary>Strategy, regime, symbol, direction, time, and weekday breakdowns</summary>${breakdownGroups.map(([key, values]) => `<section><h4>${escapeHtml(key.replaceAll("_", " "))}</h4>${values?.length ? `<div class="data-list compact-list">${values.slice(0, 8).map((item) => row(item.key, `${item.sample_size} · ${performanceValue(item.expectancy_r)}${item.expectancy_r == null ? "" : "R"} · ${performanceValue(item.win_rate, "percent")}`)).join("")}</div>` : `<div class="empty-state compact">Insufficient persisted records.</div>`}</section>`).join("")}</details>
+      <details class="formula-details"><summary>Documented formulas and sources</summary>${Object.entries(intelligenceState.formulas || {}).map(([key, value]) => `<p><strong>${escapeHtml(key.replaceAll("_", " "))}</strong> ${escapeHtml(value)}</p>`).join("")}<small>Source: ${escapeHtml(intelligenceState.source || "Unavailable")}</small></details>
+    </section>`;
+}
+
+function reviewAlertRef() {
+  return String(latestDecision()?.alert_ref || intelligenceState?.records?.[0]?.alert_ref || "");
+}
+
+function renderStructuredReview() {
+  const alertRef = reviewAlertRef();
+  if (!alertRef) return `<section class="decision-surface"><div class="section-title">Structured trade review</div><div class="empty-state compact">No persisted trade reference is available to review.</div></section>`;
+  const review = structuredReviewState?.alert_ref === alertRef ? structuredReviewState.review || {} : {};
+  const booleanOptions = (value) => `<option value="">Unknown</option><option value="true" ${value === true ? "selected" : ""}>Yes</option><option value="false" ${value === false ? "selected" : ""}>No</option>`;
+  return `
+    <section class="decision-surface">
+      <div class="section-title">Structured trade review <small>${escapeHtml(alertRef)}</small></div>
+      <form id="structured-review-form" class="review-form" data-alert-ref="${escapeHtml(alertRef)}">
+        <label>Strategy / setup<input name="strategy" maxlength="120" value="${escapeHtml(review.strategy || latestDecision()?.play || "")}" /></label>
+        <label>Tags<input name="setup_tags" maxlength="300" placeholder="pullback, A-grade, open" value="${escapeHtml((review.setup_tags || []).join(", "))}" /></label>
+        <label>Actual entry<input name="actual_entry" type="number" min="0.0001" step="any" inputmode="decimal" value="${escapeHtml(review.actual_entry ?? "")}" /></label>
+        <label>Actual exit<input name="actual_exit" type="number" min="0.0001" step="any" inputmode="decimal" value="${escapeHtml(review.actual_exit ?? "")}" /></label>
+        <label>Entry quality<select name="entry_quality"><option value="">Unknown</option>${["on_plan", "early", "late", "chased"].map((value) => `<option value="${value}" ${review.entry_quality === value ? "selected" : ""}>${value.replaceAll("_", " ")}</option>`).join("")}</select></label>
+        <label>Exit quality<select name="exit_quality"><option value="">Unknown</option>${["on_plan", "early", "late", "stop", "target"].map((value) => `<option value="${value}" ${review.exit_quality === value ? "selected" : ""}>${value.replaceAll("_", " ")}</option>`).join("")}</select></label>
+        <label>Stop quality<select name="stop_quality"><option value="">Unknown</option>${["on_plan", "too_tight", "too_wide", "moved"].map((value) => `<option value="${value}" ${review.stop_quality === value ? "selected" : ""}>${value.replaceAll("_", " ")}</option>`).join("")}</select></label>
+        <label>Target quality<select name="target_quality"><option value="">Unknown</option>${["on_plan", "too_close", "unrealistic", "structure_based"].map((value) => `<option value="${value}" ${review.target_quality === value ? "selected" : ""}>${value.replaceAll("_", " ")}</option>`).join("")}</select></label>
+        <label>Missed / skipped classification<select name="skip_classification"><option value="">Not classified</option>${["valid_setup_intentionally_skipped", "valid_setup_missed", "invalid_setup_correctly_avoided", "setup_blocked_by_risk", "setup_lacking_sufficient_data"].map((value) => `<option value="${value}" ${review.skip_classification === value ? "selected" : ""}>${value.replaceAll("_", " ")}</option>`).join("")}</select></label>
+        <label>Rules followed<select name="rule_followed">${booleanOptions(review.rule_followed)}</select></label>
+        <label>Stop followed<select name="stop_followed">${booleanOptions(review.stop_followed)}</select></label>
+        <label>Authorized setup<select name="authorized_setup">${booleanOptions(review.authorized_setup)}</select></label>
+        <label>Valid skip followed<select name="valid_skip_followed">${booleanOptions(review.valid_skip_followed)}</select></label>
+        <label class="planner-wide">Rules broken<textarea name="rule_broken" maxlength="1000" rows="2">${escapeHtml((review.rule_broken || []).join("\n"))}</textarea></label>
+        <label class="planner-wide">Evidence and lesson<textarea name="notes" maxlength="2000" rows="3">${escapeHtml(review.notes || "")}</textarea></label>
+        <button class="symbol-button primary" type="submit"><i data-lucide="save"></i> Save private review</button>
+      </form>
+      <p class="surface-guardrail">Persisted authenticated review only. Saving cannot stage, approve, or submit an order.</p>
+    </section>`;
+}
+
+function renderCoachIntelligence() {
+  const discipline = disciplineState;
+  const missed = missedTradesState;
+  if (discipline?.reason === "feature_not_entitled" || missed?.reason === "feature_not_entitled") {
+    return `<section class="decision-surface locked-surface"><div class="section-title">Behavioral review <small>PRO</small></div><div class="empty-state compact">Coach analytics are enforced server-side for Pro. Risk, approval, and safety state remain Core.</div></section>`;
+  }
+  const score = discipline?.score;
+  const categories = {
+    valid_setup_intentionally_skipped: "Valid setup intentionally skipped",
+    valid_setup_missed: "Valid setup missed",
+    invalid_setup_correctly_avoided: "Invalid setup correctly avoided",
+    setup_blocked_by_risk: "Setup blocked by risk",
+    setup_lacking_sufficient_data: "Insufficient data",
+  };
+  return `
+    <section class="decision-surface" data-feature="discipline-score">
+      <div class="decision-heading"><div><small>PROCESS, NOT PROFITABILITY</small><h3>Trader Discipline Score</h3></div><div class="decision-score">${escapeHtml(evidenceValue(score))}${score == null ? "" : "<small>/ 100</small>"}</div></div>
+      <p class="decision-summary"><strong>${escapeHtml(discipline?.label || "Unavailable")}</strong> · ${discipline?.sample_size || 0} of ${discipline?.minimum_sample || 0} required records</p>
+      <div class="decision-components">${(discipline?.components || []).map((item) => `<details class="decision-component"><summary><span>${escapeHtml(item.label)}</span><strong>${escapeHtml(evidenceValue(item.score, item.score == null ? "" : "%"))}</strong></summary><p>${escapeHtml(item.reason)}</p><small>${escapeHtml(item.recommendation)}</small></details>`).join("")}</div>
+      ${(discipline?.recommendations || []).length ? `<div class="coach-recommendations"><strong>Evidence-linked next actions</strong>${discipline.recommendations.map((item) => `<p>${escapeHtml(item)}</p>`).join("")}</div>` : ""}
+      <p class="surface-guardrail">${escapeHtml(discipline?.guardrail || "Insufficient evidence. No fake precision is shown.")}</p>
+    </section>
+    <section class="decision-surface" data-feature="missed-trade-analysis">
+      <div class="section-title">Missed-trade review <small>30 DAYS</small></div>
+      <div class="missed-grid">${Object.entries(categories).map(([key, label]) => `<article><strong>${escapeHtml(missed?.counts?.[key] || 0)}</strong><span>${escapeHtml(label)}</span></article>`).join("")}</div>
+      ${(missed?.items || []).length ? `<div class="decision-list">${missed.items.slice(0, 12).map((item) => `<article class="decision-card"><strong>${escapeHtml([item.symbol, item.setup].filter(Boolean).join(" · ") || "Untraded alert")}</strong><span>${escapeHtml(categories[item.category] || item.category)}</span><p>${escapeHtml(item.explanation)}</p><small>${escapeHtml(timeAgo(item.timestamp))}</small></article>`).join("")}</div>` : `<div class="empty-state compact">No untraded persisted alerts need classification.</div>`}
+      <p class="surface-guardrail">${escapeHtml(missed?.guardrail || "An untraded alert is never automatically labeled a mistake.")}</p>
+    </section>`;
+}
+
+function renderPlaybookSurface() {
+  const entries = playbookState?.entries || [];
+  return `
+    <section class="decision-surface" data-feature="playbook">
+      <div class="section-title">Searchable Velez playbook <small>${escapeHtml(playbookState?.source || "LOADING")}</small></div>
+      <form id="playbook-search-form" class="inline-form"><input id="playbook-query" name="query" type="search" maxlength="80" value="${escapeHtml(playbookQuery)}" placeholder="Search setups, triggers, or failure modes"/><button class="symbol-button" type="submit"><i data-lucide="search"></i> Search</button></form>
+      ${entries.length ? `<div class="playbook-grid">${entries.map((item) => `<details class="playbook-card"><summary><span>${escapeHtml(item.title)}</span><small>${item.detected_alert_refs?.length || 0} linked records</small></summary><div><h4>Qualification</h4><ul>${(item.qualification || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul><h4>Entry / stop / targets</h4><p>${escapeHtml(item.entry_trigger)}</p><p>${escapeHtml(item.stop_logic)}</p><p>${escapeHtml(item.target_logic)}</p><h4>Invalidation</h4><p>${escapeHtml(item.invalidation)}</p><h4>Preferred regime</h4><p>${escapeHtml((item.preferred_regime || []).join(" · "))}</p><h4>Common failure modes</h4><ul>${(item.failure_modes || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul><small>${escapeHtml(item.example_state || "No verified example linked.")}</small></div></details>`).join("")}</div>` : `<div class="empty-state compact">${playbookState?.ok ? "No playbook entry matches the search." : "Playbook unavailable."}</div>`}
+    </section>`;
+}
+
+function renderSymbolThesis() {
+  const symbol = currentDecisionSymbol() || "SPY";
+  const note = symbolNoteState?.symbol === symbol ? symbolNoteState.note || {} : {};
+  const levels = (note.key_levels || []).map((item) => `${item.label}: ${item.price}`).join("\n");
+  return `
+    <section class="decision-surface" data-feature="thesis-notes">
+      <div class="section-title">Private ticker thesis <small>${escapeHtml(symbol)}</small></div>
+      <form id="symbol-note-form" class="note-form" data-symbol="${escapeHtml(symbol)}">
+        <label>Thesis<textarea name="thesis" maxlength="1200" rows="3" placeholder="What must be true?">${escapeHtml(note.thesis || "")}</textarea></label>
+        <label>Catalyst<textarea name="catalyst" maxlength="800" rows="2" placeholder="Verified catalyst or Unknown">${escapeHtml(note.catalyst || "")}</textarea></label>
+        <label>Key levels<textarea name="key_levels" maxlength="800" rows="3" placeholder="Prior high: 105.20">${escapeHtml(levels)}</textarea></label>
+        <label>Risks<textarea name="risks" maxlength="1200" rows="3" placeholder="One evidence-based risk per line">${escapeHtml((note.risks || []).join("\n"))}</textarea></label>
+        <label>Invalidation<textarea name="invalidation" maxlength="800" rows="2" placeholder="What invalidates the thesis?">${escapeHtml(note.invalidation || "")}</textarea></label>
+        <button class="symbol-button primary" type="submit"><i data-lucide="save"></i> Save private thesis</button>
+      </form>
+      <p class="surface-guardrail">Authenticated operator context. Notes are never presented as market or broker truth.</p>
+    </section>`;
+}
+
 function renderLaptop() {
   const broker = dashboardState.broker || {};
   const symbols = dashboardState.symbols || [];
   const health = currentHealthState();
+  const lifecycle = currentLifecycleState();
   const replay = currentReplayState();
   const latestReplay = replay.ok && replay.summary ? replay : replay.runs?.[0] || null;
   const pending = dashboardState.pending_approvals || [];
   const scanner = dashboardState.scanner || {};
   const qualityBySymbol = watchlistQualityMap();
   return `
+    <section class="pro-console-launch">
+      <div>
+        <span>Trading workspace</span>
+        <strong>Open Pro Console</strong>
+        <small>TradingView, screened setups, execution planning, and risk command in one full-screen view.</small>
+      </div>
+      <button type="button" data-pro-console-open>
+        Expand <i data-lucide="maximize-2"></i>
+      </button>
+    </section>
+    ${renderReadinessIntelligence()}
+    ${renderMarketContextSurface()}
+    ${renderExecutionPlanner()}
     <div class="metric-grid">
       ${metric("Execution", dashboardState.execution_armed ? "Armed" : "Proposal", dashboardState.execution_armed ? "Paper orders enabled" : "No live submit")}
       ${metric("Broker", broker.ok ? "Connected" : "Needs check", broker.account_status || broker.reason || "Unknown")}
-      ${metric("Open risk", money(dashboardState.summary?.unrealized_pl || 0), `${dashboardState.summary?.open_positions || 0} open positions`)}
+      ${metric("Open risk", money(lifecycle.ok ? lifecycle.summary?.open_risk : null), `${money(lifecycle.ok ? lifecycle.summary?.unrealized_pl : null)} unrealized P/L`)}
       ${metric("Scanner", scanner.enabled ? (scanner.running ? "Running" : "Stopped") : "Off", scanner.mode || "Hybrid watchlist")}
     </div>
     <div class="data-list">
@@ -2245,6 +3548,8 @@ function renderJournal() {
   const research = journal.research || [];
   const outcomes = lifecycle.outcomes || [];
   return `
+    ${renderPerformanceIntelligence()}
+    ${renderStructuredReview()}
     <div class="metric-grid">
       ${metric("Entries", journal.summary?.entries || entries.length, "Persistent SQLite journal")}
       ${metric("Actionable", journal.summary?.actionable || 0, "Proposed or submitted")}
@@ -2318,8 +3623,8 @@ function renderCalendar() {
   const refreshLabel = calendarRefreshPromise ? "Refreshing..." : `Updated ${timeAgo(calendar.timestamp)}`;
   return `
     <div class="metric-grid">
-      ${metric("Month P/L", money(pnl.month_pl || 0), pnl.detail || "Alpaca portfolio history")}
-      ${metric("Open mark", money(pnl.unrealized_pl || dashboardState.summary?.unrealized_pl || 0), "Open-position unrealized P/L")}
+      ${metric("Month P/L", money(pnl.month_pl), pnl.detail || "Alpaca portfolio history")}
+      ${metric("Open mark", money(pnl.unrealized_pl ?? dashboardState.summary?.unrealized_pl), "Open-position unrealized P/L")}
       ${metric("Alerts", alerts.count || 0, `${journal.sessions_logged || 0} journal days this month`)}
       ${metric("Events", events.length + earnings.length, calendar.range?.month_label || "Monthly feed")}
     </div>
@@ -2350,7 +3655,7 @@ function renderCalendar() {
     <section class="tool-section">
       <div class="section-title">Month pulse</div>
       <div class="pulse-row">
-        <span class="${Number(pnl.month_pl || 0) >= 0 ? "positive" : "negative"}">${escapeHtml(money(pnl.month_pl || 0))}</span>
+        <span class="${pnl.month_pl == null ? "" : Number(pnl.month_pl) >= 0 ? "positive" : "negative"}">${escapeHtml(money(pnl.month_pl))}</span>
         <span>${escapeHtml(`${alerts.count || 0} alerts`)}</span>
         <span>${escapeHtml(`${calendar.sessions?.length || 0} sessions`)}</span>
       </div>
@@ -2395,6 +3700,7 @@ function renderSafe() {
 
 function renderBookshelf() {
   return `
+    ${renderPlaybookSurface()}
     <div class="metric-grid">
       ${metric("Plays", strategyShelf.length, "Core Velez rule cards")}
       ${metric("Location", "Required", "No structure, no trade")}
@@ -2520,6 +3826,7 @@ function renderDrawer() {
   const symbols = dashboardState.symbols || [];
   const latestReplay = replay.ok && replay.summary ? replay : replay.runs?.[0] || null;
   return `
+    ${renderPlaybookSurface()}
     <div class="metric-grid">
       ${metric("Replay", latestReplay?.signals_found ?? 0, latestReplay?.summary || "No replay run yet")}
       ${metric("Bars", latestReplay?.bars_loaded ?? 0, "Local scan only")}
@@ -2578,6 +3885,7 @@ function renderDrawer() {
 function renderNotes() {
   const ritual = todaysRitual();
   return `
+    ${renderSymbolThesis()}
     <div class="metric-grid">
       ${metric("Prep", "Live", marketClock().next)}
       ${metric("Watchlist", dashboardState.summary?.symbols_watched || 0, (dashboardState.symbols || []).map((item) => item.symbol).join(", ") || "No symbols")}
@@ -3321,7 +4629,13 @@ async function disconnectAppleMusic() {
 
 function applyWinstonRuntime(payload = {}) {
   if (payload.brain) winstonState.brain = { ...winstonState.brain, ...payload.brain };
-  if (payload.voice) winstonState.voice = { ...winstonState.voice, ...payload.voice };
+  if (payload.voice) {
+    winstonState.voice = {
+      ...winstonState.voice,
+      ...payload.voice,
+      statusLoaded: true,
+    };
+  }
   if (["ollama", "openai_compatible", "winston_rule_based_v1"].includes(payload.provider)) {
     winstonState.brain = {
       ...winstonState.brain,
@@ -3329,6 +4643,7 @@ function applyWinstonRuntime(payload = {}) {
       model: payload.model || winstonState.brain.model,
       available: payload.degraded ? false : winstonState.brain.available,
       detail: payload.degraded ? payload.fallback_reason || "AI fallback used" : winstonState.brain.detail,
+      lastLatencyMs: Number.isFinite(Number(payload.latency_ms)) ? Number(payload.latency_ms) : winstonState.brain.lastLatencyMs,
     };
   }
 }
@@ -3339,33 +4654,42 @@ async function refreshWinstonStatus() {
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data.ok) throw new Error(data.reason || `status ${response.status}`);
     applyWinstonRuntime(data);
+    const voice = winstonState.voice || {};
+    if (
+      ["fish", "pockettts"].includes(voice.provider)
+      && String(voice.voice || "").trim().toLowerCase() !== WINSTON_REQUIRED_VOICE
+    ) {
+      winstonState.voice = {
+        ...voice,
+        available: false,
+        detail: `Voice lock mismatch: expected ${WINSTON_REQUIRED_VOICE}`,
+      };
+    }
+    refreshWinstonPanel();
+    return true;
   } catch (error) {
     winstonState.brain = {
       ...winstonState.brain,
       available: winstonState.brain.provider === "winston_rule_based_v1",
       detail: error?.message || "Winston status unavailable",
     };
-    // Also recover voice to a safe browser-fallback state so a single
-    // status fetch failure does not strand the voice in a degraded pockettts state.
     winstonState.voice = {
       ...winstonState.voice,
-      provider: "browser",
-      configured: true,
-      available: true,
-      voice: "browser_default",
-      model: "Web Speech API",
-      detail: "Browser speech synthesis (status unreachable)",
+      available: false,
+      detail: `Winston voice status unavailable: ${error?.message || "status check failed"}`,
     };
+    refreshWinstonPanel();
+    return false;
   }
-  refreshWinstonPanel();
 }
 
 function winstonBrainLabel() {
   const provider = winstonState.brain?.provider || "winston_rule_based_v1";
   const model = String(winstonState.brain?.model || "").toLowerCase();
+  const baseUrl = String(winstonState.brain?.base_url || "").toLowerCase();
   if (provider === "ollama") return "Hermes local LLM";
-  if (provider === "openai_compatible" && (model.includes("gpt-oss") || model.includes("qwen/"))) return "Groq cloud";
-  if (provider === "openai_compatible" && model.includes("deepseek")) return "Emergency DeepSeek";
+  if (provider === "openai_compatible" && (baseUrl.includes("api.groq.com") || model.includes("gpt-oss"))) return "Groq AI";
+  if (provider === "openai_compatible" && model.includes("deepseek")) return "Locked emergency provider";
   if (provider === "openai_compatible") return "AI provider";
   if (provider === "winston_trade_guardrail_v1") return "Trade guardrail";
   if (provider === "winston_rule_based_v1") return "Safe local rules";
@@ -3378,23 +4702,33 @@ function winstonBrainDetail() {
     ? `fallback ${brain.fallback.model || brain.fallback.provider}`
     : "";
   const thinking = brain.thinking ? `thinking ${brain.thinking}` : "";
-  return [brain.model, thinking, fallback, brain.detail].filter(Boolean).join(" | ") || "Winston ready";
+  const latency = brain.lastLatencyMs != null && Number.isFinite(Number(brain.lastLatencyMs))
+    ? `${Math.round(Number(brain.lastLatencyMs))} ms last reply`
+    : "";
+  return [brain.model, latency, thinking, fallback, brain.detail].filter(Boolean).join(" | ") || "Winston ready";
 }
 
 function winstonVoiceLabel() {
   const voice = winstonState.voice || {};
-  if (voice.provider === "pockettts" && voice.configured) return "Hermes PocketTTS";
-  if (!("speechSynthesis" in window)) return "Voice output unavailable";
-  if (!SpeechRecognitionApi) return "Browser voice output";
-  return "Browser input and output";
+  if (voice.provider === "fish" && voice.configured) return "Winston · Fish Audio";
+  if (voice.provider === "pockettts" && voice.configured) return "Winston · PocketTTS";
+  if (winstonState.muted) return "Winston voice muted";
+  return "Winston voice unavailable";
 }
 
 function winstonVoiceDetail() {
   const voice = winstonState.voice || {};
-  if (voice.provider === "pockettts" && voice.configured) {
-    return [voice.voice, voice.available ? "Server voice ready" : "Server voice fallback"].filter(Boolean).join(" | ");
+  if (["fish", "pockettts"].includes(voice.provider) && voice.configured) {
+    const latency = voice.lastLatencyMs != null && Number.isFinite(Number(voice.lastLatencyMs))
+      ? `${Math.round(Number(voice.lastLatencyMs))} ms last synthesis`
+      : "";
+    return [
+      voice.voice,
+      voice.available ? "Winston voice locked" : "Winston unavailable — no generic fallback",
+      latency,
+    ].filter(Boolean).join(" | ");
   }
-  return winstonState.muted ? "Muted" : "Speaker ready";
+  return winstonState.muted ? "Muted" : (voice.detail || "Winston voice service is not configured");
 }
 
 function winstonTranscript(role, text) {
@@ -3431,6 +4765,10 @@ function dailyBriefFallback() {
 
 function stopWinstonAudio() {
   winstonState.speechRequestId += 1;
+  if (winstonState.speechController) {
+    winstonState.speechController.abort();
+    winstonState.speechController = null;
+  }
   if (winstonState.audio) {
     try {
       winstonState.audio.pause();
@@ -3442,6 +4780,45 @@ function stopWinstonAudio() {
   }
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();
   winstonState.speaking = false;
+}
+
+function unlockWinstonAudio() {
+  if (!winstonAudioPlayer || winstonState.speaking) return;
+  try {
+    winstonAudioPlayer.muted = true;
+    winstonAudioPlayer.src = WINSTON_AUDIO_UNLOCK_CLIP;
+    const unlocked = winstonAudioPlayer.play();
+    if (unlocked?.then) {
+      unlocked
+        .then(() => {
+          if (winstonAudioPlayer.src.startsWith("data:audio/wav")) {
+            winstonAudioPlayer.pause();
+            winstonAudioPlayer.currentTime = 0;
+          }
+          winstonAudioPlayer.muted = false;
+        })
+        .catch(() => {
+          winstonAudioPlayer.muted = false;
+        });
+    } else {
+      winstonAudioPlayer.muted = false;
+    }
+  } catch (_) {
+    winstonAudioPlayer.muted = false;
+  }
+}
+
+function markServerVoiceFailure(detail) {
+  winstonState.speaking = false;
+  winstonState.speechController = null;
+  winstonState.voice = {
+    ...winstonState.voice,
+    available: false,
+    voice: WINSTON_REQUIRED_VOICE,
+    detail: detail || "Winston voice unavailable",
+  };
+  winstonState.message = "Winston voice unavailable — generic voice blocked";
+  refreshWinstonPanel();
 }
 
 function speakBrowserWinston(text) {
@@ -3474,56 +4851,153 @@ function speakBrowserWinston(text) {
   window.speechSynthesis.speak(utterance);
 }
 
+function splitWinstonSpeech(text, maxChars = 180) {
+  const sentences = String(text || "").match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [];
+  const chunks = [];
+  let current = "";
+  const pushWords = (value) => {
+    const words = value.trim().split(/\s+/);
+    let piece = "";
+    words.forEach((word) => {
+      const next = piece ? `${piece} ${word}` : word;
+      if (next.length > maxChars && piece) {
+        chunks.push(piece);
+        piece = word;
+      } else {
+        piece = next;
+      }
+    });
+    if (piece) chunks.push(piece);
+  };
+  sentences.forEach((sentence) => {
+    const cleaned = sentence.trim();
+    if (!cleaned) return;
+    if (cleaned.length > maxChars) {
+      if (current) {
+        chunks.push(current);
+        current = "";
+      }
+      pushWords(cleaned);
+      return;
+    }
+    const next = current ? `${current} ${cleaned}` : cleaned;
+    if (next.length > maxChars && current) {
+      chunks.push(current);
+      current = cleaned;
+    } else {
+      current = next;
+    }
+  });
+  if (current) chunks.push(current);
+  return chunks.length ? chunks : [String(text || "").trim()];
+}
+
+async function fetchServerVoiceChunk(text, signal) {
+  const response = await fetch("/api/winston/speech", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+    signal,
+  });
+  if (!response.ok) throw new Error(`Winston voice service ${response.status}`);
+  const responseVoice = String(response.headers.get("X-Winston-Voice") || "").trim().toLowerCase();
+  if (responseVoice !== WINSTON_REQUIRED_VOICE) {
+    throw new Error(`voice lock rejected ${responseVoice || "missing voice header"}`);
+  }
+  const latencyMs = Number(response.headers.get("X-Winston-TTS-Latency-Ms"));
+  const blob = await response.blob();
+  if (!blob.size) throw new Error("empty Winston audio response");
+  return { blob, latencyMs };
+}
+
+function prepareServerVoiceChunk(text, signal) {
+  return fetchServerVoiceChunk(text, signal).then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  );
+}
+
+async function playServerVoiceChunk(blob, speechId, signal) {
+  const url = URL.createObjectURL(blob);
+  const audio = winstonAudioPlayer || new Audio();
+  audio.muted = false;
+  audio.src = url;
+  winstonState.audio = audio;
+  let abortPlayback = null;
+  try {
+    await new Promise((resolve, reject) => {
+      abortPlayback = () => reject(new DOMException("Winston playback cancelled", "AbortError"));
+      signal?.addEventListener("abort", abortPlayback, { once: true });
+      audio.onended = resolve;
+      audio.onerror = () => reject(new Error("Winston audio playback failed"));
+      const started = audio.play();
+      if (started?.catch) started.catch(reject);
+    });
+  } finally {
+    if (abortPlayback) signal?.removeEventListener("abort", abortPlayback);
+    URL.revokeObjectURL(url);
+    if (speechId === winstonState.speechRequestId) winstonState.audio = null;
+  }
+}
+
 async function speakWinston(text) {
   if (winstonState.muted) return;
-  const voice = winstonState.voice || {};
   const speechId = winstonState.speechRequestId + 1;
   stopWinstonAudio();
   winstonState.speechRequestId = speechId;
+  if (!winstonState.voice?.statusLoaded) await refreshWinstonStatus();
+  if (speechId !== winstonState.speechRequestId) return;
+  const voice = winstonState.voice || {};
 
-  if (voice.provider === "pockettts" && voice.configured) {
-    try {
-      winstonState.speaking = true;
-      refreshWinstonPanel();
-      const response = await fetch("/api/winston/speech", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      if (!response.ok) throw new Error(`server voice ${response.status}`);
-      const blob = await response.blob();
-      if (!blob.size) throw new Error("empty audio response");
-      if (speechId !== winstonState.speechRequestId) return;
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      winstonState.audio = audio;
-      audio.onended = () => {
-        if (speechId === winstonState.speechRequestId) {
-          URL.revokeObjectURL(url);
-          winstonState.audio = null;
-          winstonState.speaking = false;
-          refreshWinstonPanel();
-        }
-      };
-      audio.onerror = () => {
-        URL.revokeObjectURL(url);
-        winstonState.audio = null;
-        winstonState.speaking = false;
-        speakBrowserWinston(text);
-      };
-      await audio.play();
-      return;
-    } catch (error) {
-      // PocketTTS request failed — fall through to browser TTS for this utterance
-      // but do NOT permanently mark voice unavailable. refreshWinstonStatus()
-      // will restore the real server state on the next poll.
-      winstonState.speaking = false;
-      refreshWinstonPanel();
-    }
-    // PocketTTS response was empty (unusual edge case) — fall through to browser
+  if (voice.provider === "browser" && voice.statusLoaded) {
+    markServerVoiceFailure(voice.detail || "Server voice lock requires Fish Winston");
+    return;
   }
 
-  speakBrowserWinston(text);
+  if (!["fish", "pockettts"].includes(voice.provider) || !voice.configured) {
+    markServerVoiceFailure(voice.detail || "Winston voice service is not configured");
+    return;
+  }
+
+  if (String(voice.voice || "").trim().toLowerCase() !== WINSTON_REQUIRED_VOICE) {
+    markServerVoiceFailure(`Voice lock mismatch: expected ${WINSTON_REQUIRED_VOICE}`);
+    return;
+  }
+
+  const controller = new AbortController();
+  winstonState.speechController = controller;
+  try {
+    winstonState.speaking = true;
+    refreshWinstonPanel();
+    const chunks = splitWinstonSpeech(text);
+    let prepared = prepareServerVoiceChunk(chunks[0], controller.signal);
+    for (let index = 0; index < chunks.length; index += 1) {
+      const result = await prepared;
+      if (result.error) throw result.error;
+      const current = result.value;
+      if (speechId !== winstonState.speechRequestId) return;
+      prepared = index + 1 < chunks.length
+        ? prepareServerVoiceChunk(chunks[index + 1], controller.signal)
+        : null;
+      winstonState.voice = {
+        ...winstonState.voice,
+        available: true,
+        voice: WINSTON_REQUIRED_VOICE,
+        lastLatencyMs: Number.isFinite(current.latencyMs) ? current.latencyMs : winstonState.voice.lastLatencyMs,
+        detail: "Winston voice locked",
+      };
+      refreshWinstonPanel();
+      await playServerVoiceChunk(current.blob, speechId, controller.signal);
+    }
+    if (speechId === winstonState.speechRequestId) {
+      winstonState.speaking = false;
+      winstonState.speechController = null;
+      refreshWinstonPanel();
+    }
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    markServerVoiceFailure(error?.message || "Winston voice request failed");
+  }
 }
 
 function refreshWinstonPanel() {
@@ -3536,10 +5010,11 @@ function refreshWinstonPanel() {
 function startWinstonCall() {
   winstonState.callActive = true;
   winstonState.status = "connected";
-  winstonState.message = "Opening morning call";
-  winstonTranscript("winston", "Winston here. Opening the morning call.");
+  winstonState.message = "Groq and Winston voice are ready";
+  const greeting = "Winston here. Groq is online and Fish Winston voice is locked. How may I help?";
+  winstonTranscript("winston", greeting);
   renderPanel();
-  requestWinstonMorningCall();
+  speakWinston(greeting);
 }
 
 function endWinstonCall() {
@@ -3666,8 +5141,8 @@ async function approvePendingOrder(id, phrase) {
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data.ok) throw new Error(data.reason || `approval failed (${response.status})`);
     winstonState.status = "connected";
-    winstonState.message = "Paper order submitted";
-    winstonTranscript("winston", `${approvalLine(data.pending || {})} has been submitted to Alpaca paper.`);
+    winstonState.message = "Submitted through user-controlled workflow";
+    winstonTranscript("winston", `${approvalLine(data.pending || {})}: Submitted through user-controlled workflow.`);
     speakWinston(`${data.pending?.symbol || "The staged order"} has been submitted to Alpaca paper.`);
     await refreshState();
   } catch (error) {
@@ -3687,6 +5162,54 @@ function approvalPhraseFromPrompt(prompt) {
   return pending ? { id, phrase: pending.approval_phrase } : { id, phrase: `APPROVE PAPER ORDER ${id}` };
 }
 
+function winstonRoomContext() {
+  const mission = dailyMission();
+  const nowPlaying = appleMusicState.nowPlaying || {};
+  return {
+    active: {
+      panel: activePanel,
+      label: panelCopy[activePanel]?.[1] || activePanel,
+      theme: document.body.dataset.roomTheme || "night",
+    },
+    chart: {
+      symbol: tradingViewSymbol,
+      label: tradingViewLabel(),
+      broker_symbol: tradingViewBrokerSymbol(),
+      timeframe: "5Min",
+      loaded: tradingViewLoaded,
+      latest_capture_at: chartCaptures[0]?.timestamp || null,
+    },
+    mission: {
+      title: mission.title,
+      rule: mission.rule,
+      session: mission.clock?.phase,
+      next: mission.clock?.next,
+      weather: mission.weather?.label,
+      risk_mood: mission.mood?.label,
+    },
+    music: {
+      authorized: appleMusicState.authorized,
+      ready: appleMusicState.ready,
+      is_playing: appleMusicState.playback?.isPlaying,
+      now_playing: {
+        title: nowPlaying.title || "",
+        artist: nowPlaying.artist || "",
+        album: nowPlaying.album || "",
+      },
+    },
+    phone: {
+      call_active: winstonState.callActive,
+      muted: winstonState.muted,
+      listening: winstonState.listening,
+      speaking: winstonState.speaking,
+      status: winstonState.status,
+    },
+    notes: {
+      manual_note: String(deskNote || "").slice(0, 1200),
+    },
+  };
+}
+
 async function sendWinstonPrompt(prompt) {
   const text = String(prompt || "").trim();
   if (!text) return;
@@ -3704,7 +5227,7 @@ async function sendWinstonPrompt(prompt) {
     const response = await fetch("/api/winston/message", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify({ message: text, room_context: winstonRoomContext() }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data.ok) throw new Error(data.reason || `message failed (${response.status})`);
@@ -3756,6 +5279,10 @@ function localWinstonReply(prompt) {
 }
 
 function toggleWinstonListening() {
+  unlockWinstonAudio();
+  stopWinstonAudio();
+  winstonState.message = "Waiting for microphone permission";
+  refreshWinstonPanel();
   if (!SpeechRecognitionApi) {
     winstonState.message = "Voice input is not available in this browser";
     winstonTranscript("system", "Voice input is not available here. Type into the phone prompt instead.");
@@ -3881,7 +5408,7 @@ function renderPhone() {
                     <span>Phrase: ${escapeHtml(item.approval_phrase)}</span>
                     <button class="action-button" type="button" data-approve-order="${escapeHtml(item.id)}" data-approve-phrase="${escapeHtml(item.approval_phrase)}">
                       <i data-lucide="shield-check"></i>
-                      <span>Approve Paper</span>
+                      <span>${escapeHtml(item.submit_eligible === false ? "Conditions Not Met" : "Submit Reviewed Setup")}</span>
                     </button>
                   </article>
                 `,
@@ -3900,6 +5427,147 @@ function renderPhone() {
   `;
 }
 
+async function calculateExecutionPlan(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const fields = new FormData(form);
+  const payload = {
+    symbol: String(fields.get("symbol") || "").toUpperCase().trim(),
+    direction: fields.get("direction"),
+    planned_entry: fields.get("planned_entry"),
+    stop: fields.get("stop"),
+    target_one: fields.get("target_one") || null,
+    target_two: fields.get("target_two") || null,
+    invalidation_reason: fields.get("invalidation_reason"),
+    allow_fractional: fields.get("allow_fractional") === "on",
+  };
+  try {
+    plannerState = await dashboardJson("/api/planner/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    plannerState = error.payload || { ok: false, outcome: "skip_trade", errors: [{ code: "planner_unavailable", detail: error.message }] };
+  }
+  announceDesk(plannerState.ok ? "Plan calculated for human review. No order was staged." : "Plan is not valid. Skip-trade outcome shown.");
+  renderPanel();
+  if (proConsoleOpen) renderProConsole();
+}
+
+async function refreshStructuredReview() {
+  const alertRef = reviewAlertRef();
+  if (!alertRef) return null;
+  try {
+    structuredReviewState = await dashboardJson(`/api/journal/structured-review/${encodeURIComponent(alertRef)}`);
+  } catch (error) {
+    structuredReviewState = { ok: false, alert_ref: alertRef, review: null, reason: error.message };
+  }
+  if (activePanel === "journal" && !panelFormIsEditing()) renderPanel();
+  return structuredReviewState;
+}
+
+async function saveStructuredReview(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const fields = new FormData(form);
+  const alertRef = form.dataset.alertRef;
+  const reviewBool = (key) => fields.get(key) === "true" ? true : fields.get(key) === "false" ? false : null;
+  const payload = {
+    strategy: fields.get("strategy"),
+    setup_tags: String(fields.get("setup_tags") || "").split(",").map((item) => item.trim()).filter(Boolean),
+    actual_entry: fields.get("actual_entry") || null,
+    actual_exit: fields.get("actual_exit") || null,
+    entry_quality: fields.get("entry_quality"),
+    exit_quality: fields.get("exit_quality"),
+    stop_quality: fields.get("stop_quality"),
+    target_quality: fields.get("target_quality"),
+    skip_classification: fields.get("skip_classification"),
+    rule_followed: reviewBool("rule_followed"),
+    stop_followed: reviewBool("stop_followed"),
+    authorized_setup: reviewBool("authorized_setup"),
+    valid_skip_followed: reviewBool("valid_skip_followed"),
+    rule_broken: String(fields.get("rule_broken") || "").split("\n").map((item) => item.trim()).filter(Boolean),
+    notes: fields.get("notes"),
+  };
+  try {
+    const saved = await dashboardJson(`/api/journal/structured-review/${encodeURIComponent(alertRef)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    structuredReviewState = { ok: true, alert_ref: alertRef, review: saved.review };
+    decisionIntelligenceFetchedAt = 0;
+    announceDesk("Private trade review saved. Execution permissions were unchanged.");
+    await refreshDecisionIntelligence({ force: true });
+  } catch (error) {
+    announceDesk(`Review was not saved: ${error.message}`);
+  }
+  renderPanel();
+}
+
+async function searchPlaybook(event) {
+  event.preventDefault();
+  playbookQuery = String(new FormData(event.currentTarget).get("query") || "").trim();
+  try {
+    playbookState = await dashboardJson(`/api/playbook?query=${encodeURIComponent(playbookQuery)}`);
+  } catch (error) {
+    playbookState = { ok: false, entries: [], reason: error.message };
+  }
+  renderPanel();
+}
+
+async function refreshSymbolNote() {
+  const symbol = currentDecisionSymbol() || "SPY";
+  try {
+    symbolNoteState = await dashboardJson(`/api/notes/${encodeURIComponent(symbol)}`);
+  } catch (error) {
+    symbolNoteState = { ok: false, symbol, note: null, reason: error.message };
+  }
+  if (activePanel === "notes" && !panelFormIsEditing()) renderPanel();
+  return symbolNoteState;
+}
+
+function parseKeyLevels(text) {
+  return String(text || "")
+    .split("\n")
+    .map((line) => {
+      const separator = line.lastIndexOf(":");
+      const label = separator >= 0 ? line.slice(0, separator).trim() : "Key level";
+      const price = Number(separator >= 0 ? line.slice(separator + 1).trim() : line.trim());
+      return Number.isFinite(price) && price > 0 ? { label: label || "Key level", price } : null;
+    })
+    .filter(Boolean);
+}
+
+async function saveSymbolNote(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const fields = new FormData(form);
+  const symbol = form.dataset.symbol;
+  const payload = {
+    thesis: fields.get("thesis"),
+    catalyst: fields.get("catalyst"),
+    key_levels: parseKeyLevels(fields.get("key_levels")),
+    risks: String(fields.get("risks") || "").split("\n").map((item) => item.trim()).filter(Boolean),
+    invalidation: fields.get("invalidation"),
+  };
+  try {
+    const saved = await dashboardJson(`/api/notes/${encodeURIComponent(symbol)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    symbolNoteState = { ok: true, symbol, note: saved.note };
+    annotationsState = await dashboardJson(`/api/annotations?symbol=${encodeURIComponent(symbol)}`).catch(() => annotationsState);
+    announceDesk(`Private ${symbol} thesis saved.`);
+  } catch (error) {
+    announceDesk(`Thesis was not saved: ${error.message}`);
+  }
+  renderPanel();
+  if (proConsoleOpen) renderProConsole();
+}
+
 function renderPanel() {
   capturePanelDrafts();
   const [kicker, title] = panelCopy[activePanel] || panelCopy.tv;
@@ -3909,6 +5577,7 @@ function renderPanel() {
   const renderers = {
     tv: renderTradingScreen,
     mission: renderMission,
+    mentor: renderMentor,
     laptop: renderLaptop,
     journal: renderJournal,
     calendar: renderCalendar,
@@ -3925,24 +5594,41 @@ function renderPanel() {
 
   panelBody.innerHTML = (renderers[activePanel] || renderTradingScreen)();
   $("#winston-call-toggle")?.addEventListener("click", () => {
+    unlockWinstonAudio();
     if (winstonState.callActive) endWinstonCall();
     else startWinstonCall();
   });
   $("#winston-listen")?.addEventListener("click", toggleWinstonListening);
-  $("#winston-brief")?.addEventListener("click", requestWinstonBrief);
-  $("#winston-morning-call")?.addEventListener("click", requestWinstonMorningCall);
-  $("#winston-research")?.addEventListener("click", requestWinstonResearch);
-  $("#winston-deep-research")?.addEventListener("click", () => requestWinstonResearch({ deep: true }));
+  $("#winston-brief")?.addEventListener("click", () => {
+    unlockWinstonAudio();
+    requestWinstonBrief();
+  });
+  $("#winston-morning-call")?.addEventListener("click", () => {
+    unlockWinstonAudio();
+    requestWinstonMorningCall();
+  });
+  $("#winston-research")?.addEventListener("click", () => {
+    unlockWinstonAudio();
+    requestWinstonResearch();
+  });
+  $("#winston-deep-research")?.addEventListener("click", () => {
+    unlockWinstonAudio();
+    requestWinstonResearch({ deep: true });
+  });
   $("#winston-mute")?.addEventListener("click", toggleWinstonMute);
   $("#approval-token")?.addEventListener("input", (event) => {
     approvalToken = event.target.value || "";
     localStorage.setItem("trading-bull-approval-token", approvalToken);
   });
   $$("[data-approve-order]").forEach((button) => {
-    button.addEventListener("click", () => approvePendingOrder(button.dataset.approveOrder, button.dataset.approvePhrase));
+    button.addEventListener("click", () => {
+      unlockWinstonAudio();
+      approvePendingOrder(button.dataset.approveOrder, button.dataset.approvePhrase);
+    });
   });
   $("#winston-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
+    unlockWinstonAudio();
     const input = $("#winston-input");
     const prompt = input?.value || "";
     if (input) input.value = "";
@@ -3983,6 +5669,44 @@ function renderPanel() {
   $("[data-journal-refresh]")?.addEventListener("click", () => refreshJournal({ force: true }));
   $("[data-review-refresh]")?.addEventListener("click", () => refreshReview({ force: true }));
   $("[data-close-report-refresh]")?.addEventListener("click", () => refreshCloseReport({ force: true }));
+  $("#execution-planner-form")?.addEventListener("submit", calculateExecutionPlan);
+  $("#structured-review-form")?.addEventListener("submit", saveStructuredReview);
+  $("#playbook-search-form")?.addEventListener("submit", searchPlaybook);
+  $("#symbol-note-form")?.addEventListener("submit", saveSymbolNote);
+  $("[data-mentor-refresh]")?.addEventListener("click", () => refreshMentor({ force: true }));
+  $$("[data-mentor-scope]").forEach((button) => {
+    button.addEventListener("click", () => refreshMentor({ force: true, scope: button.dataset.mentorScope || "weekly" }));
+  });
+  $("#mentor-ask-form")?.addEventListener("submit", askMentor);
+  $("#mentor-profile-form")?.addEventListener("submit", saveMentorProfile);
+  $$("[data-mentor-drill]").forEach((button) => {
+    button.addEventListener("click", () => updateMentorDrill(button.dataset.mentorDrill, button.dataset.mentorDrillStatus));
+  });
+  $$("[data-mentor-briefing]").forEach((button) => {
+    button.addEventListener("click", () => sendMentorBriefing(button.dataset.mentorBriefing || "evening"));
+  });
+  $$("[data-mentor-eyes]").forEach((button) => {
+    button.addEventListener("click", () => observeMentorChart("What setup is visible on this TradingView chart?"));
+  });
+  $("[data-mentor-source-health]")?.addEventListener("click", checkMentorSourceHealth);
+  $("[data-mentor-tradier-diagnostics]")?.addEventListener("click", checkMentorTradierDiagnostics);
+  $("[data-mentor-setup-watch]")?.addEventListener("click", startMentorSetupWatch);
+  $("[data-mentor-no-trade]")?.addEventListener("click", refreshMentorNoTradeCoach);
+  $("[data-mentor-autopsy-backfill]")?.addEventListener("click", backfillMentorAutopsies);
+  $("[data-mentor-pnl-attribution]")?.addEventListener("click", refreshMentorPnlAttribution);
+  $("[data-mentor-strategy-drift]")?.addEventListener("click", refreshMentorStrategyDrift);
+  $("[data-mentor-regime-catalyst]")?.addEventListener("click", refreshMentorRegimeCatalyst);
+  $("[data-mentor-cross-bot-risk]")?.addEventListener("click", refreshMentorCrossBotRisk);
+  $("[data-mentor-replay-lab]")?.addEventListener("click", refreshMentorReplayLab);
+  $("[data-mentor-root-cause]")?.addEventListener("click", refreshMentorDailyRootCause);
+  $("[data-mentor-quality-heatmap]")?.addEventListener("click", refreshMentorTradeQualityHeatmap);
+  $("[data-mentor-guardrail-report]")?.addEventListener("click", refreshMentorGuardrailReport);
+  $("[data-mentor-reconciliation]")?.addEventListener("click", refreshMentorBrokerReconciliation);
+  $("[data-mentor-bot-parity]")?.addEventListener("click", refreshMentorBotParity);
+  $("[data-mentor-last-good-week]")?.addEventListener("click", refreshMentorLastGoodWeekDelta);
+  $("[data-mentor-drill-scheduler]")?.addEventListener("click", refreshMentorDrillScheduler);
+  $("[data-mentor-drill-scheduler-create]")?.addEventListener("click", createMentorScheduledDrill);
+  $("[data-mentor-build-drill]")?.addEventListener("click", buildMentorDrill);
   $$("[data-chart-capture]").forEach((button) => {
     button.addEventListener("click", captureCurrentChart);
   });
@@ -4036,6 +5760,9 @@ function renderPanel() {
   $$("[data-review-alert]").forEach((button) => {
     button.addEventListener("click", () => requestTradeReview(button.dataset.reviewAlert));
   });
+  $$("[data-mentor-trade]").forEach((button) => {
+    button.addEventListener("click", () => openMentorTrade(button.dataset.mentorTrade));
+  });
   $$("[data-replay-setup]").forEach((button) => {
     button.addEventListener("click", () => runReplayScenario(setupToReplayScenario(button.dataset.replaySetup), button.dataset.replaySymbol || "SPY"));
   });
@@ -4047,6 +5774,9 @@ function renderPanel() {
   });
   $$(".symbol-button").forEach((button) => {
     if (button.dataset.symbol) button.addEventListener("click", () => setTradingViewSymbol(button.dataset.symbol));
+  });
+  Array.from(panelBody.querySelectorAll("[data-pro-console-open]")).forEach((button) => {
+    button.addEventListener("click", openProConsole);
   });
   window.lucide?.createIcons();
 }
@@ -4078,8 +5808,13 @@ function openPanel() {
   updateActiveChrome();
 }
 
-function closePanel() {
+function closePanel(options = {}) {
   panelOpen = false;
+  if (options.clearRoom !== false) roomClear = true;
+  if (window.matchMedia("(max-width: 760px)").matches && !["desk", "trade"].includes(activeWorkflow)) {
+    activeWorkflow = "desk";
+    renderMobileViews();
+  }
   updateActiveChrome();
 }
 
@@ -4102,6 +5837,7 @@ function updateActiveChrome() {
   }
   document.body.classList.toggle("phone-active", activePanel === "phone");
   document.body.classList.toggle("panel-open", panelOpen);
+  updateWorkflowChrome();
 }
 
 function applyRoomTheme(theme) {
@@ -4123,10 +5859,29 @@ function markTradingViewLoaded(loaded) {
   if (activePanel === "tv") renderPanel();
 }
 
+function clearTradingViewContainer(container) {
+  if (!container) return;
+  container.querySelectorAll("iframe, script").forEach((node) => node.remove());
+  container.replaceChildren();
+}
+
+function cleanupTradingViewWidgets() {
+  clearTimeout(tradingViewTimer);
+  clearTimeout(mobileTradingViewTimer);
+  clearTimeout(proTradingViewTimer);
+  clearTradingViewContainer(tradingViewScreen);
+  clearTradingViewContainer(mobileTradingViewScreen);
+  clearTradingViewContainer(proTradingViewScreen);
+  markTradingViewLoaded(false);
+  markMobileTradingViewLoaded(false);
+  markProTradingViewLoaded(false);
+}
+
 function loadTradingViewWidget() {
   if (!tradingViewScreen) return;
   markTradingViewLoaded(false);
   clearTimeout(tradingViewTimer);
+  clearTradingViewContainer(tradingViewScreen);
 
   const containerId = `tradingview-widget-${Date.now()}`;
   tradingViewScreen.innerHTML = `
@@ -4174,11 +5929,292 @@ function loadTradingViewWidget() {
   tradingViewTimer = setTimeout(checkLoaded, 450);
 }
 
+function markMobileTradingViewLoaded(loaded) {
+  mobileTradingViewLoaded = loaded;
+  mobileTradingViewScreen?.classList.toggle("tradingview-loaded", loaded);
+}
+
+function loadMobileTradingViewWidget(force = false) {
+  if (!mobileTradingViewScreen || !window.matchMedia("(max-width: 760px)").matches) return;
+  if (mobileTradingViewLoaded && !force) return;
+  markMobileTradingViewLoaded(false);
+  clearTimeout(mobileTradingViewTimer);
+  clearTradingViewContainer(mobileTradingViewScreen);
+
+  const containerId = `mobile-tradingview-widget-${Date.now()}`;
+  mobileTradingViewScreen.innerHTML = `
+    <div class="tradingview-widget-container" id="${containerId}">
+      <div class="tradingview-widget-container__widget"></div>
+    </div>
+  `;
+
+  const script = document.createElement("script");
+  script.type = "text/javascript";
+  script.async = true;
+  script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
+  script.textContent = JSON.stringify({
+    autosize: true,
+    symbol: tradingViewSymbol,
+    interval: "5",
+    timezone: "America/New_York",
+    theme: "dark",
+    style: "1",
+    locale: "en",
+    hide_top_toolbar: false,
+    hide_side_toolbar: true,
+    allow_symbol_change: true,
+    save_image: false,
+    withdateranges: true,
+    details: false,
+    hotlist: false,
+    calendar: false,
+    support_host: "https://www.tradingview.com",
+  });
+  script.onerror = () => markMobileTradingViewLoaded(false);
+  mobileTradingViewScreen.querySelector(".tradingview-widget-container")?.append(script);
+
+  let attempts = 0;
+  const checkLoaded = () => {
+    attempts += 1;
+    const iframe = mobileTradingViewScreen.querySelector("iframe");
+    if (iframe) {
+      markMobileTradingViewLoaded(true);
+      return;
+    }
+    if (attempts < 24 && activeWorkflow === "trade") {
+      mobileTradingViewTimer = setTimeout(checkLoaded, 250);
+    } else {
+      markMobileTradingViewLoaded(false);
+    }
+  };
+  mobileTradingViewTimer = setTimeout(checkLoaded, 450);
+}
+
+function setProText(selector, value) {
+  const element = $(selector);
+  if (element) element.textContent = value;
+}
+
+function markProTradingViewLoaded(loaded) {
+  proTradingViewLoaded = loaded;
+  proTradingViewScreen?.classList.toggle("tradingview-loaded", loaded);
+}
+
+function loadProTradingViewWidget() {
+  if (!proTradingViewScreen) return;
+  markProTradingViewLoaded(false);
+  clearTimeout(proTradingViewTimer);
+  clearTradingViewContainer(proTradingViewScreen);
+
+  const containerId = `pro-tradingview-widget-${Date.now()}`;
+  proTradingViewScreen.innerHTML = `
+    <div class="tradingview-widget-container" id="${containerId}">
+      <div class="tradingview-widget-container__widget"></div>
+    </div>
+  `;
+
+  const script = document.createElement("script");
+  script.type = "text/javascript";
+  script.async = true;
+  script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
+  script.textContent = JSON.stringify({
+    autosize: true,
+    symbol: tradingViewSymbol,
+    interval: "5",
+    timezone: "America/New_York",
+    theme: "dark",
+    style: "1",
+    locale: "en",
+    hide_top_toolbar: false,
+    hide_side_toolbar: false,
+    allow_symbol_change: true,
+    save_image: true,
+    withdateranges: true,
+    details: false,
+    hotlist: false,
+    calendar: false,
+    support_host: "https://www.tradingview.com",
+  });
+  script.onerror = () => markProTradingViewLoaded(false);
+  proTradingViewScreen.querySelector(".tradingview-widget-container")?.append(script);
+
+  let attempts = 0;
+  const checkLoaded = () => {
+    attempts += 1;
+    const iframe = proTradingViewScreen.querySelector("iframe");
+    if (iframe) {
+      markProTradingViewLoaded(true);
+      return;
+    }
+    if (attempts < 24 && proConsoleOpen) {
+      proTradingViewTimer = setTimeout(checkLoaded, 250);
+    } else {
+      markProTradingViewLoaded(false);
+    }
+  };
+  proTradingViewTimer = setTimeout(checkLoaded, 450);
+}
+
+function renderProConsole() {
+  if (!proConsole) return;
+  const mode = normalizeTradingMode(tradingModeState.trading_mode);
+  const lifecycle = currentLifecycleState();
+  const lifecycleSummary = lifecycle.summary || {};
+  const readiness = deskReadinessState();
+  const disclosure = marketDataDisclosureState();
+  const mentor = currentMentorState();
+  const latest = latestDecision();
+  const recent = (dashboardState.recent_decisions || []).slice(0, 3);
+  const openRisk = lifecycle.ok && Number.isFinite(Number(lifecycleSummary.open_risk)) ? Math.max(0, Number(lifecycleSummary.open_risk)) : null;
+  const unrealizedSource = lifecycle.ok ? lifecycleSummary.unrealized_pl : dashboardState.ok && !dashboardState.positions_error ? dashboardState.summary?.unrealized_pl : null;
+  const unrealized = Number.isFinite(Number(unrealizedSource)) && unrealizedSource !== null ? Number(unrealizedSource) : null;
+  const positionsSource = lifecycle.ok ? lifecycleSummary.open_positions : dashboardState.ok && !dashboardState.positions_error ? dashboardState.summary?.open_positions : null;
+  const openPositions = Number.isFinite(Number(positionsSource)) && positionsSource !== null ? Number(positionsSource) : null;
+  const maxPositions = Number(dashboardState.risk?.max_open_positions || 0);
+  const safe = Boolean(
+    dashboardState.broker?.ok &&
+      dashboardState.paper_endpoint &&
+      lifecycle.ok &&
+      Number(lifecycleSummary.guardrails || 0) === 0 &&
+      openPositions !== null &&
+      (!maxPositions || openPositions < maxPositions),
+  );
+  const health = currentHealthState();
+
+  setProText("#pro-mode", String(TRADING_MODE_LABELS[mode] || "Both").toUpperCase());
+  setProText("#pro-execution", dashboardState.execution_armed ? (dashboardState.paper_endpoint ? "PAPER EXECUTION ARMED" : "EXECUTION ARMED") : "PROPOSAL MODE");
+  setProText("#pro-broker", dashboardState.paper_endpoint ? "ALPACA PAPER" : dashboardState.broker?.ok ? "BROKER CONNECTED" : "BROKER CHECK");
+  setProText("#pro-data-status", disclosure.live ? "LIVE DATA VERIFIED" : "DATA UNVERIFIED");
+  setProText("#pro-chart-symbol", `${tradingViewLabel()} · 5 MIN`);
+  setProText("#pro-readiness-label", readiness.label);
+  setProText("#pro-readiness-score", readiness.score);
+  setProText("#pro-mentor-note", mentor.recommendation?.instruction || "Open Coach for evidence-backed setup reasoning.");
+  setProText("#pro-plan-title", latest ? [latest.symbol, latest.play].filter(Boolean).join(" · ") || "Latest decision" : "No setup selected");
+  setProText("#pro-review-state", latest?.status ? String(latest.status).replaceAll("_", " ").toUpperCase() : "REVIEW REQUIRED");
+  setProText("#pro-risk-label", safe ? "Within configured limits" : "Review desk controls");
+  setProText("#pro-safe-state", safe ? "SAFE" : "CHECKING");
+  setProText("#pro-open-risk", openRisk === null ? "Unavailable" : money(openRisk));
+  setProText("#pro-unrealized-pl", unrealized === null ? "Unavailable" : `${unrealized > 0 ? "+" : ""}${money(unrealized)}`);
+  setProText("#pro-open-positions", openPositions === null ? "Unknown" : `${openPositions} / ${maxPositions || "--"}`);
+  setProText("#pro-approval", dashboardState.guardrails?.approval_required == null ? "Unknown" : dashboardState.guardrails.approval_required ? "Required" : "Guarded");
+  setProText("#pro-paper-lock", dashboardState.paper_endpoint == null ? "Unknown" : dashboardState.paper_endpoint ? "Confirmed" : "Not verified");
+
+  const disclosureElement = $("#pro-console-disclosure");
+  disclosureElement?.classList.toggle("good", disclosure.live);
+  setProText("#pro-disclosure-title", disclosure.title);
+  setProText("#pro-disclosure-detail", disclosure.detail);
+
+  const factors = readiness.components?.length
+    ? readiness.components.map((item) => ({ label: item.label, value: item.score, reason: item.reason }))
+    : [{ label: "Trade evidence", value: null, reason: "Unavailable" }];
+  const factorList = $("#pro-factor-list");
+  if (factorList) {
+    factorList.innerHTML = factors
+      .map(
+        (factor) => `
+          <div class="pro-factor">
+            <span>${escapeHtml(factor.label)}</span>
+            <div><i class="${factor.value == null || factor.value < 80 ? "warn" : ""}" style="width:${Number(factor.value || 0)}%"></i></div>
+            <strong title="${escapeHtml(factor.reason || "")}">${factor.value == null ? "Unknown" : `${factor.value}%`}</strong>
+          </div>
+        `,
+      )
+      .join("");
+  }
+
+  const opportunityList = $("#pro-opportunity-list");
+  if (opportunityList) {
+    opportunityList.innerHTML = recent.length
+      ? recent
+          .map((decision) => {
+            const title = [decision.symbol, decision.play].filter(Boolean).join(" · ") || "Screened setup";
+            const status = String(decision.status || "seen").replaceAll("_", " ");
+            return `
+              <div class="pro-opportunity">
+                <strong>${escapeHtml(title)}</strong>
+                <span>${escapeHtml(decision.reason || "Awaiting qualification details")}</span>
+                <small>${escapeHtml(timeAgo(decision.timestamp))}</small>
+                <em>${escapeHtml(status)}</em>
+              </div>
+            `;
+          })
+          .join("")
+      : `<div class="pro-opportunity"><strong>No screened setup yet</strong><span>The bot decision queue will appear here.</span><em>WAITING</em></div>`;
+  }
+
+  const planValues = $("#pro-plan-values");
+  if (planValues) {
+    const calculated = plannerState?.plan || {};
+    const calculatedRisk = plannerState?.risk || {};
+    const target = calculated.target_two ?? latest?.target_price ?? latest?.take_profit_price ?? latest?.take_profit;
+    const values = [
+      ["ENTRY", calculated.planned_entry ?? latest?.entry_price],
+      ["STOP", calculated.stop ?? latest?.stop_price],
+      ["TARGET", target],
+      ["SIZE EST.", calculatedRisk.calculated_position_size ?? latest?.qty],
+    ];
+    planValues.innerHTML = values
+      .map(([label, value]) => `<div class="pro-plan-value"><small>${label}</small><strong>${escapeHtml(value ?? "—")}</strong></div>`)
+      .join("");
+  }
+
+  const annotationList = $("#pro-annotation-list");
+  if (annotationList) {
+    const levels = annotationsState?.levels || [];
+    annotationList.innerHTML = levels.length
+      ? `<small>VERIFIED ADJACENT LEVELS · ${escapeHtml(timeAgo(annotationsState.timestamp))}</small>${levels.map((item) => `<p><span>${escapeHtml(item.label)}</span><strong>${escapeHtml(item.price)}</strong></p>`).join("")}${annotationsState.tradingview_url ? `<a href="${escapeHtml(annotationsState.tradingview_url)}" target="_blank" rel="noopener noreferrer">Open synchronized TradingView link</a>` : ""}`
+      : `<small>VERIFIED ADJACENT LEVELS</small><p><span>Entry, stop, targets</span><strong>Unavailable</strong></p>`;
+  }
+
+  const score = $("#pro-readiness-score");
+  if (score) score.style.borderColor = readiness.score >= 80 ? "rgba(104, 199, 131, 0.82)" : "rgba(226, 170, 75, 0.82)";
+  $("#pro-safe-state")?.classList.toggle("safe", safe);
+  const pnl = $("#pro-unrealized-pl");
+  pnl?.classList.toggle("positive", unrealized > 0);
+  pnl?.classList.toggle("negative", unrealized < 0);
+  $$('[data-pro-symbol]').forEach((button) => button.classList.toggle("active", button.dataset.proSymbol === tradingViewSymbol));
+  window.lucide?.createIcons();
+}
+
+async function openProConsole() {
+  if (!proConsole) return;
+  try {
+    await dashboardJson("/api/pro/bootstrap");
+  } catch (error) {
+    announceDesk(error.status === 403 ? "Pro Console is not included in this account tier." : `Pro Console unavailable: ${error.message}`);
+    return;
+  }
+  proConsoleOpen = true;
+  document.body.classList.add("pro-console-open");
+  proConsole.setAttribute("aria-hidden", "false");
+  renderProConsole();
+  if (!proTradingViewLoaded) loadProTradingViewWidget();
+  proConsoleClose?.focus();
+}
+
+function closeProConsole() {
+  if (!proConsole) return;
+  proConsoleOpen = false;
+  document.body.classList.remove("pro-console-open");
+  proConsole.setAttribute("aria-hidden", "true");
+  clearTimeout(proTradingViewTimer);
+  clearTradingViewContainer(proTradingViewScreen);
+  markProTradingViewLoaded(false);
+}
+
 function setTradingViewSymbol(symbol) {
   if (!tradingViewSymbols.some((item) => item.symbol === symbol)) return;
   tradingViewSymbol = symbol;
   localStorage.setItem("velez-tv-symbol", tradingViewSymbol);
   loadTradingViewWidget();
+  renderMobileViews();
+  if (activeWorkflow === "trade" && window.matchMedia("(max-width: 760px)").matches) {
+    loadMobileTradingViewWidget(true);
+  }
+  if (proConsoleOpen) {
+    renderProConsole();
+    loadProTradingViewWidget();
+  }
   if (activePanel === "tv") renderPanel();
 }
 
@@ -4271,6 +6307,91 @@ async function refreshHealth(options = {}) {
 
   if (["mission", "laptop", "lamp", "window"].includes(activePanel)) renderPanelIfIdle();
   return healthRefreshPromise;
+}
+
+async function refreshTradingMode(options = {}) {
+  const force = Boolean(options.force);
+  if (tradingModeRefreshPromise) return tradingModeRefreshPromise;
+  if (!force && tradingModeState.ok && Date.now() - new Date(tradingModeState.timestamp || 0).getTime() < 30000) {
+    renderTradingModeControl();
+    return tradingModeState;
+  }
+
+  tradingModeRefreshPromise = fetch("/api/settings/trading-mode", { cache: "no-store" })
+    .then((response) => {
+      if (!response.ok) throw new Error(`status ${response.status}`);
+      return response.json();
+    })
+    .then((payload) => {
+      tradingModeState = {
+        ok: !payload.error,
+        trading_mode: normalizeTradingMode(payload.trading_mode),
+        saving: false,
+        error: payload.error || null,
+        timestamp: new Date().toISOString(),
+      };
+      renderTradingModeControl();
+      return tradingModeState;
+    })
+    .catch((error) => {
+      tradingModeState = {
+        ...tradingModeState,
+        ok: false,
+        saving: false,
+        error: error.message,
+        timestamp: new Date().toISOString(),
+      };
+      renderTradingModeControl();
+      return tradingModeState;
+    })
+    .finally(() => {
+      tradingModeRefreshPromise = null;
+    });
+
+  renderTradingModeControl();
+  return tradingModeRefreshPromise;
+}
+
+async function setTradingMode(mode) {
+  const previousMode = normalizeTradingMode(tradingModeState.trading_mode);
+  const nextMode = normalizeTradingMode(mode);
+  tradingModeState = {
+    ...tradingModeState,
+    trading_mode: nextMode,
+    saving: true,
+    error: null,
+  };
+  renderTradingModeControl();
+
+  try {
+    const response = await fetch("/api/settings/trading-mode", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trading_mode: nextMode }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.error || payload.ok === false) {
+      throw new Error(payload.detail || payload.error || `status ${response.status}`);
+    }
+    tradingModeState = {
+      ok: true,
+      trading_mode: normalizeTradingMode(payload.trading_mode),
+      saving: false,
+      error: null,
+      timestamp: new Date().toISOString(),
+    };
+  } catch (error) {
+    tradingModeState = {
+      ...tradingModeState,
+      trading_mode: previousMode,
+      ok: false,
+      saving: false,
+      error: error.message,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  renderTradingModeControl();
 }
 
 async function refreshCoverage(options = {}) {
@@ -4646,6 +6767,508 @@ async function refreshCloseReport(options = {}) {
   return closeReportRefreshPromise;
 }
 
+async function refreshMentor(options = {}) {
+  const force = Boolean(options.force);
+  const scope = options.scope || currentMentorState().scope || "weekly";
+  const alertRef = options.alertRef || "";
+  if (mentorRefreshPromise) {
+    if (!force) return mentorRefreshPromise;
+    await mentorRefreshPromise;
+    return refreshMentor(options);
+  }
+  const fetchedAt = mentorState?.timestamp ? new Date(mentorState.timestamp).getTime() : 0;
+  if (!force && mentorState?.ok && mentorState.scope === scope && Date.now() - fetchedAt < 60000) return mentorState;
+  const endpoint = scope === "trade" && alertRef
+    ? `/api/mentor/trade/${encodeURIComponent(alertRef)}`
+    : scope === "today"
+      ? "/api/mentor/today"
+      : "/api/mentor/weekly?days=7";
+  mentorRefreshPromise = fetch(endpoint, { cache: "no-store" })
+    .then(async (response) => {
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error(payload.reason || `mentor status ${response.status}`);
+      mentorState = payload;
+      return payload;
+    })
+    .catch((error) => {
+      mentorState = { ...currentMentorState(), ok: false, error: error.message, timestamp: new Date().toISOString() };
+      return mentorState;
+    })
+    .finally(() => {
+      mentorRefreshPromise = null;
+      if (activePanel === "mentor") renderPanelIfIdle();
+    });
+  if (activePanel === "mentor") renderPanelIfIdle();
+  return mentorRefreshPromise;
+}
+
+async function askMentor(event) {
+  event?.preventDefault?.();
+  const input = $("#mentor-question");
+  const question = (input?.value || "").trim();
+  if (!question) return;
+  if (/\b(setup|chart|tradingview|trading view|entry candle|what do you see|eyes on)\b/i.test(question)) {
+    await observeMentorChart(question);
+    if (input) input.value = "";
+    return;
+  }
+  mentorAskState = { loading: true, reply: "Velez Mentor is reviewing the evidence..." };
+  renderPanel();
+  try {
+    const response = await fetch("/api/mentor/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        question,
+        scope: currentMentorState().scope || "weekly",
+        alert_ref: currentMentorState().trade?.alert_ref || "",
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `mentor request failed (${response.status})`);
+    mentorAskState = { loading: false, ...payload };
+    if (payload.report) mentorState = payload.report;
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Velez Mentor request failed." };
+  }
+  renderPanel();
+}
+
+async function observeMentorChart(question = "What setup is visible on this TradingView chart?") {
+  mentorAskState = { loading: true, reply: "Velez Mentor is putting eyes on the TradingView screen..." };
+  renderPanel();
+  const latestCapture = chartCaptures[0] || {};
+  try {
+    const response = await fetch("/api/mentor/chart/observe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        question,
+        symbol: tradingViewBrokerSymbol(),
+        timeframe: "5Min",
+        screenshot: latestCapture.dataUrl || "",
+        notes: latestCapture?.timestamp ? `Latest browser capture ${latestCapture.timestamp}` : "",
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `chart observation failed (${response.status})`);
+    mentorEyesState = payload;
+    mentorAskState = { loading: false, ...payload };
+    if (payload.report) mentorState = payload.report;
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Mentor chart observation failed." };
+  }
+  if (activePanel !== "mentor") setActivePanel("mentor");
+  renderPanel();
+}
+
+async function checkMentorSourceHealth() {
+  mentorAskState = { loading: true, reply: "Velez Mentor is checking chart source health..." };
+  renderPanel();
+  try {
+    const response = await fetch(`/api/mentor/chart/source-health?symbol=${encodeURIComponent(tradingViewBrokerSymbol())}&timeframe=5Min`, { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `source health failed (${response.status})`);
+    mentorOpsState = { ...mentorOpsState, sourceHealth: payload };
+    mentorAskState = { loading: false, reply: payload.health?.readback || "Chart source health checked." };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Chart source health failed." };
+  }
+  if (activePanel !== "mentor") setActivePanel("mentor");
+  renderPanel();
+}
+
+async function checkMentorTradierDiagnostics() {
+  mentorAskState = { loading: true, reply: "Velez Mentor is checking Tradier without exposing credentials..." };
+  renderPanel();
+  try {
+    const response = await fetch(`/api/mentor/tradier/diagnostics?symbol=${encodeURIComponent(tradingViewBrokerSymbol())}&timeframe=5Min`, { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `tradier diagnostics failed (${response.status})`);
+    mentorOpsState = { ...mentorOpsState, tradier: payload };
+    mentorAskState = { loading: false, reply: payload.readback || "Tradier diagnostics checked." };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Tradier diagnostics failed." };
+  }
+  if (activePanel !== "mentor") setActivePanel("mentor");
+  renderPanel();
+}
+
+async function startMentorSetupWatch() {
+  mentorAskState = { loading: true, reply: "Velez Mentor is starting Setup Watch..." };
+  renderPanel();
+  try {
+    const response = await fetch("/api/mentor/setup-watch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        symbol: tradingViewBrokerSymbol(),
+        timeframe: "5Min",
+        question: "Watch this chart for a clean Velez setup.",
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `setup watch failed (${response.status})`);
+    mentorOpsState = { ...mentorOpsState, setupWatch: payload };
+    mentorEyesState = { ...(mentorEyesState || {}), chart_observation: payload.chart_observation, reply: payload.watch?.readback };
+    mentorAskState = { loading: false, reply: payload.watch?.readback || "Setup Watch started." };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Setup Watch failed." };
+  }
+  if (activePanel !== "mentor") setActivePanel("mentor");
+  renderPanel();
+}
+
+async function refreshMentorNoTradeCoach() {
+  mentorAskState = { loading: true, reply: "Velez Mentor is reviewing no-trade decisions..." };
+  renderPanel();
+  try {
+    const response = await fetch("/api/mentor/no-trade?limit=120", { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `no-trade coach failed (${response.status})`);
+    mentorOpsState = { ...mentorOpsState, noTrade: payload };
+    mentorAskState = { loading: false, reply: payload.coach?.question || payload.coach?.readback || "No-trade coach refreshed." };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "No-trade coach failed." };
+  }
+  if (activePanel !== "mentor") setActivePanel("mentor");
+  renderPanel();
+}
+
+async function backfillMentorAutopsies() {
+  mentorAskState = { loading: true, reply: "Velez Mentor is backfilling missing closed-trade autopsies..." };
+  renderPanel();
+  try {
+    const response = await fetch("/api/mentor/autopsies/backfill?limit=100", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `autopsy backfill failed (${response.status})`);
+    mentorOpsState = { ...mentorOpsState, autopsyBackfill: payload };
+    mentorAskState = { loading: false, reply: payload.readback || "Autopsy backfill checked." };
+    await refreshMentor({ force: true, scope: currentMentorState().scope || "weekly" });
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Autopsy backfill failed." };
+  }
+  if (activePanel !== "mentor") setActivePanel("mentor");
+  renderPanel();
+}
+
+async function refreshMentorPnlAttribution() {
+  mentorAskState = { loading: true, reply: "Velez Mentor is attributing P/L by cause..." };
+  renderPanel();
+  try {
+    const response = await fetch("/api/mentor/pnl-attribution?days=30&limit=200", { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `P/L attribution failed (${response.status})`);
+    mentorOpsState = { ...mentorOpsState, pnlAttribution: payload };
+    mentorAskState = { loading: false, reply: payload.attribution?.readback || "P/L attribution complete." };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "P/L attribution failed." };
+  }
+  if (activePanel !== "mentor") setActivePanel("mentor");
+  renderPanel();
+}
+
+async function refreshMentorStrategyDrift() {
+  mentorAskState = { loading: true, reply: "Velez Mentor is checking strategy drift..." };
+  renderPanel();
+  try {
+    const response = await fetch("/api/mentor/strategy-drift?recent_days=30&baseline_days=60", { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `strategy drift failed (${response.status})`);
+    mentorOpsState = { ...mentorOpsState, strategyDrift: payload };
+    mentorAskState = { loading: false, reply: payload.drift?.readback || "Strategy drift check complete." };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Strategy drift failed." };
+  }
+  if (activePanel !== "mentor") setActivePanel("mentor");
+  renderPanel();
+}
+
+async function refreshMentorRegimeCatalyst() {
+  mentorAskState = { loading: true, reply: "Velez Mentor is checking regime and catalysts..." };
+  renderPanel();
+  try {
+    const response = await fetch(`/api/mentor/regime-catalyst?symbol=${encodeURIComponent(tradingViewBrokerSymbol())}&timeframe=5Min`, { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `regime/catalyst check failed (${response.status})`);
+    mentorOpsState = { ...mentorOpsState, regimeCatalyst: payload };
+    mentorAskState = { loading: false, reply: payload.guardrail?.readback || "Regime/catalyst guardrail checked." };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Regime/catalyst check failed." };
+  }
+  if (activePanel !== "mentor") setActivePanel("mentor");
+  renderPanel();
+}
+
+async function refreshMentorCrossBotRisk() {
+  mentorAskState = { loading: true, reply: "Velez Mentor is mirroring cross-bot exposure..." };
+  renderPanel();
+  try {
+    const response = await fetch("/api/mentor/cross-bot-risk", { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `cross-bot risk failed (${response.status})`);
+    mentorOpsState = { ...mentorOpsState, crossBotRisk: payload };
+    mentorAskState = { loading: false, reply: payload.mirror?.readback || "Cross-bot risk mirror checked." };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Cross-bot risk mirror failed." };
+  }
+  if (activePanel !== "mentor") setActivePanel("mentor");
+  renderPanel();
+}
+
+async function refreshMentorReplayLab() {
+  const alertRef = currentMentorState().trade?.alert_ref || latestDecision()?.alert_ref || "";
+  const symbol = latestDecision()?.symbol || tradingViewBrokerSymbol();
+  mentorAskState = { loading: true, reply: "Velez Mentor is replaying the trade candle by candle..." };
+  renderPanel();
+  try {
+    const query = alertRef ? `alert_ref=${encodeURIComponent(alertRef)}` : `symbol=${encodeURIComponent(symbol)}`;
+    const response = await fetch(`/api/mentor/replay-lab?${query}`, { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `replay lab failed (${response.status})`);
+    mentorOpsState = { ...mentorOpsState, replayLab: payload };
+    mentorAskState = { loading: false, reply: payload.lab?.readback || "Replay Lab complete." };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Replay Lab failed." };
+  }
+  if (activePanel !== "mentor") setActivePanel("mentor");
+  renderPanel();
+}
+
+async function refreshMentorDailyRootCause() {
+  mentorAskState = { loading: true, reply: "Velez Mentor is finding today's highest-probability root cause..." };
+  renderPanel();
+  try {
+    const response = await fetch("/api/mentor/daily-root-cause", { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `root-cause brief failed (${response.status})`);
+    mentorOpsState = { ...mentorOpsState, dailyRootCause: payload };
+    mentorAskState = { loading: false, reply: payload.brief?.readback || "Daily Root-Cause Brief complete." };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Daily Root-Cause Brief failed." };
+  }
+  if (activePanel !== "mentor") setActivePanel("mentor");
+  renderPanel();
+}
+
+async function refreshMentorTradeQualityHeatmap() {
+  mentorAskState = { loading: true, reply: "Velez Mentor is grading symbol/setup quality..." };
+  renderPanel();
+  try {
+    const response = await fetch("/api/mentor/trade-quality-heatmap?days=90", { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `trade heatmap failed (${response.status})`);
+    mentorOpsState = { ...mentorOpsState, tradeQualityHeatmap: payload };
+    mentorAskState = { loading: false, reply: payload.heatmap?.readback || "Trade Quality Heatmap complete." };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Trade Quality Heatmap failed." };
+  }
+  if (activePanel !== "mentor") setActivePanel("mentor");
+  renderPanel();
+}
+
+async function refreshMentorGuardrailReport() {
+  mentorAskState = { loading: true, reply: "Velez Mentor is reviewing do-not-touch guardrails without changing settings..." };
+  renderPanel();
+  try {
+    const response = await fetch("/api/mentor/guardrail-do-not-touch", { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `guardrail report failed (${response.status})`);
+    mentorOpsState = { ...mentorOpsState, guardrailReport: payload };
+    mentorAskState = { loading: false, reply: payload.report?.readback || "Do-not-touch guardrail report complete." };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Do-not-touch guardrail report failed." };
+  }
+  if (activePanel !== "mentor") setActivePanel("mentor");
+  renderPanel();
+}
+
+async function refreshMentorBrokerReconciliation() {
+  mentorAskState = { loading: true, reply: "Velez Mentor is scoring broker/data reconciliation without taking broker actions..." };
+  renderPanel();
+  try {
+    const response = await fetch("/api/mentor/broker-reconciliation", { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `reconciliation score failed (${response.status})`);
+    mentorOpsState = { ...mentorOpsState, brokerReconciliation: payload };
+    mentorAskState = { loading: false, reply: payload.score?.readback || "Broker/Data Reconciliation score complete." };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Broker/Data Reconciliation failed." };
+  }
+  if (activePanel !== "mentor") setActivePanel("mentor");
+  renderPanel();
+}
+
+async function refreshMentorBotParity() {
+  mentorAskState = { loading: true, reply: "Velez Mentor is comparing bot parity evidence..." };
+  renderPanel();
+  try {
+    const response = await fetch("/api/mentor/bot-parity", { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `bot parity failed (${response.status})`);
+    mentorOpsState = { ...mentorOpsState, botParity: payload };
+    mentorAskState = { loading: false, reply: payload.matrix?.readback || "Bot-to-Bot Parity Matrix complete." };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Bot-to-Bot Parity Matrix failed." };
+  }
+  if (activePanel !== "mentor") setActivePanel("mentor");
+  renderPanel();
+}
+
+async function refreshMentorLastGoodWeekDelta() {
+  mentorAskState = { loading: true, reply: "Velez Mentor is comparing this week to the last good week..." };
+  renderPanel();
+  try {
+    const response = await fetch("/api/mentor/last-good-week-delta?lookback_days=180", { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `last-good-week report failed (${response.status})`);
+    mentorOpsState = { ...mentorOpsState, lastGoodWeekDelta: payload };
+    mentorAskState = { loading: false, reply: payload.delta?.readback || "What Changed report complete." };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "What Changed report failed." };
+  }
+  if (activePanel !== "mentor") setActivePanel("mentor");
+  renderPanel();
+}
+
+async function refreshMentorDrillScheduler() {
+  mentorAskState = { loading: true, reply: "Velez Mentor is planning the next daily drill..." };
+  renderPanel();
+  try {
+    const response = await fetch("/api/mentor/drill-scheduler", { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `drill scheduler failed (${response.status})`);
+    mentorOpsState = { ...mentorOpsState, drillScheduler: payload };
+    mentorAskState = { loading: false, reply: payload.scheduler?.readback || "Mentor Drill Scheduler refreshed." };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Mentor Drill Scheduler failed." };
+  }
+  if (activePanel !== "mentor") setActivePanel("mentor");
+  renderPanel();
+}
+
+async function createMentorScheduledDrill() {
+  mentorAskState = { loading: true, reply: "Velez Mentor is creating the scheduled daily drill..." };
+  renderPanel();
+  try {
+    const response = await fetch("/api/mentor/drill-scheduler", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `scheduled drill create failed (${response.status})`);
+    mentorOpsState = { ...mentorOpsState, drillScheduler: payload };
+    mentorState = {
+      ...currentMentorState(),
+      active_drills: payload.scheduler?.active_drills || currentMentorState().active_drills || [],
+    };
+    mentorAskState = { loading: false, reply: payload.scheduler?.readback || "Scheduled Mentor drill created." };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Scheduled Mentor drill failed." };
+  }
+  if (activePanel !== "mentor") setActivePanel("mentor");
+  renderPanel();
+}
+
+async function buildMentorDrill() {
+  mentorAskState = { loading: true, reply: "Velez Mentor is building the next drill..." };
+  renderPanel();
+  try {
+    const response = await fetch("/api/mentor/drills/build", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        scope: currentMentorState().scope || "weekly",
+        dimension: currentMentorState().recommendation?.dimension || "",
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `drill build failed (${response.status})`);
+    mentorState = {
+      ...(payload.report || currentMentorState()),
+      active_drills: payload.active_drills || payload.report?.active_drills || currentMentorState().active_drills || [],
+    };
+    mentorAskState = { loading: false, reply: `Drill built: ${payload.drill?.title || "next Mentor drill"}.` };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Mentor drill build failed." };
+  }
+  renderPanel();
+}
+
+async function saveMentorProfile(event) {
+  event?.preventDefault?.();
+  const goals = ($("#mentor-goals")?.value || "")
+    .split(";")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  try {
+    const response = await fetch("/api/mentor/profile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        experience_level: $("#mentor-experience")?.value || "developing",
+        primary_mode: $("#mentor-mode")?.value || "auto",
+        coaching_style: $("#mentor-style")?.value || "concise",
+        goals,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `profile update failed (${response.status})`);
+    mentorState = payload.report || mentorState;
+    mentorAskState = { loading: false, reply: "Coaching profile saved locally. The scorecard has been recomputed." };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Mentor profile update failed." };
+  }
+  renderPanel();
+}
+
+async function updateMentorDrill(drillId, status) {
+  if (!drillId) return;
+  try {
+    const response = await fetch(`/api/mentor/drills/${encodeURIComponent(drillId)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `drill update failed (${response.status})`);
+    mentorState = { ...currentMentorState(), active_drills: payload.active_drills || [] };
+    mentorAskState = { loading: false, reply: status === "completed" ? "Drill completed and saved to mentor memory." : "Drill dismissed." };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Drill update failed." };
+  }
+  renderPanel();
+}
+
+async function sendMentorBriefing(kind) {
+  mentorAskState = { loading: true, reply: `Velez Mentor is preparing the ${kind} voice memo...` };
+  renderPanel();
+  try {
+    const response = await fetch(`/api/mentor/briefings/${encodeURIComponent(kind)}/telegram?force=true`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.reason || `voice briefing failed (${response.status})`);
+    mentorAskState = {
+      loading: false,
+      reply: `${kind === "morning" ? "Morning" : "Closing"} voice memo sent to ${payload.delivered || 1} Telegram destination.`,
+    };
+  } catch (error) {
+    mentorAskState = { loading: false, reply: error?.message || "Mentor voice briefing failed." };
+  }
+  renderPanel();
+}
+
+function openMentorTrade(alertRef) {
+  if (!alertRef) return;
+  setActivePanel("mentor");
+  refreshMentor({ force: true, scope: "trade", alertRef });
+}
+
 function saveCoverageSymbols(event) {
   event.preventDefault();
   const input = $("#coverage-symbols");
@@ -4998,7 +7621,11 @@ async function runRiskReplay(event) {
 
 function setActivePanel(panel, options = {}) {
   if (!panelCopy[panel]) return;
+  roomClear = false;
   activePanel = panel;
+  if (options.syncWorkflow !== false) {
+    activeWorkflow = panelWorkflow(panel);
+  }
   renderPanel();
   if (options.openPanel !== false) {
     panelOpen = true;
@@ -5034,20 +7661,35 @@ function setActivePanel(panel, options = {}) {
   if (["journal", "notes", "laptop"].includes(panel)) {
     refreshCloseReport();
   }
+  if (panel === "mentor") {
+    refreshMentor();
+  }
+  if (["laptop", "journal", "mentor", "drawer", "bookshelf", "notes"].includes(panel)) {
+    refreshDecisionIntelligence();
+  }
+  if (panel === "journal") refreshStructuredReview();
+  if (panel === "notes") refreshSymbolNote();
 }
 
 async function refreshState() {
+  if (dashboardDestroyed) return;
+  dashboardRefreshController?.abort();
+  const controller = new AbortController();
+  dashboardRefreshController = controller;
   try {
-    const response = await fetch("/api/dashboard/state", { cache: "no-store" });
+    const response = await fetch("/api/dashboard/state", { cache: "no-store", signal: controller.signal });
     if (!response.ok) throw new Error(`status ${response.status}`);
     dashboardState = await response.json();
   } catch (error) {
+    if (error?.name === "AbortError") return;
     dashboardState = {
       ...dashboardState,
       ok: false,
       broker: { ...dashboardState.broker, ok: false, reason: "dashboard_api_unreachable" },
       timestamp: new Date().toISOString(),
     };
+  } finally {
+    if (dashboardRefreshController === controller) dashboardRefreshController = null;
   }
   if (dashboardState.apple_music?.configured) {
     prepareAppleMusic();
@@ -5055,6 +7697,7 @@ async function refreshState() {
   if (dashboardState.winston) {
     applyWinstonRuntime(dashboardState.winston);
   }
+  refreshTradingMode();
   if (["mission", "calendar", "clock", "window", "notes"].includes(activePanel)) {
     refreshCalendar();
   }
@@ -5085,11 +7728,33 @@ async function refreshState() {
   if (["journal", "notes", "laptop"].includes(activePanel)) {
     refreshCloseReport();
   }
+  if (activePanel === "mentor") {
+    refreshMentor();
+  }
+  refreshDecisionIntelligence();
   renderStatus();
   if (!activePanelIsMusic() && activePanel !== "phone") {
     renderPanelIfIdle();
   }
   updateActiveChrome();
+}
+
+function scheduleDashboardRefresh(delay = 10000) {
+  clearTimeout(dashboardRefreshTimer);
+  if (dashboardDestroyed || document.hidden) return;
+  dashboardRefreshTimer = setTimeout(async () => {
+    await refreshState();
+    scheduleDashboardRefresh();
+  }, delay);
+}
+
+function handleDashboardVisibility() {
+  if (document.hidden) {
+    clearTimeout(dashboardRefreshTimer);
+    dashboardRefreshController?.abort();
+    return;
+  }
+  refreshState().finally(() => scheduleDashboardRefresh());
 }
 
 function roomRect() {
@@ -5119,6 +7784,7 @@ function positionRoomElements() {
     const region = hotspotDefinitions.find((item) => item.panel === hotspot.dataset.panel);
     if (region) applyRegion(hotspot, region, rect);
   });
+  if (deskPhoneObject) applyRegion(deskPhoneObject, phoneObjectRegion, rect);
   applyRegion(screenTerminal, screenRegion, rect);
   screenTerminal.hidden = window.innerWidth < 720;
 }
@@ -5160,6 +7826,35 @@ function buildHotspots() {
   });
 }
 
+$$("[data-workflow]").forEach((button) => {
+  button.addEventListener("click", () => setActiveWorkflow(button.dataset.workflow));
+});
+
+$$("[data-panel-shortcut]").forEach((button) => {
+  button.addEventListener("click", () => {
+    if (proConsoleOpen) closeProConsole();
+    if (button.dataset.panelShortcut === "tv" && window.matchMedia("(max-width: 760px)").matches) {
+      setActiveWorkflow("trade");
+      return;
+    }
+    setActivePanel(button.dataset.panelShortcut);
+  });
+});
+
+$$('[data-pro-symbol]').forEach((button) => {
+  button.addEventListener("click", () => setTradingViewSymbol(button.dataset.proSymbol));
+});
+
+$$('[data-mobile-symbol]').forEach((button) => {
+  button.addEventListener("click", () => setTradingViewSymbol(button.dataset.mobileSymbol));
+});
+
+$('[data-mobile-pro-console-open]')?.addEventListener("click", openProConsole);
+
+$("#room-shortcut-more")?.addEventListener("click", () => {
+  document.body.classList.toggle("nav-peek");
+});
+
 $$(".object-button").forEach((button) => {
   button.addEventListener("click", () => {
     setActivePanel(button.dataset.panel);
@@ -5179,9 +7874,14 @@ navRevealZone?.addEventListener("keydown", (event) => {
 });
 
 panelClose?.addEventListener("click", closePanel);
+proConsoleClose?.addEventListener("click", closeProConsole);
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
+    if (proConsoleOpen) {
+      closeProConsole();
+      return;
+    }
     closePanel();
     document.body.classList.remove("nav-peek");
   }
@@ -5201,166 +7901,25 @@ themeToggle?.addEventListener("click", () => {
   applyRoomTheme(roomTheme === "day" ? "night" : "day");
 });
 
-function drawRoundRect(ctx, x, y, width, height, radius) {
-  const resolvedRadius = Math.min(radius, width / 2, height / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + resolvedRadius, y);
-  ctx.lineTo(x + width - resolvedRadius, y);
-  ctx.quadraticCurveTo(x + width, y, x + width, y + resolvedRadius);
-  ctx.lineTo(x + width, y + height - resolvedRadius);
-  ctx.quadraticCurveTo(x + width, y + height, x + width - resolvedRadius, y + height);
-  ctx.lineTo(x + resolvedRadius, y + height);
-  ctx.quadraticCurveTo(x, y + height, x, y + height - resolvedRadius);
-  ctx.lineTo(x, y + resolvedRadius);
-  ctx.quadraticCurveTo(x, y, x + resolvedRadius, y);
-  ctx.closePath();
-  ctx.fill();
-}
-
-let seed = 19;
-function random() {
-  seed = (seed * 1664525 + 1013904223) >>> 0;
-  return seed / 4294967296;
-}
-
-const candles = [];
-for (let index = 0; index < 92; index += 1) {
-  const previous = index ? candles[index - 1].close : 500;
-  const drift = Math.sin(index * 0.18) * 0.9 + (random() - 0.45) * 3.4;
-  const open = previous;
-  const close = Math.max(465, open + drift);
-  const high = Math.max(open, close) + 1.1 + random() * 4.2;
-  const low = Math.min(open, close) - 1.1 - random() * 4.2;
-  candles.push({ open, high, low, close });
-}
-
-function fitCanvasToCss() {
-  const bounds = chartCanvas.getBoundingClientRect();
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const width = Math.max(1, Math.round(bounds.width * dpr));
-  const height = Math.max(1, Math.round(bounds.height * dpr));
-  if (chartCanvas.width !== width || chartCanvas.height !== height) {
-    chartCanvas.width = width;
-    chartCanvas.height = height;
-  }
-  chartCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  return { width: bounds.width, height: bounds.height };
-}
-
-function drawChart(time) {
-  if (screenTerminal.hidden) return;
-  const { width, height } = fitCanvasToCss();
-  if (width < 10 || height < 10) return;
-
-  const lastDecision = latestDecision();
-  const animatedCandles = candles.map((candle, index) => {
-    if (index !== candles.length - 1) return candle;
-    const pulse = Math.sin(time * 1.4) * 2.1;
-    return { ...candle, close: candle.close + pulse, high: candle.high + Math.max(0, pulse) };
-  });
-
-  const min = Math.min(...animatedCandles.map((candle) => candle.low)) - 5;
-  const max = Math.max(...animatedCandles.map((candle) => candle.high)) + 5;
-  const marginX = Math.max(20, width * 0.05);
-  const top = Math.max(30, height * 0.16);
-  const bottom = Math.max(22, height * 0.16);
-  const y = (price) => height - bottom - ((price - min) / (max - min)) * (height - top - bottom);
-  const candleWidth = (width - marginX * 2) / animatedCandles.length;
-
-  chartCtx.clearRect(0, 0, width, height);
-  const bg = chartCtx.createLinearGradient(0, 0, width, height);
-  bg.addColorStop(0, "rgba(7, 18, 20, 0.96)");
-  bg.addColorStop(1, "rgba(3, 8, 10, 0.92)");
-  chartCtx.fillStyle = bg;
-  chartCtx.fillRect(0, 0, width, height);
-
-  chartCtx.strokeStyle = palette.grid;
-  chartCtx.lineWidth = 1;
-  for (let i = 0; i < 5; i += 1) {
-    const lineY = top + i * ((height - top - bottom) / 4);
-    chartCtx.beginPath();
-    chartCtx.moveTo(marginX, lineY);
-    chartCtx.lineTo(width - marginX, lineY);
-    chartCtx.stroke();
-  }
-
-  chartCtx.font = `800 ${Math.max(9, width * 0.022)}px Inter, sans-serif`;
-  chartCtx.fillStyle = palette.ink;
-  chartCtx.fillText("TRADINGVIEW ALERT STREAM", marginX, Math.max(17, height * 0.12));
-  chartCtx.font = `700 ${Math.max(7, width * 0.013)}px Inter, sans-serif`;
-  chartCtx.fillStyle = palette.muted;
-  chartCtx.fillText(lastDecision ? `${lastDecision.symbol || ""} ${lastDecision.play || ""}` : "Trading Bull scanner", marginX, Math.max(28, height * 0.18));
-
-  const sma20 = animatedCandles.map((_, index) => {
-    const slice = animatedCandles.slice(Math.max(0, index - 19), index + 1);
-    return slice.reduce((sum, item) => sum + item.close, 0) / slice.length;
-  });
-  const sma200 = animatedCandles.map((_, index) => 496 + Math.sin(index * 0.035) * 6);
-
-  function drawLine(points, color, widthValue) {
-    chartCtx.strokeStyle = color;
-    chartCtx.lineWidth = widthValue;
-    chartCtx.beginPath();
-    points.forEach((price, index) => {
-      const px = marginX + index * candleWidth + candleWidth * 0.5;
-      const py = y(price);
-      if (index === 0) chartCtx.moveTo(px, py);
-      else chartCtx.lineTo(px, py);
-    });
-    chartCtx.stroke();
-  }
-
-  drawLine(sma200, "rgba(136, 161, 174, 0.72)", Math.max(1.2, width * 0.0025));
-  drawLine(sma20, "rgba(226, 170, 75, 0.88)", Math.max(1.1, width * 0.0022));
-
-  animatedCandles.forEach((candle, index) => {
-    const up = candle.close >= candle.open;
-    const px = marginX + index * candleWidth + candleWidth * 0.5;
-    const openY = y(candle.open);
-    const closeY = y(candle.close);
-    const highY = y(candle.high);
-    const lowY = y(candle.low);
-    const volume = Math.min(height * 0.16, 9 + Math.abs(candle.close - candle.open) * 2.2 + (index % 9));
-
-    chartCtx.fillStyle = up ? "rgba(104, 199, 131, 0.15)" : "rgba(228, 107, 97, 0.15)";
-    chartCtx.fillRect(px - candleWidth * 0.22, height - bottom * 0.65 - volume, candleWidth * 0.44, volume);
-    chartCtx.strokeStyle = up ? palette.green : palette.red;
-    chartCtx.fillStyle = up ? palette.green : palette.red;
-    chartCtx.lineWidth = Math.max(1, candleWidth * 0.15);
-    chartCtx.beginPath();
-    chartCtx.moveTo(px, highY);
-    chartCtx.lineTo(px, lowY);
-    chartCtx.stroke();
-    chartCtx.fillRect(px - candleWidth * 0.28, Math.min(openY, closeY), candleWidth * 0.56, Math.max(2, Math.abs(closeY - openY)));
-  });
-
-  const lastPrice = animatedCandles.at(-1).close;
-  const lastY = y(lastPrice);
-  chartCtx.strokeStyle = "rgba(244, 241, 232, 0.24)";
-  chartCtx.setLineDash([6, 6]);
-  chartCtx.beginPath();
-  chartCtx.moveTo(marginX, lastY);
-  chartCtx.lineTo(width - marginX * 2.1, lastY);
-  chartCtx.stroke();
-  chartCtx.setLineDash([]);
-  chartCtx.fillStyle = "rgba(244, 241, 232, 0.16)";
-  drawRoundRect(chartCtx, width - marginX * 2.02, lastY - 11, marginX * 1.52, 22, 7);
-  chartCtx.font = `800 ${Math.max(7, width * 0.014)}px Inter, sans-serif`;
-  chartCtx.fillStyle = palette.ink;
-  chartCtx.fillText(lastPrice.toFixed(2), width - marginX * 1.86, lastY + 5);
-}
-
-function animate(now = 0) {
-  window.__deskFrame = frame;
-  frame += 1;
-  drawChart(now / 1000);
-  requestAnimationFrame(animate);
-}
+tradingModeSelect?.addEventListener("change", (event) => {
+  setTradingMode(event.target.value);
+});
 
 function init() {
   buildHotspots();
   window.addEventListener("load", () => window.lucide?.createIcons());
-  window.addEventListener("resize", positionRoomElements);
+  window.addEventListener("resize", () => {
+    positionRoomElements();
+    renderMobileViews();
+    if (activeWorkflow === "trade") loadMobileTradingViewWidget();
+  });
+  document.addEventListener("visibilitychange", handleDashboardVisibility);
+  window.addEventListener("beforeunload", () => {
+    dashboardDestroyed = true;
+    clearTimeout(dashboardRefreshTimer);
+    dashboardRefreshController?.abort();
+    cleanupTradingViewWidgets();
+  });
   window.lucide?.createIcons();
 
   window.__deskDebug = {
@@ -5384,6 +7943,8 @@ function init() {
     refreshCalendar,
     refreshJournal,
     refreshHealth,
+    refreshTradingMode,
+    setTradingMode,
     refreshLifecycle,
     refreshReview,
     refreshCloseReport,
@@ -5395,6 +7956,11 @@ function init() {
     connectAppleMusic,
     winston: () => ({ ...winstonState, recognition: Boolean(winstonState.recognition) }),
     setTradingViewSymbol,
+    openProConsole,
+    closeProConsole,
+    proConsole: () => ({ open: proConsoleOpen, chartLoaded: proTradingViewLoaded }),
+    mobile: () => ({ active: window.matchMedia("(max-width: 760px)").matches, chartLoaded: mobileTradingViewLoaded }),
+    room: () => ({ clear: roomClear, workflow: activeWorkflow, panelOpen }),
     setPanel: setActivePanel,
     openPanel,
     closePanel,
@@ -5406,14 +7972,17 @@ function init() {
   window.__deskVersion = APP_BUILD;
 
   applyRoomTheme(roomTheme);
+  updateWorkflowChrome();
   positionRoomElements();
   loadTradingViewWidget();
   renderPanel();
+  renderDeskOverview();
+  renderMobileViews();
   updateActiveChrome();
+  renderTradingModeControl();
   refreshWinstonStatus();
-  refreshState();
-  setInterval(refreshState, 5000);
-  requestAnimationFrame(animate);
+  refreshTradingMode({ force: true });
+  refreshState().finally(() => scheduleDashboardRefresh());
 }
 
 init();

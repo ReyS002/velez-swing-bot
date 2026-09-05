@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -125,6 +125,7 @@ class AlpacaPaperBroker(AlpacaStopRetryMixin):
         until: Optional[str] = None,
         direction: str = "desc",
         page_size: int = 100,
+        page_token: Optional[str] = None,
     ) -> List[dict]:
         params: Dict[str, Any] = {
             "activity_types": activity_types,
@@ -135,8 +136,43 @@ class AlpacaPaperBroker(AlpacaStopRetryMixin):
             params["after"] = after
         if until:
             params["until"] = until
+        if page_token:
+            params["page_token"] = page_token
         data = self._request("GET", "/v2/account/activities", params=params)
         return data if isinstance(data, list) else []
+
+    def get_all_activities_raw(
+        self,
+        *,
+        activity_types: str = "FILL",
+        after: Optional[str] = None,
+        until: Optional[str] = None,
+        direction: str = "asc",
+        page_size: int = 100,
+        max_pages: int = 50,
+    ) -> List[dict]:
+        """Read a complete bounded activity window using Alpaca page tokens."""
+        all_rows: List[dict] = []
+        page_token: Optional[str] = None
+        for _ in range(max(1, max_pages)):
+            page = self.get_activities_raw(
+                activity_types=activity_types,
+                after=after,
+                until=until,
+                direction=direction,
+                page_size=page_size,
+                page_token=page_token,
+            )
+            if not page:
+                break
+            all_rows.extend(page)
+            if len(page) < page_size:
+                break
+            next_token = str(page[-1].get("id") or "").strip()
+            if not next_token or next_token == page_token:
+                break
+            page_token = next_token
+        return all_rows
 
     def get_calendar_raw(self, *, start: Optional[str] = None, end: Optional[str] = None) -> List[dict]:
         params: Dict[str, Any] = {}
@@ -147,10 +183,32 @@ class AlpacaPaperBroker(AlpacaStopRetryMixin):
         data = self._request("GET", "/v2/calendar", params=params)
         return data if isinstance(data, list) else []
 
+    def get_news_raw(self, *, symbols: Optional[str] = None, limit: int = 12) -> List[dict]:
+        if not self.is_configured():
+            raise RuntimeError("Alpaca market-data credentials are missing.")
+        params: Dict[str, Any] = {
+            "sort": "desc",
+            "limit": max(1, min(int(limit), 50)),
+            "include_content": "false",
+        }
+        if symbols:
+            params["symbols"] = symbols
+        response = requests.get(
+            f"{self.config.data_url.rstrip('/')}/v1beta1/news",
+            headers=self._headers(),
+            params=params,
+            timeout=self.config.timeout_seconds,
+        )
+        if response.status_code >= 300:
+            raise RuntimeError(f"Alpaca news request failed: {response.status_code} {response.text}")
+        payload = response.json() if response.text else {}
+        news = payload.get("news") if isinstance(payload, dict) else []
+        return news if isinstance(news, list) else []
+
     def get_positions(self) -> List[Position]:
         positions: List[Position] = []
         for item in self.get_positions_raw():
-            qty = int(float(item.get("qty", 0)))
+            qty = round(float(item.get("qty", 0)), 4)
             if item.get("side") == "short":
                 qty = -abs(qty)
             positions.append(
@@ -158,7 +216,7 @@ class AlpacaPaperBroker(AlpacaStopRetryMixin):
                     symbol=item.get("symbol", ""),
                     qty=qty,
                     entry_price=float(item.get("avg_entry_price", 0.0)),
-                    entry_time=datetime.utcnow(),
+                    entry_time=datetime.now(timezone.utc),
                     stop_price=0.0,
                     initial_stop=0.0,
                     risk_per_share=0.0,
@@ -170,7 +228,7 @@ class AlpacaPaperBroker(AlpacaStopRetryMixin):
         payload = self.order_payload_from_order(order)
         response = self.submit_order_payload(payload)
         price = self._response_fill_price(response, order)
-        return Fill(order=order, price=price, timestamp=datetime.utcnow(), slippage=0.0, commission=0.0)
+        return Fill(order=order, price=price, timestamp=datetime.now(timezone.utc), slippage=0.0, commission=0.0)
 
     def submit_order_payload(self, payload: dict) -> dict:
         return self._request("POST", "/v2/orders", json=payload)
@@ -192,10 +250,16 @@ class AlpacaPaperBroker(AlpacaStopRetryMixin):
         attach_stop_loss: bool = True,
         take_profit_price: Optional[float] = None,
     ) -> dict:
+        position_intent = self._position_intent(
+            order.side.value,
+            order.metadata.get("position_intent"),
+        )
+        formatted_qty = self._format_equity_quantity(order.qty, position_intent)
         payload: Dict[str, Any] = {
             "symbol": order.symbol,
-            "qty": str(order.qty),
+            "qty": formatted_qty,
             "side": order.side.value,
+            "position_intent": position_intent,
             "type": order.order_type.value,
             "time_in_force": time_in_force,
             "client_order_id": order.metadata.get("client_order_id", f"velez-{uuid.uuid4().hex[:24]}"),
@@ -221,7 +285,7 @@ class AlpacaPaperBroker(AlpacaStopRetryMixin):
         *,
         symbol: str,
         side: str,
-        qty: int,
+        qty: float,
         order_type: str,
         entry_price: Optional[float],
         stop_price: float,
@@ -229,12 +293,16 @@ class AlpacaPaperBroker(AlpacaStopRetryMixin):
         time_in_force: str = "day",
         take_profit_price: Optional[float] = None,
     ) -> dict:
-        if qty <= 0:
-            raise ValueError("qty must be positive")
+        position_intent = self._position_intent(
+            side,
+            "sell_to_open" if side.lower() in {"sell", "short"} else "buy_to_open",
+        )
+        formatted_qty = self._format_equity_quantity(qty, position_intent)
         payload: Dict[str, Any] = {
             "symbol": symbol,
-            "qty": str(qty),
+            "qty": formatted_qty,
             "side": side,
+            "position_intent": position_intent,
             "type": order_type,
             "time_in_force": time_in_force,
             "client_order_id": client_order_id or f"velez-{uuid.uuid4().hex[:24]}",
@@ -259,3 +327,35 @@ class AlpacaPaperBroker(AlpacaStopRetryMixin):
 
     def _price(self, price: float) -> str:
         return f"{float(price):.2f}"
+
+    @staticmethod
+    def _position_intent(side: str, value: Any) -> str:
+        normalized_side = str(side).strip().lower()
+        normalized = str(value or "").strip().lower()
+        if not normalized:
+            normalized = "buy_to_open" if normalized_side == "buy" else "sell_to_close"
+        if normalized not in {"buy_to_open", "buy_to_close", "sell_to_open", "sell_to_close"}:
+            raise ValueError("invalid position_intent")
+        if normalized_side == "buy" and not normalized.startswith("buy_to_"):
+            raise ValueError("position_intent does not match buy side")
+        if normalized_side in {"sell", "short"} and not normalized.startswith("sell_to_"):
+            raise ValueError("position_intent does not match sell side")
+        return normalized
+
+    @staticmethod
+    def _format_equity_quantity(qty: Any, position_intent: str) -> str:
+        try:
+            raw_qty = float(qty)
+        except (TypeError, ValueError):
+            raise ValueError("qty must be positive") from None
+        if raw_qty <= 0:
+            raise ValueError("qty must be positive")
+        if position_intent in {"sell_to_open", "buy_to_close"}:
+            normalized = int(raw_qty)
+            if normalized <= 0:
+                raise ValueError("short quantity floors to zero")
+            return str(normalized)
+        normalized = round(raw_qty, 4)
+        if normalized <= 0:
+            raise ValueError("fractional quantity rounds to zero")
+        return str(normalized)

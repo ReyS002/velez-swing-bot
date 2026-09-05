@@ -27,7 +27,7 @@ class SimBrokerConfig:
     slippage_bps: float = 1.0
     commission_per_share: float = 0.0
     commission_per_contract: float = 2.0
-    timezone: str = "US/Eastern"
+    timezone: str = "America/New_York"
     data_dir: str = ""
 
     base_url: str = "sim://localhost"
@@ -222,18 +222,18 @@ class SimulatedBroker:
         return True
 
     def validate_connection(self) -> dict:
-        """Test that we can fetch market data."""
-        try:
-            self._get_current_price("SPY")
-            return {
-                "ok": True,
-                "account_status": "ACTIVE",
-                "trading_blocked": False,
-                "account_number_tail": "SIM",
-                "paper": True,
-            }
-        except Exception as exc:
-            return {"ok": False, "reason": str(exc)}
+        """SimulatedBroker is an in-process engine with no external dependency.
+        Always healthy; the old SPY price probe created false alarms outside
+        market hours (a closed market does not mean the paper engine is down).
+        Data-feed health is reported by the scanner (symbols_scanned/last_error).
+        """
+        return {
+            "ok": True,
+            "account_status": "ACTIVE",
+            "trading_blocked": False,
+            "account_number_tail": "SIM",
+            "paper": True,
+        }
 
     def get_account(self) -> dict:
         equity = self._portfolio.equity(
@@ -453,7 +453,30 @@ class SimulatedBroker:
         }
 
     def build_entry_payload(self, **kwargs) -> dict:
-        return kwargs
+        qty = int(kwargs.get("qty") or 0)
+        if qty <= 0:
+            raise ValueError("qty must be positive")
+        order_type = str(kwargs.get("order_type") or "market").lower()
+        entry_price = kwargs.get("entry_price")
+        stop_price = kwargs.get("stop_price")
+        take_profit_price = kwargs.get("take_profit_price")
+        payload = {
+            "symbol": kwargs.get("symbol"),
+            "qty": str(qty),
+            "side": kwargs.get("side"),
+            "type": order_type,
+            "time_in_force": kwargs.get("time_in_force") or "day",
+            "client_order_id": kwargs.get("client_order_id") or f"velez-{uuid.uuid4().hex[:24]}",
+            "order_class": "bracket" if take_profit_price is not None else "oto",
+            "stop_loss": {"stop_price": self._price(float(stop_price))},
+        }
+        if order_type == "limit":
+            if entry_price is None:
+                raise ValueError("entry_price is required for limit orders")
+            payload["limit_price"] = self._price(float(entry_price))
+        if take_profit_price is not None:
+            payload["take_profit"] = {"limit_price": self._price(float(take_profit_price))}
+        return payload
 
     def cancel_all_orders(self) -> dict:
         return {"status": "ok", "cancelled": 0}

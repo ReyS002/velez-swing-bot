@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from bot.core.indicators import RollingSMA, RollingEMA, RollingATR
 from bot.core.types import Bar
@@ -24,8 +24,8 @@ def test_rolling_ema():
 
 def test_rolling_atr():
     atr = RollingATR(2)
-    bar1 = Bar(datetime.utcnow(), 10, 12, 9, 11, 100)
-    bar2 = Bar(datetime.utcnow(), 11, 13, 10, 12, 100)
+    bar1 = Bar(datetime.now(timezone.utc), 10, 12, 9, 11, 100)
+    bar2 = Bar(datetime.now(timezone.utc), 11, 13, 10, 12, 100)
     assert atr.update(bar1) is None
     val = atr.update(bar2)
     assert val is not None

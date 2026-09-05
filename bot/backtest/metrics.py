@@ -18,6 +18,8 @@ def compute_metrics(trades: List[TradeRecord], initial_cash: float) -> Dict[str,
             "max_drawdown": 0.0,
             "cagr": 0.0,
             "sharpe": 0.0,
+            "sortino": 0.0,
+            "calmar": 0.0,
         }
 
     trades = sorted(trades, key=lambda t: t.exit_time)
@@ -45,13 +47,21 @@ def compute_metrics(trades: List[TradeRecord], initial_cash: float) -> Dict[str,
     days = max((end - start).days, 1)
     cagr = (ending_equity / initial_cash) ** (365 / days) - 1
 
+    sharpe = 0.0
+    sortino = 0.0
     if len(returns) > 1:
         avg = sum(returns) / len(returns)
         variance = sum((r - avg) ** 2 for r in returns) / (len(returns) - 1)
         std = math.sqrt(variance)
         sharpe = (avg / std) * math.sqrt(len(returns)) if std > 0 else 0.0
-    else:
-        sharpe = 0.0
+
+        downside = [r for r in returns if r < 0]
+        if len(downside) > 1:
+            downside_var = sum(r ** 2 for r in downside) / (len(downside) - 1)
+            downside_std = math.sqrt(downside_var)
+            sortino = (avg / downside_std) * math.sqrt(len(returns)) if downside_std > 0 else 0.0
+
+    calmar = cagr / abs(max_dd) if max_dd != 0 else 0.0
 
     return {
         "total_pnl": total_pnl,
@@ -61,4 +71,6 @@ def compute_metrics(trades: List[TradeRecord], initial_cash: float) -> Dict[str,
         "max_drawdown": abs(max_dd),
         "cagr": cagr,
         "sharpe": sharpe,
+        "sortino": sortino,
+        "calmar": calmar,
     }

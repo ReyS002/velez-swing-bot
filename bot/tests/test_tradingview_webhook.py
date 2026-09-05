@@ -1,6 +1,7 @@
 import base64
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -56,6 +57,7 @@ def webhook_config():
             "paper_only": True,
             "time_in_force": "day",
         },
+        "event_filter": {"enabled": False},
         "symbols": [{"symbol": "SPY", "contract_multiplier": 1}],
         "velez_strategy": {},
     }
@@ -85,10 +87,30 @@ def test_tradingview_signal_webhook_proposes_paper_order_without_execution():
     assert decision["qty"] == 62
     assert decision["metadata"]["lot_plan"]["lots"] == 1
     assert decision["metadata"]["lot_plan"]["effective_risk_budget"] == 125
-    payload = decision["order_payload"]
-    stop_loss = payload.get("stop_loss") if isinstance(payload.get("stop_loss"), dict) else {}
-    stop_price = stop_loss.get("stop_price") or payload.get("stop_price")
-    assert float(stop_price) == 498.0
+    assert decision["order_payload"]["order_class"] == "oto"
+    assert decision["order_payload"]["stop_loss"]["stop_price"] == "498.00"
+
+
+def test_malformed_structured_pine_payload_is_rejected():
+    engine = TradingViewWebhookEngine(webhook_config())
+    result = engine.handle_payload(
+        {
+            "mode": "signal", "payload_version": "bullpilot.pine-signal.v2",
+            "symbol": "SPY", "side": "buy", "play": "elephant_bar",
+            "entry_price": 500, "stop_price": 498,
+        },
+        path_token="test-secret",
+    )
+    assert result["decisions"][0]["status"] == "rejected"
+    assert result["decisions"][0]["reason"].startswith("malformed_pine_metadata:")
+
+
+def test_velez_pine_payload_carries_versioned_prop_metadata():
+    pine = (Path(__file__).parents[1] / "tradingview" / "velez_core_alerts.pine").read_text(encoding="utf-8")
+
+    for field in ("payload_version", "signal_id", "profile_key", "rules_version", "point_value"):
+        assert f'\\"{field}\\"' in pine
+    assert "str.format_time(time" in pine
 
 
 def test_watchlist_allowlist_blocks_rogue_symbol_and_accepts_configured_symbol():
@@ -112,9 +134,7 @@ def test_watchlist_allowlist_blocks_rogue_symbol_and_accepts_configured_symbol()
 
 
 def test_vwap_readback_is_available_after_completed_strategy_bars():
-    config = webhook_config()
-    config["velez_strategy"] = {"vwap": {"weekly_vwap": True, "primary_variant": "weekly"}}
-    engine = TradingViewWebhookEngine(config, broker=ScannerBroker())
+    engine = TradingViewWebhookEngine(webhook_config(), broker=ScannerBroker())
     start = datetime(2026, 8, 3, 14, 30, tzinfo=timezone.utc)
     engine.strategy.on_bar("SPY", Bar(start, 100, 100, 100, 100, 1_000))
     engine.strategy.on_bar("SPY", Bar(start + timedelta(minutes=1), 101, 102, 101, 102, 1_000))
@@ -124,7 +144,26 @@ def test_vwap_readback_is_available_after_completed_strategy_bars():
     assert state["ok"] is True
     assert state["status"] == "ready"
     assert state["vwap"]["session_vwap"] is not None
-    assert state["vwap"]["primary_variant"] == "weekly"
+    assert state["vwap"]["primary_variant"] == "session"
+
+
+def test_webhook_confluence_conflict_reduces_to_a_quarter_starter(monkeypatch):
+    config = webhook_config()
+    config["velez_strategy"] = {"webhook_confluence": {"enabled": True}}
+    engine = TradingViewWebhookEngine(config)
+    monkeypatch.setattr(
+        "bot.webhook_server.score_webhook_confluence",
+        lambda *_args, **_kwargs: {"action": "starter", "multiplier": 0.25, "reason": "higher_timeframe_opposed:60"},
+    )
+
+    decision = engine.handle_payload(
+        {"mode": "signal", "symbol": "SPY", "side": "buy", "play": "elephant_bar", "entry_price": 500, "stop_price": 498, "timeframe": "15m"},
+        path_token="test-secret",
+    )["decisions"][0]
+
+    assert decision["status"] == "proposed"
+    assert decision["qty"] == 15
+    assert decision["metadata"]["confluence"]["action"] == "starter"
 
 
 def test_tradingview_webhook_rejects_bad_secret():
@@ -206,9 +245,43 @@ def test_dashboard_state_tracks_recent_decisions_without_secrets():
 
     assert state["recent_decisions"][0]["symbol"] == "SPY"
     assert state["recent_decisions"][0]["side"] == "sell"
-    assert float(state["recent_decisions"][0]["stop_price"]) == 502.0
+    assert state["recent_decisions"][0]["stop_price"] == "502.00"
     assert state["guardrails"]["auth_required"] is True
     assert "test-secret" not in serialized
+
+
+def test_open_risk_rejects_unprotected_positions_and_caps_aggregate_risk():
+    config = webhook_config()
+    config["risk"]["max_total_open_risk_pct"] = 0.02
+    engine = TradingViewWebhookEngine(config)
+
+    unprotected = engine._open_risk_snapshot(
+        [{"symbol": "SPY", "qty": "10", "side": "long", "avg_entry_price": "500"}],
+        [],
+    )
+    assert unprotected["unprotected_symbols"] == ["SPY"]
+
+    protected = engine._open_risk_snapshot(
+        [{"symbol": "SPY", "qty": "10", "side": "long", "avg_entry_price": "500"}],
+        [{"symbol": "SPY", "type": "market", "order_class": "oto", "stop_loss": {"stop_price": "498"}}],
+    )
+    assert protected["unprotected_symbols"] == []
+    assert protected["open_risk"] == 20
+    assert engine._aggregate_open_risk_cap(100000) == 2000
+
+
+def test_broker_fill_ledger_counts_completed_fifo_lots_only():
+    engine = TradingViewWebhookEngine(webhook_config())
+    ledger = engine._completed_fill_ledger([
+        {"symbol": "SPY", "side": "buy", "qty": "10", "price": "100", "transaction_time": "2026-01-01T10:00:00Z"},
+        {"symbol": "SPY", "side": "sell", "qty": "10", "price": "110", "transaction_time": "2026-01-01T11:00:00Z"},
+        {"symbol": "QQQ", "side": "buy", "qty": "5", "price": "100", "transaction_time": "2026-01-01T12:00:00Z"},
+    ])
+
+    assert ledger["closed_lots"] == 1
+    assert ledger["realized_pnl"] == 100
+    assert ledger["win_rate"] == 1
+    assert ledger["open_lots_excluded"] == 1
 
 
 def test_dashboard_auth_protects_dashboard_and_api_when_enabled(monkeypatch):
@@ -226,7 +299,7 @@ def test_dashboard_auth_protects_dashboard_and_api_when_enabled(monkeypatch):
     response = client.get("/api/dashboard/state", headers={"Authorization": f"Basic {token}"})
 
     assert response.status_code == 200
-    assert response.json()["dashboard_version"] == "v6.22"
+    assert response.json()["dashboard_version"] == "v6.40.4"
 
 
 def test_dashboard_auth_can_stay_disabled_for_local_development(monkeypatch):
@@ -584,3 +657,72 @@ def test_polygon_futures_adapter_maps_contracts_and_bars(monkeypatch):
     assert calls[0][1]["resolution"] == "1min"
     assert bars[0].close == 5002
     assert bars[0].volume == 12
+
+def test_watch_only_is_a_hard_execution_gate(monkeypatch):
+    config = webhook_config()
+    config["webhook"]["execute_orders"] = True
+    monkeypatch.setenv("VELEZ_EXECUTE_ORDERS", "true")
+    monkeypatch.setenv("VELEZ_WATCH_ONLY", "true")
+    engine = TradingViewWebhookEngine(config, broker=ScannerBroker())
+
+    assert engine._watch_only() is True
+    assert engine._execute_orders() is False
+    assert engine.risk_status_payload()["watch_only"] is True
+
+
+def test_watch_only_blocks_stale_order_cancellation(monkeypatch):
+    broker = ScannerBroker(
+        orders=[
+            {
+                "id": "stale-1",
+                "symbol": "SPY",
+                "type": "limit",
+                "status": "new",
+                "client_order_id": "velez-scanner-stale-1",
+            }
+        ]
+    )
+    monkeypatch.setenv("VELEZ_WATCH_ONLY", "true")
+    engine = TradingViewWebhookEngine(webhook_config(), broker=broker)
+
+    result = engine.cancel_stale_scanner_orders("test-secret")
+
+    assert result == {"ok": False, "reason": "watch_only_enabled"}
+    assert broker.canceled == []
+
+
+def test_watch_only_legacy_alias_remains_supported(monkeypatch):
+    monkeypatch.delenv("VELEZ_WATCH_ONLY", raising=False)
+    monkeypatch.setenv("WATCH_ONLY", "true")
+    engine = TradingViewWebhookEngine(webhook_config())
+
+    assert engine._watch_only() is True
+
+
+def test_rejected_symbol_records_safe_request_provenance(monkeypatch):
+    monkeypatch.setenv("VELEZ_INPUT_AUDIT_SALT", "test-audit-salt")
+    config = webhook_config()
+    config["scanner"] = {"symbols": ["NVDA"]}
+    client = TestClient(create_app(config))
+
+    response = client.post(
+        "/webhook/tradingview/test-secret",
+        json={
+            "mode": "signal",
+            "symbol": "XRPUSD",
+            "side": "buy",
+            "play": "elephant_bar",
+            "entry_price": 1,
+            "stop_price": 0.9,
+        },
+        headers={"User-Agent": "TradingView-Webhook-Test/1.0", "X-Request-ID": "xrp-audit-1"},
+    )
+
+    assert response.status_code == 400
+    source = response.json()["detail"]["decisions"][0]["metadata"]["input_source"]
+    assert source["request_id"] == "xrp-audit-1"
+    assert source["route"] == "/webhook/tradingview/{token}"
+    assert source["user_agent"] == "TradingView-Webhook-Test/1.0"
+    assert len(source["client_fingerprint"]) == 16
+    assert "test-secret" not in json.dumps(source)
+
