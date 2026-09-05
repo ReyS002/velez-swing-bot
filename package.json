@@ -1,0 +1,11 @@
+{
+  "name": "trading-bull-desk-tests",
+  "private": true,
+  "scripts": {
+    "test:visual": "playwright test --config=playwright.config.mjs",
+    "test:visual:update": "playwright test --config=playwright.config.mjs --update-snapshots"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.0"
+  }
+}

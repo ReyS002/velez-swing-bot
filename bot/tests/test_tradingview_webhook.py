@@ -15,6 +15,7 @@ class ScannerBroker:
         self.positions = positions or []
         self.orders = orders or []
         self.canceled = []
+        self.submitted = []
 
     def is_configured(self):
         return True
@@ -35,6 +36,10 @@ class ScannerBroker:
         self.canceled.append(order_id)
         self.orders = [order for order in self.orders if order.get("id") != order_id]
         return {}
+
+    def submit_order_payload(self, payload):
+        self.submitted.append(payload)
+        return {"id": "unexpected-submission"}
 
 
 def webhook_config():
@@ -691,6 +696,25 @@ def test_watch_only_blocks_stale_order_cancellation(monkeypatch):
     assert broker.canceled == []
 
 
+def test_watch_only_blocks_every_engine_broker_mutation_path(monkeypatch):
+    broker = ScannerBroker()
+    config = webhook_config()
+    config["webhook"]["execute_orders"] = True
+    monkeypatch.setenv("VELEZ_EXECUTE_ORDERS", "true")
+    monkeypatch.setenv("VELEZ_LIFECYCLE_AUTO_EXECUTE", "true")
+    monkeypatch.setenv("VELEZ_WATCH_ONLY", "true")
+    engine = TradingViewWebhookEngine(config, broker=broker)
+
+    assert engine.approve_pending_order("missing", "APPROVE", "test-secret")["reason"] == "execution_not_armed"
+    assert engine.repair_lifecycle_stop("SPY", "test-secret")["reason"] == "watch_only_enabled"
+    assert engine.reduce_lifecycle_position("SPY", 0.5, "test-secret")["reason"] == "watch_only_enabled"
+    assert engine.move_eligible_stops_to_breakeven("test-secret")["reason"] == "watch_only_enabled"
+    assert engine.cancel_stale_scanner_orders("test-secret")["reason"] == "watch_only_enabled"
+    assert engine._auto_lifecycle_actions(positions=[], open_orders=[], guardrails=[]) == []
+    assert broker.submitted == []
+    assert broker.canceled == []
+
+
 def test_watch_only_legacy_alias_remains_supported(monkeypatch):
     monkeypatch.delenv("VELEZ_WATCH_ONLY", raising=False)
     monkeypatch.setenv("WATCH_ONLY", "true")
@@ -725,4 +749,3 @@ def test_rejected_symbol_records_safe_request_provenance(monkeypatch):
     assert source["user_agent"] == "TradingView-Webhook-Test/1.0"
     assert len(source["client_fingerprint"]) == 16
     assert "test-secret" not in json.dumps(source)
-

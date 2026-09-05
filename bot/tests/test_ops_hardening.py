@@ -4,12 +4,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_compose_defines_native_healthchecks_for_bots():
+def test_compose_defines_native_healthcheck_for_standalone_swing_bot():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
-    assert compose.count("healthcheck:") == 2
-    assert compose.count("http://127.0.0.1:8080/health/live") == 2
-    assert compose.count("start_period: 20s") == 2
+    assert compose.count("healthcheck:") == 1
+    assert compose.count("http://127.0.0.1:8080/health/live") == 1
+    assert compose.count("start_period: 20s") == 1
 
 
 def test_watch_only_is_explicit_in_every_environment_example():
