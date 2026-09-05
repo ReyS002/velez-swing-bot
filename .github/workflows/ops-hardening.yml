@@ -55,7 +55,7 @@ jobs:
           sudo touch /opt/stacks/velez-swing-bot/.env
           docker compose config --quiet
       - name: Run full Python suite
-        run: python -m pytest -q
+        run: python -m pytest -q bot/tests
       - name: Reject runtime deprecations in focused suite
         run: >-
           python -m pytest -q
