@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timedelta, time as dtime
+from datetime import datetime, timedelta, time as dtime, timezone
 from typing import Dict, Any, List
 
 import pytz
@@ -47,7 +47,7 @@ class QtLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         payload = {
-            "ts": datetime.utcnow().isoformat(),
+            "ts": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
             "name": record.name,
             "msg": record.getMessage(),
@@ -1850,7 +1850,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def send_test_alert(self) -> None:
         symbol = self._selected_symbol() or "TEST"
-        payload = {"symbol": symbol, "condition": "Test", "detail": "Test alert", "timestamp": datetime.utcnow().isoformat()}
+        payload = {"symbol": symbol, "condition": "Test", "detail": "Test alert", "timestamp": datetime.now(timezone.utc).isoformat()}
         self._dispatch_alert("In-app", payload)
         self._dispatch_alert("Log", payload)
         self._dispatch_alert("Webhook", payload)
@@ -1859,7 +1859,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _evaluate_alerts(self) -> None:
         if not self.alert_rules:
             return
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         config = self.current_config or {}
         alert_cfg = config.get("alerts", {})
         threshold = float(alert_cfg.get("atr_spike_threshold", 0.02))
@@ -2031,7 +2031,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 url = f"https://api.telegram.org/bot{token}/sendMessage"
                 data = urllib.parse.urlencode({"chat_id": chat_id, "text": message}).encode("utf-8")
                 urllib.request.urlopen(url, data=data, timeout=5)
-                self._record_alert({"symbol": "TELEGRAM", "condition": "sent", "detail": message, "timestamp": datetime.utcnow().isoformat()})
+                self._record_alert({"symbol": "TELEGRAM", "condition": "sent", "detail": message, "timestamp": datetime.now(timezone.utc).isoformat()})
             except Exception as exc:
                 self._log_alert_error(f"telegram_error:{exc}", {"detail": message})
 
@@ -2045,7 +2045,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _log_alert_error(self, error: str, payload: Dict[str, Any]) -> None:
         self._alert_last_error = error
-        self._alert_last_error_at = datetime.utcnow()
+        self._alert_last_error_at = datetime.now(timezone.utc)
         self.append_log(json.dumps({"event": "alert_error", "error": error, **payload}))
         self._update_alert_health()
 
@@ -2274,7 +2274,7 @@ class MainWindow(QtWidgets.QMainWindow):
         snapshot_rows = []
         for sym in symbols:
             provider = self._provider_for_symbol(sym)
-            end = datetime.utcnow()
+            end = datetime.now(timezone.utc)
             start = end - timedelta(days=5)
             try:
                 df = provider.get_bars(
@@ -2616,7 +2616,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return "OPEN", f"Closes in {self._format_countdown(close_dt - now)}"
 
     def _mark_data_refreshed(self) -> None:
-        self._last_refresh_at = datetime.utcnow()
+        self._last_refresh_at = datetime.now(timezone.utc)
         self._next_refresh_due = self._last_refresh_at + timedelta(seconds=self._refresh_interval_sec)
         self._update_header_bar()
 
@@ -2636,7 +2636,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         refresh_text = "Data refresh: --"
         if self._next_refresh_due is not None:
-            delta = self._next_refresh_due - datetime.utcnow()
+            delta = self._next_refresh_due - datetime.now(timezone.utc)
             if delta.total_seconds() <= 0:
                 refresh_text = "Data refresh: due"
             else:

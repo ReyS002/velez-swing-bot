@@ -174,9 +174,9 @@ def test_vwap_metadata_is_advisory_and_disabled_mode_preserves_signal_identity()
         bar(4, 100.5, 100.8, 100.3, 100.6),
         bar(5, 100.6, 103.3, 100.5, 103.2),
     ]
-    enabled_signals = run_bars(VelezInstitutionalStrategy(cfg(), get_logger("test_swing_vwap_enabled")), bars)
+    enabled_signals = run_bars(VelezInstitutionalStrategy(cfg(), get_logger("test_velez_vwap_enabled")), bars)
     disabled_signals = run_bars(
-        VelezInstitutionalStrategy(cfg(vwap={"enabled": False}), get_logger("test_swing_vwap_disabled")), bars
+        VelezInstitutionalStrategy(cfg(vwap={"enabled": False}), get_logger("test_velez_vwap_disabled")), bars
     )
     assert [(item.side, item.reason) for item in enabled_signals] == [(item.side, item.reason) for item in disabled_signals]
     assert enabled_signals[0].metadata["vwap"]["available"] is True

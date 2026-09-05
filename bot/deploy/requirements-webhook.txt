@@ -8,3 +8,4 @@ fastapi>=0.110
 uvicorn>=0.29
 PyJWT>=2.8
 cryptography>=42.0
+fish-audio-sdk>=1.3.0

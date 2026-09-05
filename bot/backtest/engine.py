@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -11,6 +11,7 @@ from ..core.execution import ExecutionSimulator
 from ..core.portfolio import Portfolio
 from ..core.risk import RiskManager
 from ..core.strategy import NarrowToWideStrategy
+from ..core.velez_strategy import VelezInstitutionalStrategy
 from ..core.types import Bar, Order, OrderType, Side, TradeRecord, Signal, DecisionTrace, Regime, NarrowWideState
 from ..core.utils import get_logger, log_event
 from .metrics import compute_metrics
@@ -27,7 +28,12 @@ class BacktestEngine:
     def __init__(self, config: dict) -> None:
         self.config = config
         self.logger = get_logger("backtest")
-        self.strategy = NarrowToWideStrategy(config["strategy"], self.logger)
+        if "velez_strategy" in config:
+            self.strategy = VelezInstitutionalStrategy(config["velez_strategy"], self.logger)
+            self._velez_mode = True
+        else:
+            self.strategy = NarrowToWideStrategy(config["strategy"], self.logger)
+            self._velez_mode = False
         self.risk = RiskManager(config["risk"])
         self.execution = ExecutionSimulator(
             slippage_bps=config["broker"].get("slippage_bps", 0.0),
@@ -47,6 +53,8 @@ class BacktestEngine:
             return YFinanceDataProvider()
         if source == "csv":
             return CSVDataProvider(symbol_cfg["csv_path"])
+        if source == "stub":
+            return FuturesStubProvider()
         return FuturesStubProvider()
 
     def _load_data(self, symbols: List[dict], start: datetime, end: datetime, timeframe: str) -> Dict[str, pd.DataFrame]:
@@ -195,7 +203,7 @@ class BacktestEngine:
                 )
             return
 
-        partial_cfg = self.config["strategy"]["exits"].get("partials", {})
+        partial_cfg = self._exits_config().get("partials", {})
         if partial_cfg.get("enabled", True):
             first_r = partial_cfg.get("first_r", 1.0)
             second_r = partial_cfg.get("second_r", 2.0)
@@ -257,9 +265,15 @@ class BacktestEngine:
                         self.risk.update_after_trade(pnl)
                         position.partial_2_taken = True
 
+    def _exits_config(self) -> dict:
+        return self.config.get("strategy", {}).get("exits", self.config.get("exits", {}))
+
     def _update_trailing_stop(self, symbol: str, bar: Bar) -> None:
         position = self.portfolio.get_position(symbol)
         if position is None:
+            return
+        exits_cfg = self._exits_config()
+        if not exits_cfg:
             return
         indicators = self.strategy.indicator_snapshot(symbol)
         new_stop = self.risk.update_trailing_stop(
@@ -267,7 +281,7 @@ class BacktestEngine:
             close=bar.close,
             sma20=indicators.get("sma_fast"),
             atr=indicators.get("atr"),
-            config=self.config["strategy"]["exits"],
+            config=exits_cfg,
         )
         if new_stop is not None:
             position.stop_price = new_stop
@@ -276,12 +290,16 @@ class BacktestEngine:
         position = self.portfolio.get_position(symbol)
         if position is None:
             return
+        exits_cfg = self._exits_config()
+        time_stop_cfg = exits_cfg.get("time_stop", {}) if exits_cfg else {}
+        if not time_stop_cfg.get("enabled", False):
+            return
         indicators = self.strategy.indicator_snapshot(symbol)
         if self.risk.time_stop_trigger(
             position=position,
             atr=indicators.get("atr"),
             close=bar.close,
-            config=self.config["strategy"]["exits"]["time_stop"],
+            config=time_stop_cfg,
         ):
             order = Order(
                 symbol=symbol,
@@ -298,7 +316,7 @@ class BacktestEngine:
     def _create_entry_order(self, signal: Signal, entry_price: float, stop_price: float, qty: int) -> Order:
         order_type = OrderType.MARKET
         limit_price = None
-        if self.config["strategy"].get("entry", {}).get("use_limit", False):
+        if self.config.get("strategy", {}).get("entry", {}).get("use_limit", False):
             order_type = OrderType.LIMIT
             limit_price = entry_price
 
@@ -308,25 +326,17 @@ class BacktestEngine:
             qty=qty,
             order_type=order_type,
             limit_price=limit_price,
-            timestamp=signal.metadata.get("timestamp", datetime.utcnow()),
+            timestamp=signal.metadata.get("timestamp", datetime.now(timezone.utc)),
             reason=signal.reason,
             metadata={
                 "stop_price": stop_price,
                 "risk_per_share": abs(entry_price - stop_price),
                 "entry_price": entry_price,
-                "entry_time": signal.metadata.get("timestamp", datetime.utcnow()),
+                "entry_time": signal.metadata.get("timestamp", datetime.now(timezone.utc)),
             },
         )
 
-    def run(self, symbols: List[dict], start: datetime, end: datetime, timeframe: str) -> BacktestResult:
-        data = self._load_data(symbols, start, end, timeframe)
-        if not data:
-            return BacktestResult(metrics={}, trades=[], decision_traces=[])
-
-        for sym in symbols:
-            self.pending_orders[sym["symbol"]] = []
-            self.contract_multipliers[sym["symbol"]] = sym.get("contract_multiplier", 1.0)
-
+    def _run_loop(self, data: Dict[str, pd.DataFrame]) -> BacktestResult:
         all_times = sorted({ts for df in data.values() for ts in df["timestamp"]})
         for ts in all_times:
             for sym, df in data.items():
@@ -356,14 +366,20 @@ class BacktestEngine:
                         log_event(self.logger, "circuit_breaker", {"symbol": sym})
                         continue
 
-                    swing_level = signal.metadata.get("swing_low") if signal.side == Side.BUY else signal.metadata.get("swing_high")
-                    stop_price = self.risk.initial_stop(
-                        side=signal.side,
-                        entry_price=bar.close,
-                        atr=atr,
-                        swing_level=swing_level,
-                        config=self.config["strategy"]["exits"],
-                    )
+                    # Use play-specific stop embedded in signal (Velez mode) or ATR-computed stop.
+                    signal_stop = signal.metadata.get("stop_price")
+                    if signal_stop is not None:
+                        stop_price = float(signal_stop)
+                    else:
+                        exits_cfg = self.config.get("strategy", {}).get("exits", self.config.get("exits", {}))
+                        swing_level = signal.metadata.get("swing_low") if signal.side == Side.BUY else signal.metadata.get("swing_high")
+                        stop_price = self.risk.initial_stop(
+                            side=signal.side,
+                            entry_price=bar.close,
+                            atr=atr,
+                            swing_level=swing_level,
+                            config=exits_cfg,
+                        )
                     if stop_price is None:
                         continue
                     max_stop_pct = self.config["risk"].get("max_stop_pct", 0.1)
@@ -392,12 +408,11 @@ class BacktestEngine:
                         spread=signal.metadata.get("spread"),
                         atr_percent=signal.metadata.get("atr_percent"),
                         triggers={
-                            "breakout_mode": self.config["strategy"].get("breakout_mode"),
-                            "sma_fast": signal.metadata.get("sma_fast"),
-                            "sma_slow": signal.metadata.get("sma_slow"),
-                            "atr": signal.metadata.get("atr"),
-                            "swing_high": signal.metadata.get("swing_high"),
-                            "swing_low": signal.metadata.get("swing_low"),
+                            "play": signal.metadata.get("play", signal.reason),
+                            "sma_fast": signal.metadata.get("sma20"),
+                            "sma_slow": signal.metadata.get("sma200"),
+                            "atr": atr,
+                            "location": signal.metadata.get("location"),
                         },
                         sizing={"qty": qty, "entry": bar.close},
                         stops={"stop": stop_price},
@@ -412,3 +427,26 @@ class BacktestEngine:
 
         metrics = compute_metrics(self.trades, self.config["portfolio"]["initial_cash"])
         return BacktestResult(metrics=metrics, trades=self.trades, decision_traces=self.decision_traces)
+
+    def run(self, symbols: List[dict], start: datetime, end: datetime, timeframe: str) -> BacktestResult:
+        data = self._load_data(symbols, start, end, timeframe)
+        if not data:
+            return BacktestResult(metrics={}, trades=[], decision_traces=[])
+        for sym in symbols:
+            self.pending_orders[sym["symbol"]] = []
+            self.contract_multipliers[sym["symbol"]] = sym.get("contract_multiplier", 1.0)
+        return self._run_loop(data)
+
+    def run_dataframe(
+        self,
+        data: Dict[str, pd.DataFrame],
+        contract_multipliers: Optional[Dict[str, float]] = None,
+    ) -> BacktestResult:
+        """Run backtest from pre-loaded DataFrames. Each DataFrame must have columns: timestamp, open, high, low, close, volume."""
+        if not data:
+            return BacktestResult(metrics={}, trades=[], decision_traces=[])
+        multipliers = contract_multipliers or {}
+        for sym in data:
+            self.pending_orders[sym] = []
+            self.contract_multipliers[sym] = multipliers.get(sym, 1.0)
+        return self._run_loop(data)

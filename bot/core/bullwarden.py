@@ -8,6 +8,9 @@ an open position less safe.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
+from hashlib import sha256
+import json
 from typing import Any
 
 import requests
@@ -40,7 +43,15 @@ class BullWardenClient:
         missing = [name for name, value in (("BULLWARDEN_API_KEY", self.api_key), ("BULLWARDEN_ACCOUNT_ID", self.account_id)) if not value]
         return {"enabled": self.enabled, "ready": self.enabled and not missing, "fail_closed": self.fail_closed, "missing": missing, "url": self.url}
 
-    def entry_allowed(self, broker: Any, *, source: str, order_ref: str = "") -> dict[str, Any]:
+    def entry_allowed(
+        self,
+        broker: Any,
+        *,
+        source: str,
+        order_ref: str = "",
+        trade: dict[str, Any] | None = None,
+        commit_intent: bool = True,
+    ) -> dict[str, Any]:
         if not self.enabled:
             return {"ok": True, "allowed": True, "active": False, "reason": "bullwarden_disabled"}
         if not self.api_key or not self.account_id:
@@ -51,18 +62,42 @@ class BullWardenClient:
             prior_close = self._number(account.get("last_equity"))
             if equity is None or equity <= 0:
                 return self._failure("bullwarden_equity_unavailable")
+            control = dict(trade or {})
+            intent_id = str(order_ref or control.get("signal_id") or "")
+            if len(intent_id) < 8:
+                intent_id = "intent-" + sha256(intent_id.encode("utf-8")).hexdigest()[:24] if intent_id else ""
+            if not intent_id:
+                return self._failure("bullwarden_intent_id_missing")
+            fingerprint = sha256(
+                json.dumps({"intent_id": intent_id, "trade": control}, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+            ).hexdigest()
             response = requests.post(
-                f"{self.url}/v1/preflight",
+                f"{self.url}/v1/prop/evaluate",
                 headers={"X-BullWarden-Key": self.api_key},
-                json={"account_id": self.account_id, "equity": equity, "prior_close_equity": prior_close, "source": source, "order_ref": order_ref or None},
+                json={
+                    "schema_version": "bullwarden.prop-trade.v1",
+                    "account_id": self.account_id, "intent_id": intent_id,
+                    "intent_fingerprint": fingerprint, "asset_class": control.get("asset_class", "stocks"),
+                    "mode": control.get("mode", "paper"), "equity": equity,
+                    "prior_close_equity": prior_close, "source": source,
+                    "account_observed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "commit_intent": commit_intent,
+                    **control,
+                },
                 timeout=self.timeout_seconds,
             )
             if response.status_code != 200:
                 return self._failure(f"bullwarden_http_{response.status_code}")
             body = response.json()
-            if not isinstance(body, dict) or not isinstance(body.get("allowed"), bool):
+            if not isinstance(body, dict) or not isinstance(body.get("submit_eligible"), bool):
                 return self._failure("bullwarden_invalid_response")
-            return {"ok": bool(body.get("ok", True)), "allowed": bool(body["allowed"]), "active": True, "reason": str(body.get("reason") or "unknown"), "result": body}
+            return {
+                "ok": bool(body.get("ok", True)), "allowed": bool(body["submit_eligible"]),
+                "submit_eligible": bool(body["submit_eligible"]), "active": True,
+                "reason": str(body.get("reason") or "unknown"),
+                "review_action_label": str(body.get("review_action_label") or "Conditions Not Met"),
+                "result": body,
+            }
         except Exception as exc:
             return self._failure(f"bullwarden_unavailable:{type(exc).__name__}")
 

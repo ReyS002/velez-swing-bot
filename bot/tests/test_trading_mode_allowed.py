@@ -4,11 +4,11 @@ import pytest
 from unittest.mock import MagicMock
 from bot.webhook_server import TradingViewWebhookEngine
 
-def test_trading_mode_allowed_flow():
-    # Setup mock config for Swing
+def test_trading_mode_allowed_flow(tmp_path, monkeypatch):
+    # Setup mock config for Intraday
     config = {
         "top_down": {
-            "profile": "velez_swing"
+            "profile": "velez_intraday"
         },
         "scanner": {
             "enabled": True,
@@ -19,25 +19,23 @@ def test_trading_mode_allowed_flow():
     engine = TradingViewWebhookEngine(config)
     engine.logger = MagicMock()
     
-    settings_path = "/app/data/trading_bull_settings.json"
+    settings_path = str(tmp_path / "trading_bull_settings.json")
+    monkeypatch.setenv("TRADING_BULL_SETTINGS_PATH", settings_path)
     
-    # Mocking reading from local settings file path on host during test environment
-    os.makedirs("/app/data", exist_ok=True)
-    
-    # Case 1: Dual Mode -> Swing bot should be allowed
+    # Case 1: Dual Mode -> Intraday bot should be allowed
     with open(settings_path, "w") as f:
         json.dump({"trading_mode": "dual"}, f)
     assert engine._check_trading_mode_allowed() is True
     
-    # Case 2: Intraday Mode -> Swing bot should be BLOCKED
+    # Case 2: Intraday Mode -> Intraday bot should be allowed
     with open(settings_path, "w") as f:
         json.dump({"trading_mode": "intraday"}, f)
-    assert engine._check_trading_mode_allowed() is False
+    assert engine._check_trading_mode_allowed() is True
     
-    # Case 3: Swing Mode -> Swing bot should be allowed
+    # Case 3: Swing Mode -> Intraday bot should be BLOCKED
     with open(settings_path, "w") as f:
         json.dump({"trading_mode": "swing"}, f)
-    assert engine._check_trading_mode_allowed() is True
+    assert engine._check_trading_mode_allowed() is False
     
     # Case 4: Missing settings file -> Default to allowed (True)
     if os.path.exists(settings_path):

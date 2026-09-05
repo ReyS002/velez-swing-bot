@@ -57,6 +57,7 @@ def test_tradovate_payload_uses_configurable_futures_symbol_mapping(monkeypatch)
     broker = TradovateBroker(
         TradovateConfig(username="user", password="pass", app_id="app", client_secret="secret")
     )
+    monkeypatch.setattr(broker, "check_prop_trade_allowed", lambda: (True, "symbol_mapping_test"))
 
     payload = broker.build_entry_payload(
         symbol="CME_MINI:MES1!",

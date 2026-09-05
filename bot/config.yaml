@@ -1,9 +1,8 @@
 timezone: US/Eastern
 app:
-  version: 0.2.0-swing
+  version: 0.1.0
   update_url: ''
   auto_check_updates: false
-  description: "Oliver Velez Swing Trading Bot \u2014 1h/4h/daily timeframes"
 portfolio:
   initial_cash: 100000
 broker:
@@ -24,22 +23,27 @@ risk:
   max_daily_loss_pct: 0.02
   max_consecutive_losses: 3
   max_open_positions: 7
+  max_total_open_risk_pct: 0.02
   max_leverage: 2.0
   max_order_qty: 10000
   max_stop_pct: 0.05
   circuit_breaker_atr_pct: 0.05
   max_api_errors: 5
   pyramid_add_fraction: 0.5
+  # Advisory planner warning threshold only; it never changes order routing.
+  planner_max_spread_bps: 20
 top_down:
   enabled: true
-  profile: velez_swing
-  # Swing weights daily/weekly wind more heavily but stays advisory by default.
+  profile: velez_intraday
+  # advisory keeps Oliver/Velez setups available while adding market-wind readback.
+  # size can reduce risk when top-down wind is opposed; gate requires explicit opt-in.
   mode: advisory
   cache_seconds: 300
-  daily_lookback: 120
+  daily_lookback: 80
   weekly_lookback: 52
   fast_sma: 20
   slow_sma: 50
+  slope_lookback: 5
   max_universe_symbols: 30
   breadth:
     symbols: [SPY, QQQ, IWM]
@@ -52,12 +56,44 @@ top_down:
     enabled: true
     default_action: active
     advisory_min_multiplier: 0.5
+bull_mentor:
+  enabled: true
+  weekly_days: 7
+  minimum_performance_sample: 5
+  slippage_warning_bps: 10
+  chart_history_bars: 260
+trade_readiness:
+  # Advisory weights sum to 1. Missing evidence contributes no points and lowers confidence.
+  weights:
+    setup_quality: 0.18
+    strategy_alignment: 0.12
+    regime_alignment: 0.14
+    reward_to_risk: 0.14
+    risk_capacity: 0.14
+    catalyst_context: 0.10
+    data_freshness: 0.09
+    guardrail_state: 0.09
+decision_intelligence:
+  minimum_performance_sample: 5
+  minimum_discipline_sample: 5
+  max_reviewed_trades_per_day: 5
+post_trade_autopsy:
+  enabled: true
+  poll_seconds: 30
+  timeframe: 5Min
+mentor_voice_briefings:
+  enabled: true
+  morning_time: "08:00"
+  evening_time: "16:15"
+  dispatch_grace_minutes: 20
+  weekends: false
 webhook:
   auth_required: true
   secret_env: VELEZ_WEBHOOK_SECRET
   execute_orders: true
   paper_only: true
-  time_in_force: day
+  time_in_force: gtc
+  protective_stop_time_in_force: gtc
   take_profit_r: null
   dedupe_cache_size: 1000
 strategy:
@@ -109,76 +145,49 @@ strategy:
   correlation:
     enabled: true
     max_correlation: 0.7
+    factor_exposure:
+      enabled: true
+      # Beta-adjusted gross exposure prevents several different tickers from
+      # silently becoming one concentrated market-direction bet.
+      max_beta_adjusted_gross_pct: 1.25
+      default_beta: 1.0
+      betas: {SPY: 1.0, QQQ: 1.2, IWM: 1.1, TQQQ: 3.0, NVDA: 1.7, AMD: 1.8, MU: 1.6, GOOGL: 1.1, AMZN: 1.2, MSFT: 1.0, NFLX: 1.3, HOOD: 1.5, HIMS: 1.4, OSCR: 1.3}
     sector_groups:
-      mega_tech:
-      - GOOGL
-      - AMZN
-      - MSFT
-      - AAPL
-      - META
-      semiconductors:
-      - NVDA
-      consumer_tech:
-      - TSLA
-      indices:
-      - SPY
-      - QQQ
-      - IWM
-      - TQQQ
-      high_beta:
-      - PLTR
-      - HOOD
-      - MSTR
-      - COIN
-      - CRWD
-      - SHOP
-      - BABA
+      semiconductors: ["NVDA", "AMD", "INTC", "MU", "AVGO", "TSM", "QCOM", "ARM", "SMCI"]
+      mega_tech: ["GOOGL", "AMZN", "MSFT", "AAPL", "META"]
+      consumer_tech: ["TSLA"]
+      indices: ["SPY", "QQQ"]
+      crypto: ["BTC", "ETH/USD", "SOL/USD", "ADA/USD", "XRP/USD", "TEL/USD"]
+      forex: ["EUR/USD", "GBP/JPY", "USD/JPY", "USD/CAD", "JPY/USD"]
 scanner:
   enabled: true
   auto_submit: true
-  symbols:
-  - SPY
-  - QQQ
-  - NVDA
-  - MSFT
-  - AAPL
-  - AMD
-  - TSLA
-  - AMZN
-  - META
-  - GOOGL
-  - PLTR
-  - HOOD
-  - MSTR
-  - COIN
-  - CRWD
-  - SHOP
-  - BABA
+  symbols: ["SPY", "QQQ", "NVDA", "MSFT", "AAPL", "AMD", "TSLA", "AMZN", "META", "GOOGL", "MU", "AVGO", "INTC", "TSM", "QCOM", "ARM", "SMCI"]
   interval_seconds: 900
   pause_when_exposure_full: true
   session_filter_enabled: true
-  rth_start: 09:35
-  rth_end: '15:45'
+  rth_start: "09:35"
+  rth_end: "15:45"
   avoid_lunch: true
-  lunch_start: '11:45'
-  lunch_end: '13:30'
+  lunch_start: "11:45"
+  lunch_end: "13:30"
 velez_strategy:
   sma_fast: 20
   sma_slow: 200
   atr_period: 14
   slope_lookback: 5
   vwap:
-    # Swing VWAP uses the current week as its primary reference; the session
-    # value remains supplemental. No VWAP rule changes execution by default.
+    # Advisory confluence for existing Oliver Velez setups. No VWAP rule can
+    # block, size, route, submit, or exit a trade by default.
     enabled: true
     bias_enabled: true
     scoring_enabled: true
     setup_confluence_enabled: true
     hard_filter_enabled: false
     session_vwap: true
-    weekly_vwap: true
+    weekly_vwap: false
     anchored_vwap: false
-    primary_variant: weekly
+    primary_variant: session
     timezone: America/New_York
     market_session: equity_rth
     include_extended_hours: false
@@ -243,8 +252,20 @@ velez_strategy:
   trifecta:
     enabled: true
     chains:
+      "2": ["5", "15"]
+      "5": ["15"]
       "60": ["240", "D"]
       "240": ["D"]
+  webhook_confluence:
+    enabled: true
+    default_signal_timeframe: "15"
+    higher_timeframes: ["60", "240"]
+    conflict_starter_multiplier: 0.25
+    skip_signal_trend_conflict: true
+    # An unavailable higher timeframe can never promote an order to full size.
+    unavailable_higher_timeframe_action: starter
+    unavailable_starter_multiplier: 0.25
+    max_bar_age_minutes: {"15": 35, "60": 95, "240": 300}
 symbols:
 - symbol: SPY
   type: equity
@@ -306,43 +327,43 @@ symbols:
   data_source: yfinance
   timezone: US/Eastern
   session: rth
-- symbol: PLTR
+- symbol: MU
   type: equity
   contract_multiplier: 1
   data_source: yfinance
   timezone: US/Eastern
   session: rth
-- symbol: HOOD
+- symbol: AVGO
   type: equity
   contract_multiplier: 1
   data_source: yfinance
   timezone: US/Eastern
   session: rth
-- symbol: MSTR
+- symbol: INTC
   type: equity
   contract_multiplier: 1
   data_source: yfinance
   timezone: US/Eastern
   session: rth
-- symbol: COIN
+- symbol: TSM
   type: equity
   contract_multiplier: 1
   data_source: yfinance
   timezone: US/Eastern
   session: rth
-- symbol: CRWD
+- symbol: QCOM
   type: equity
   contract_multiplier: 1
   data_source: yfinance
   timezone: US/Eastern
   session: rth
-- symbol: SHOP
+- symbol: ARM
   type: equity
   contract_multiplier: 1
   data_source: yfinance
   timezone: US/Eastern
   session: rth
-- symbol: BABA
+- symbol: SMCI
   type: equity
   contract_multiplier: 1
   data_source: yfinance

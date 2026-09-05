@@ -1,0 +1,63 @@
+name: Dashboard Visual Regression
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/dashboard-visual.yml"
+      - "bot/static/dashboard/**"
+      - "bot/tests/visual/**"
+      - "package.json"
+      - "package-lock.json"
+      - "playwright.config.mjs"
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/dashboard-visual.yml"
+      - "bot/static/dashboard/**"
+      - "bot/tests/visual/**"
+      - "package.json"
+      - "package-lock.json"
+      - "playwright.config.mjs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dashboard-visual-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  screenshots:
+    name: Chromium screenshot baselines
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.0-noble
+      options: --ipc=host
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install test dependencies
+        run: npm ci
+
+      - name: Validate dashboard source contracts
+        run: >-
+          python3 -c 'from bot.tests import test_dashboard_roadmap_frontend as t;
+          [getattr(t, name)() for name in dir(t) if name.startswith("test_")]'
+
+      - name: Compare dashboard screenshots
+        run: npm run test:visual
+
+      - name: Upload Playwright failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: dashboard-visual-failure-${{ github.run_attempt }}
+          path: |
+            playwright-report/
+            test-results/playwright/
+          if-no-files-found: ignore
+          retention-days: 14

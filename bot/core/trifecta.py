@@ -18,7 +18,8 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Dict, List, Optional, Tuple
+from datetime import datetime, timezone
+from typing import Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 import requests
@@ -366,3 +367,226 @@ def check_trifecta(symbol: str, signal_tf: str, side: str,
             continue
 
     return None  # All higher TFs confirmed
+
+
+def score_trifecta(symbol: str, signal_tf: str, side: str,
+                   config: dict, log=None,
+                   tradier_token: Optional[str] = None) -> float:
+    """Score multi-timeframe alignment 0.0-1.0.
+
+    Unlike check_trifecta (binary pass/fail), this returns a numeric
+    grade. 1.0 = all higher TFs perfectly aligned. 0.0 = all opposed.
+    Used by the stacking/lot-sizing extension to refine position size.
+
+    Scoring:
+      - Each higher TF gets 1 point if trend aligns, 0 if not
+      - Bonuses for strong SMA slope and wide SMA gap
+      - Normalized to 0-1
+    """
+    log = log or logger
+    cfg = config.get("trifecta", {})
+    if not cfg.get("enabled", True):
+        return 1.0  # disabled = no penalty
+
+    chain = get_trifecta_chain(signal_tf, cfg)
+    if not chain:
+        return 1.0  # top of chain = full score
+
+    token = tradier_token or _tradier_token()
+    total_score = 0.0
+    max_possible = float(len(chain))
+
+    for htf in chain:
+        try:
+            df = fetch_bars(symbol, htf, token=token)
+            if df.empty or len(df) < 50:
+                max_possible -= 1  # can't judge this TF
+                continue
+
+            sma20 = df["Close"].rolling(20).mean()
+            sma200 = df["Close"].rolling(200).mean()
+            last_sma20_val = sma20.iloc[-1]
+            last_sma200_val = sma200.iloc[-1]
+
+            if pd.isna(last_sma20_val) or pd.isna(last_sma200_val):
+                max_possible -= 1
+                continue
+
+            is_bull = side.lower() == "buy"
+
+            # Core trend alignment
+            trend_aligned = (is_bull and last_sma20_val > last_sma200_val) or \
+                            (not is_bull and last_sma20_val < last_sma200_val)
+
+            if not trend_aligned:
+                continue  # 0 for this TF
+
+            tf_score = 1.0
+
+            # Bonus: SMA gap width (wider = stronger trend)
+            sma_gap_pct = abs(last_sma20_val - last_sma200_val) / max(last_sma200_val, 1e-9)
+            gap_bonus = min(sma_gap_pct / 0.02, 0.25)  # up to +0.25 for 2%+ gap
+            tf_score += gap_bonus
+
+            # Bonus: SMA slope steepness
+            if len(sma20) >= 5:
+                slope = sma20.iloc[-1] - sma20.iloc[-5]
+                steep = abs(slope) / max(last_sma20_val * 0.1, 1e-9)
+                slope_bonus = min(steep, 0.25)
+                tf_score += slope_bonus
+
+            total_score += min(tf_score, 1.5)  # cap per-TF at 1.5
+
+        except Exception:
+            max_possible -= 1
+            continue
+
+    if max_possible <= 0:
+        return 1.0  # no TFs to judge = pass
+
+    return round(min(total_score / max_possible, 1.0), 2)
+
+
+# ── Webhook intake confluence ────────────────────────────────────────────
+
+def normalize_timeframe(timeframe: str) -> str:
+    """Normalize common TradingView timeframe labels to the internal codes."""
+    value = str(timeframe or "").strip().lower().replace(" ", "")
+    aliases = {
+        "1m": "1", "1min": "1", "1minute": "1",
+        "2m": "2", "2min": "2", "2minute": "2",
+        "3m": "3", "3min": "3", "3minute": "3",
+        "5m": "5", "5min": "5", "5minute": "5",
+        "10m": "10", "10min": "10", "10minute": "10",
+        "15m": "15", "15min": "15", "15minute": "15",
+        "30m": "30", "30min": "30", "30minute": "30",
+        "1h": "60", "60m": "60", "60min": "60", "60minute": "60",
+        "2h": "120", "120m": "120", "120min": "120",
+        "4h": "240", "240m": "240", "240min": "240",
+        "1d": "D", "day": "D", "daily": "D",
+    }
+    return aliases.get(value, str(timeframe or "").strip())
+
+
+def _freshness_receipt(frame: pd.DataFrame, timeframe: str, cfg: dict) -> dict:
+    """Return an auditable freshness check without guessing when timestamps are absent."""
+    limits = cfg.get("max_bar_age_minutes", {}) if isinstance(cfg, dict) else {}
+    try:
+        max_age_minutes = float(limits.get(str(timeframe), limits.get("default", 0)) or 0)
+    except (TypeError, ValueError):
+        max_age_minutes = 0.0
+    result = {"checked": max_age_minutes > 0, "max_age_minutes": max_age_minutes, "age_minutes": None, "fresh": True}
+    if max_age_minutes <= 0 or frame.empty:
+        return result
+    if not isinstance(frame.index, pd.DatetimeIndex):
+        result.update({"checked": False, "reason": "timestamp_unavailable"})
+        return result
+    try:
+        timestamp = pd.Timestamp(frame.index[-1])
+    except Exception:
+        result.update({"checked": False, "reason": "timestamp_unavailable"})
+        return result
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.tz_localize("UTC")
+    else:
+        timestamp = timestamp.tz_convert("UTC")
+    age_minutes = max(0.0, (datetime.now(timezone.utc) - timestamp.to_pydatetime()).total_seconds() / 60.0)
+    result.update({"age_minutes": round(age_minutes, 2), "fresh": age_minutes <= max_age_minutes})
+    return result
+
+
+def score_webhook_confluence(
+    symbol: str,
+    signal_tf: str,
+    side: str,
+    config: dict,
+    *,
+    log: Optional[logging.Logger] = None,
+    fetcher: Optional[Callable[[str, str], pd.DataFrame]] = None,
+) -> dict:
+    """Score the signal, 1H, and 4H trends before a webhook can size risk.
+
+    A single opposing higher timeframe turns an otherwise valid setup into a
+    quarter-sized starter.  When both higher timeframes oppose, it is skipped.
+    A data outage must never become an unrecorded full-size entry.  A missing
+    signal timeframe rejects the webhook; a missing higher timeframe uses the
+    configured reduced-size fallback (or skips when explicitly configured).
+    """
+    log = log or logger
+    cfg = config.get("webhook_confluence", {}) if isinstance(config, dict) else {}
+    if not cfg.get("enabled", False):
+        return {
+            "enabled": False,
+            "signal_timeframe": normalize_timeframe(signal_tf),
+            "timeframes": {},
+            "higher_opposed": 0,
+            "multiplier": 1.0,
+            "action": "full_size",
+            "reason": "disabled",
+        }
+
+    normalized_signal_tf = normalize_timeframe(signal_tf or cfg.get("default_signal_timeframe", "15"))
+    higher_timeframes = [normalize_timeframe(item) for item in cfg.get("higher_timeframes", ["60", "240"])]
+    required = []
+    for timeframe in [normalized_signal_tf, *higher_timeframes]:
+        if timeframe and timeframe not in required:
+            required.append(timeframe)
+    fetch = fetcher or (lambda wanted_symbol, wanted_tf: fetch_bars(wanted_symbol, wanted_tf))
+    timeframes: Dict[str, dict] = {}
+    for timeframe in required:
+        try:
+            frame = fetch(symbol, timeframe)
+            if frame is None or frame.empty:
+                timeframes[timeframe] = {"state": "unavailable", "detail": "no_bars_available"}
+                continue
+            aligned, detail = check_timeframe_trend(frame, side)
+            freshness = _freshness_receipt(frame, timeframe, cfg)
+            timeframes[timeframe] = {
+                "state": "stale" if not freshness["fresh"] else "aligned" if aligned else "opposed",
+                "detail": detail,
+                "bars": len(frame),
+                "freshness": freshness,
+            }
+        except Exception as exc:  # Fail open only for unavailable data, never for known opposition.
+            timeframes[timeframe] = {"state": "unavailable", "detail": f"fetch_error:{str(exc)[:120]}"}
+
+    # A 1H signal has only 4H above it, while a 4H signal has no higher
+    # requested timeframe.  The signal timeframe is recorded for audit but is
+    # not treated as a higher-timeframe conflict.
+    higher_to_score = [timeframe for timeframe in higher_timeframes if timeframe != normalized_signal_tf]
+    opposed = [timeframe for timeframe in higher_to_score if timeframes.get(timeframe, {}).get("state") == "opposed"]
+    signal_state = timeframes.get(normalized_signal_tf, {}).get("state")
+    unavailable_higher = [
+        timeframe for timeframe in higher_to_score
+        if timeframes.get(timeframe, {}).get("state") in {"unavailable", "stale"}
+    ]
+    if signal_state in {"unavailable", "stale"}:
+        multiplier, action, reason = 0.0, "skip", "signal_timeframe_data_unavailable"
+    elif signal_state == "opposed" and cfg.get("skip_signal_trend_conflict", True):
+        multiplier, action, reason = 0.0, "skip", "signal_timeframe_trend_opposed"
+    elif len(opposed) >= 2:
+        multiplier, action, reason = 0.0, "skip", "both_higher_timeframes_opposed"
+    elif unavailable_higher:
+        unavailable_action = str(cfg.get("unavailable_higher_timeframe_action", "starter")).lower()
+        if unavailable_action == "skip":
+            multiplier, action, reason = 0.0, "skip", "higher_timeframe_data_unavailable"
+        else:
+            multiplier = float(cfg.get("unavailable_starter_multiplier", cfg.get("conflict_starter_multiplier", 0.25)))
+            action, reason = "starter", "higher_timeframe_data_unavailable:" + ",".join(unavailable_higher)
+    elif len(opposed) == 1:
+        multiplier, action, reason = float(cfg.get("conflict_starter_multiplier", 0.25)), "starter", f"higher_timeframe_opposed:{opposed[0]}"
+    else:
+        multiplier, action, reason = 1.0, "full_size", "all_available_higher_timeframes_aligned"
+
+    result = {
+        "enabled": True,
+        "signal_timeframe": normalized_signal_tf,
+        "higher_timeframes": higher_to_score,
+        "timeframes": timeframes,
+        "higher_opposed": len(opposed),
+        "multiplier": max(0.0, min(multiplier, 1.0)),
+        "action": action,
+        "reason": reason,
+    }
+    log.info("webhook_confluence_scored", extra={"symbol": symbol, "side": side, **result})
+    return result

@@ -80,6 +80,7 @@ class CSVDataProvider(BaseDataProvider):
 
 
 class FuturesStubProvider(BaseDataProvider):
+    """Returns an empty DataFrame. Used for symbols whose data source is not yet configured (e.g. live futures via brokerage)."""
     def get_bars(
         self,
         *,
@@ -89,4 +90,4 @@ class FuturesStubProvider(BaseDataProvider):
         timeframe: str,
         timezone: str,
     ) -> pd.DataFrame:
-        raise NotImplementedError("Futures data provider not implemented. Use CSVDataProvider.")
+        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])

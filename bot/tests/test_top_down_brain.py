@@ -7,26 +7,29 @@ from bot.core.types import Bar
 from bot.webhook_server import TradingViewWebhookEngine
 
 
-def bars(start: float, step: float, count: int = 260) -> list[Bar]:
+def bars(start: float, step: float, count: int = 90) -> list[Bar]:
     now = datetime(2026, 8, 7, tzinfo=timezone.utc)
-    return [
-        Bar(
-            timestamp=now - timedelta(days=count - index),
-            open=start + step * index - 0.2,
-            high=start + step * index + 0.5,
-            low=start + step * index - 0.5,
-            close=start + step * index,
-            volume=1_000_000 + index,
+    out = []
+    for index in range(count):
+        close = start + step * index
+        out.append(
+            Bar(
+                timestamp=now - timedelta(days=count - index),
+                open=close - 0.2,
+                high=close + 0.5,
+                low=close - 0.5,
+                close=close,
+                volume=1_000_000 + index,
+            )
         )
-        for index in range(count)
-    ]
+    return out
 
 
 def config() -> dict:
     return {
         "portfolio": {"initial_cash": 100000},
         "broker": {"sim": {"enabled": True}},
-        "webhook": {"auth_required": False, "execute_orders": False, "paper_only": False},
+        "webhook": {"auth_required": False, "execute_orders": False, "paper_only": True},
         "scanner": {"enabled": False},
         "risk": {
             "risk_per_trade": 0.005,
@@ -37,54 +40,54 @@ def config() -> dict:
             "max_order_qty": 10000,
             "max_leverage": 2.0,
         },
-        "strategy": {"correlation": {"sector_groups": {"semiconductors": ["NVDA"], "indices": ["SPY", "QQQ", "IWM"]}}},
-        "velez_strategy": {"trifecta": {"enabled": False}, "lower_tf_filters": {"enabled": False}},
-        "top_down": {"enabled": True, "mode": "advisory", "profile": "velez_swing"},
+        "strategy": {"correlation": {"sector_groups": {"semiconductors": ["NVDA", "AMD"], "indices": ["SPY", "QQQ", "IWM"]}}},
+        "velez_strategy": {"lower_tf_filters": {"enabled": False}, "webhook_confluence": {"enabled": False}},
+        "top_down": {"enabled": True, "mode": "advisory", "profile": "velez_intraday"},
+        "bull_mentor": {"enabled": False},
+        "mentor_operations": {"enabled": False},
     }
 
 
-def test_swing_top_down_brain_scores_daily_weekly_and_sector():
+def test_top_down_brain_scores_bias_breadth_sector_and_activation():
     state = build_top_down_state(
         config(),
-        {"SPY": bars(100, 1), "QQQ": bars(100, 1.2), "IWM": bars(100, 0.8), "NVDA": bars(90, 1.5)},
+        {"SPY": bars(100, 1, 260), "QQQ": bars(100, 1.2, 260), "IWM": bars(100, 0.8, 260), "NVDA": bars(90, 1.5, 260)},
         symbol="NVDA",
-        play="elephant_bar",
+        play="opening_gap_go",
         side="buy",
-        confluence={"enabled": True, "action": "full_size", "reason": "trifecta_higher_timeframes_aligned", "signal_timeframe": "60"},
+        confluence={"enabled": True, "action": "full_size", "reason": "all_available_higher_timeframes_aligned", "signal_timeframe": "5"},
     )
     assert state["daily_bias"]["label"] == "bullish"
-    assert state["weekly_bias"]["label"] == "bullish"
+    assert state["breadth"]["label"] == "supportive"
     assert state["sector"]["name"] == "semiconductors"
     assert state["strategy_activation"]["status"] == "active"
 
 
-def test_swing_dashboard_has_cached_top_down_without_fetching(monkeypatch):
+def test_dashboard_uses_cached_only_top_down_without_fetching(monkeypatch):
     engine = TradingViewWebhookEngine(config())
     monkeypatch.setattr(engine, "_positions_snapshot", lambda: ([], None))
     state = engine.dashboard_state()
     assert state["top_down"]["status"] == "not_loaded"
+    assert state["top_down"]["enabled"] is True
 
 
-def test_swing_order_decision_includes_top_down_metadata(monkeypatch):
+def test_order_decision_includes_top_down_metadata(monkeypatch):
     engine = TradingViewWebhookEngine(config())
     top_down = {
         "ok": True,
         "mode": "advisory",
         "strategy_activation": {"status": "active", "executable": True, "size_multiplier": 1.0},
-        "readback": "swing top-down active",
+        "readback": "top-down active",
     }
     monkeypatch.setattr(engine, "top_down_state_payload", lambda **kwargs: top_down)
-    result = engine._handle_signal_payload(
-        {
-            "symbol": "NVDA",
-            "side": "buy",
-            "entry_price": 100,
-            "stop_price": 98,
-            "play": "elephant_bar",
-            "timeframe": "60",
-        },
-        "swing-td-test",
-        dry_run=True,
-    )
+    signal_payload = {
+        "symbol": "NVDA",
+        "side": "buy",
+        "entry_price": 100,
+        "stop_price": 98,
+        "play": "elephant_bar",
+        "timeframe": "5",
+    }
+    result = engine._handle_signal_payload(signal_payload, "td-test", dry_run=True)
     assert result.status == "diagnostic"
-    assert result.metadata["top_down"]["readback"] == "swing top-down active"
+    assert result.metadata["top_down"]["readback"] == "top-down active"

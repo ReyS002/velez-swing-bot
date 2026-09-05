@@ -1,0 +1,66 @@
+name: Operations Hardening
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/ops-hardening.yml"
+      - ".env.example"
+      - "docker-compose.yml"
+      - "bot/.env.example"
+      - "bot/deploy/**"
+      - "bot/core/top_down_brain.py"
+      - "bot/webhook_server.py"
+      - "bot/tests/**"
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/ops-hardening.yml"
+      - ".env.example"
+      - "docker-compose.yml"
+      - "bot/.env.example"
+      - "bot/deploy/**"
+      - "bot/core/top_down_brain.py"
+      - "bot/webhook_server.py"
+      - "bot/tests/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ops-hardening-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: bot/deploy/requirements-webhook.txt
+      - name: Install webhook dependencies
+        run: python -m pip install -r bot/deploy/requirements-webhook.txt
+      - name: Compile runtime
+        run: python -m compileall -q bot
+      - name: Validate Compose configuration
+        run: |
+          cp bot/deploy/env.example .env
+          touch .env.pockettts
+          sudo install -d /opt/stacks/velez-swing-bot
+          sudo touch /opt/stacks/velez-swing-bot/.env
+          docker compose config --quiet
+      - name: Run full Python suite
+        run: python -m pytest -q bot/tests
+      - name: Reject runtime deprecations in focused suite
+        run: >-
+          python -m pytest -q
+          bot/tests/test_tradingview_webhook.py
+          bot/tests/test_ops_hardening.py
+          -W error::DeprecationWarning
+          -W ignore::DeprecationWarning:fastapi.testclient
+          -W ignore::DeprecationWarning:starlette.testclient

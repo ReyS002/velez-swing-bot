@@ -219,7 +219,7 @@ export APPLE_MUSIC_TOKEN_ORIGINS="https://your-bot-domain.example"
 
 ## How To Use The Winston Phone
 
-The desk phone is the voice-command surface for Winston. It does not submit trades by voice; it reads desk state, uses DeepSeek Flash for quick phone answers, uses DeepSeek Pro for Research and Deep Research, keeps the VPS Ollama brain as a fallback, can control the Apple Music iPod after browser authorization, can open room objects such as the bookshelf, clock, lamp, drawer, notes, and window, can speak through Hermes PocketTTS, and keeps trade approval guarded.
+The desk phone is the voice-command surface for Winston. It does not submit trades by voice; it reads desk state, uses the configured Groq/OpenAI-compatible route for quick phone answers and research summaries, keeps the VPS Ollama brain as a fallback, can control the Apple Music iPod after browser authorization, can open room objects such as the bookshelf, clock, lamp, drawer, notes, and window, speaks through the xAI Leo PocketTTS voice when configured, and keeps trade approval guarded.
 
 On the dashboard:
 
@@ -229,9 +229,9 @@ On the dashboard:
 4. Click `Research` for a quick prep note, or `Deep Research` for a deeper memo using more of the desk context.
 5. Use the text box to ask for the watchlist, positions, active trade stops/R multiple, risk, trade approval status, or simple iPod commands.
 6. Click `Speak` if your browser supports speech recognition.
-7. Winston speaks back through Hermes PocketTTS when the server voice is configured, or through the browser voice fallback.
+7. Winston speaks back through the configured Fish Winston voice. If the server voice is unavailable, the desk phone shows the voice error instead of using a generic browser voice.
 
-Plain-English version: Winston is now the phone assistant inside the desk. The bot can answer from its own dashboard state, read active paper-trade lifecycle details, use a local/remote AI model for open-ended questions, and speak back in the configured Hermes voice. It still will not place trades just because someone says "buy" or "approve"; it only reads status and keeps trading actions behind a separate guarded approval flow.
+Plain-English version: Winston is now the phone assistant inside the desk. The bot can answer from its own dashboard state, read active paper-trade lifecycle details, use a local/remote AI model for open-ended questions, and speak back in the configured Fish Winston voice. It still will not place trades just because someone says "buy" or "approve"; it only reads status and keeps trading actions behind a separate guarded approval flow.
 
 ## How To Read V6.21 Receipts And Lifecycle
 

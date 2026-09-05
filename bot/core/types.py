@@ -50,7 +50,7 @@ class Bar:
 class OrderIntent:
     symbol: str
     side: Side
-    qty: int
+    qty: float
     order_type: OrderType
     limit_price: Optional[float]
     reason: str
@@ -61,7 +61,7 @@ class OrderIntent:
 class Order:
     symbol: str
     side: Side
-    qty: int
+    qty: float
     order_type: OrderType
     limit_price: Optional[float]
     timestamp: datetime
@@ -81,7 +81,7 @@ class Fill:
 @dataclass
 class Position:
     symbol: str
-    qty: int
+    qty: float
     entry_price: float
     entry_time: datetime
     stop_price: float
@@ -101,7 +101,7 @@ class TradeRecord:
     symbol: str
     entry_time: datetime
     exit_time: datetime
-    qty: int
+    qty: float
     entry_price: float
     exit_price: float
     pnl: float

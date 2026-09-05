@@ -6,7 +6,7 @@ The command center now includes a `Hybrid VPS scanner` card. It shows whether th
 
 Startup behavior is defensive: the scanner first warms indicator history from recent candles and does not submit trades from old bars. After warm-up, it only acts on newly closed bars.
 
-Dashboard V6.21 keeps the Candidate C room as the main visual stage, keeps the front end named Trading Bull Desk, and hides the side controls so more of the room is visible. The monitor attempts to load TradingView's official Advanced Chart widget, while the local canvas chart remains underneath as a fallback if the external widget is blocked or slow. The iPod works as an in-desk Apple Music mini player through MusicKit JS, the desk phone supports Winston daily briefs, fast iPod commands, room-object commands, Research Mode, Deep Research, Hermes PocketTTS voice, guarded paper-order approvals, active-trade lifecycle readbacks, and Velez lot sizing, and the calendar pulls live broker, earnings, macro, and journal data.
+Dashboard V6.21 keeps the Candidate C room as the main visual stage, keeps the front end named Trading Bull Desk, and hides the side controls so more of the room is visible. The monitor attempts to load TradingView's official Advanced Chart widget, while the local canvas chart remains underneath as a fallback if the external widget is blocked or slow. The iPod works as an in-desk Apple Music mini player through MusicKit JS, the desk phone supports Winston daily briefs, fast iPod commands, room-object commands, Research Mode, Deep Research, xAI Leo PocketTTS voice, guarded paper-order approvals, active-trade lifecycle readbacks, and Velez lot sizing, and the calendar pulls live broker, earnings, macro, and journal data.
 
 ## V6.21 Lot Conviction Pass
 
@@ -235,7 +235,7 @@ When `VELEZ_REQUIRE_ORDER_APPROVAL=true`, even an armed paper-execution stack ho
 
 - Added `/api/winston/status` so the phone shows the active brain and voice providers
 - Added optional Ollama/Hermes local LLM support for Winston chat
-- Added optional Hermes PocketTTS server voice via `/api/winston/speech`
+- Added xAI Leo PocketTTS server voice via `/api/winston/speech`
 - Added browser speech fallback when server TTS is unavailable or muted
 - Added runtime guardrails so Winston voice chat cannot submit, approve, cancel, buy, sell, or close trades directly
 - Added provider metadata in the Winston phone panel: `Brain` and `Voice`
@@ -275,7 +275,7 @@ Click the phone on the desk, or choose `Phone` from the edge menu. The phone pan
 /api/winston/speech
 ```
 
-Voice output uses Hermes PocketTTS when these environment variables are configured, then falls back to the browser's speech synthesis. Voice input uses the browser speech-recognition API when available; otherwise, type into the phone prompt. Trade approval is intentionally guarded: Winston can discuss structure and read back pending paper orders, but the V6.2 phone flow still does not submit trades by voice alone.
+Voice output is locked to the configured xAI Leo PocketTTS voice. If Leo is unavailable or another voice name is configured, the desk phone shows the voice error instead of falling back to the browser's generic speech synthesis. Voice input still uses the browser speech-recognition API when available; otherwise, type into the phone prompt. Trade approval is intentionally guarded: Winston can discuss structure and read back pending paper orders, but the V6.2 phone flow still does not submit trades by voice alone.
 
 ```text
 WINSTON_LLM_PROVIDER=ollama
@@ -287,13 +287,14 @@ WINSTON_RESEARCH_THINK=false
 WINSTON_RESEARCH_MAX_TOKENS=320
 WINSTON_RESEARCH_CONTEXT_CHARS=7000
 WINSTON_RESEARCH_TIMEOUT_SECONDS=120
-WINSTON_TTS_PROVIDER=pockettts
-WINSTON_TTS_BASE_URL=http://127.0.0.1:8018/v1
-WINSTON_TTS_API_KEY=your-pockettts-api-key
-WINSTON_TTS_VOICE=jarvis-intro1
+WINSTON_TTS_PROVIDER=fish
+FISH_API_KEY=your-fish-api-key
+WINSTON_TTS_VOICE=winston
+WINSTON_TTS_REQUIRED_VOICE=winston
+WINSTON_TTS_MODEL=s2-pro
 ```
 
-For a 24/7 VPS, those services must run on the VPS or point to a private reachable endpoint. If the VPS does not have Ollama/PocketTTS yet, keep `WINSTON_LLM_PROVIDER=rule_based` and `WINSTON_TTS_PROVIDER=browser` until those services are installed.
+For a 24/7 VPS, those services must run on the VPS or point to a private reachable endpoint. If Fish Audio is unavailable, keep Winston text responses enabled but expect the phone voice to show “Winston voice unavailable” until the server voice is configured.
 
 The deploy compose file includes an optional Ollama service. On the VPS, start it with:
 
@@ -321,16 +322,18 @@ WINSTON_RESEARCH_TIMEOUT_SECONDS=120
 
 `WINSTON_LLM_THINK=false` is important for phone mode because Qwen thinking models can otherwise spend the response budget on hidden reasoning and return no spoken answer.
 
-For VPS-hosted Winston voice, copy the Hermes PocketTTS bridge into `pockettts-agent-bridge`, start the optional compose profile, and point Winston to the private service:
+For VPS-hosted Winston voice, copy the PocketTTS bridge into `pockettts-agent-bridge`, start the optional compose profile, and point Winston to the private service:
 
 ```bash
 docker compose --profile voice up -d pockettts
 ```
 
 ```text
-WINSTON_TTS_PROVIDER=pockettts
-WINSTON_TTS_BASE_URL=http://pockettts:8000/v1
-WINSTON_TTS_VOICE=jarvis-intro1
+WINSTON_TTS_PROVIDER=fish
+FISH_API_KEY=your-fish-api-key
+WINSTON_TTS_VOICE=winston
+WINSTON_TTS_REQUIRED_VOICE=winston
+WINSTON_TTS_MODEL=s2-pro
 ```
 
 The packaged stack includes a sanitized `pockettts-agent-bridge` folder with the bridge source and voice assets. It intentionally excludes `.env`, generated audio, local model cache, and virtualenv files. On first use, PocketTTS may recreate its model cache inside `data/hf-cache`.
