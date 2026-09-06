@@ -79,33 +79,31 @@ def test_v623_phone_art_and_winston_voice_lock_are_wired():
     assert "Waiting for microphone permission" in listening
 
 
-def test_room_regions_ground_phone_move_ipod_and_tighten_hotspots():
-    css = (STATIC / "styles.css").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+def test_room_regions_keep_realistic_objects_in_all_five_rooms():
+    import json
+    import re
 
-    assert "phoneObjectRegion = { x: 0.08, y: 0.645, w: 0.26, h: 0.23 }" in js
-    assert 'panel: "safe", label: "Credential safe", icon: "shield-check", x: 0.875, y: 0.57, w: 0.055, h: 0.15' in js
-    assert 'panel: "phone", label: "Call Winston", icon: "phone-call", x: 0.13, y: 0.665, w: 0.17, h: 0.17' in js
-    assert 'panel: "laptop", label: "Command center", icon: "laptop", x: 0.455, y: 0.738, w: 0.075, h: 0.07' in js
-    assert 'panel: "calendar", label: "Calendar and P/L", icon: "calendar-days", x: 0.71, y: 0.575, w: 0.06, h: 0.085' in js
-    assert 'panel: "music", label: "Music", icon: "music", x: 0.315, y: 0.742, w: 0.065, h: 0.075' in js
-    assert 'panel: "bookshelf", label: "Strategy library", icon: "library", x: 0.035, y: 0.16, w: 0.07, h: 0.16' in js
-    assert 'panel: "window", label: "Market weather", icon: "cloud-sun", x: 0.61, y: 0.18, w: 0.09, h: 0.1' in js
-    assert 'panel: "drawer", label: "Backtest drawer", icon: "archive", x: 0.89, y: 0.875, w: 0.065, h: 0.06' in js
-    assert 'panel: "notes", label: "Bull Report", icon: "file-text", x: 0.93, y: 0.425, w: 0.055, h: 0.085' in js
-    assert "rotateX(24deg) rotateZ(2deg)" in css
-    assert "drop-shadow(0 1px 1px" in css
-    hotspot = css[css.index(".room-hotspot {") : css.index(".topbar {")]
-    assert "border: 0;" in hotspot
-    assert "color: transparent;" in hotspot
-    assert "background: transparent;" in hotspot
-    assert "box-shadow: none;" in hotspot
-    assert "opacity: 1;" not in hotspot
-    assert "pointermove" in js and "showHover(definition.label, event)" in js
-    old_ipod_location = _png_rgb_at(STATIC / "v623-room-day.png", 450, 715)
-    ipod_screen_on_mat = _png_rgb_at(STATIC / "v623-room-day.png", 550, 740)
-    assert old_ipod_location[2] < old_ipod_location[0]
-    assert ipod_screen_on_mat[2] > ipod_screen_on_mat[0] + 30
+    source = (STATIC / "sovereign-room.js").read_text(encoding="utf-8")
+    literal = source.split("export const ROOMS = ", 1)[1].split(";\nexport const PANEL_LABELS", 1)[0]
+    literal = re.sub(r'([,{]\s*)([A-Za-z_]\w*)\s*:', r'\1"\2":', literal)
+    rooms = json.loads(literal)
+    assert set(rooms) == {"media", "pacific", "tokyo", "manhattan", "dubai"}
+    for room in rooms.values():
+        objects = room["objects"]
+        assert objects["phone"][0] < objects["music"][0]
+        assert objects["music"][2] < objects["phone"][2]
+        assert objects["trackpad"][2] < objects["keyboard"][2]
+        assert room["screen"][2] < 30
+        assert len(objects) == 10
+        for x, y, width, height in [*objects.values(), room["screen"], room["broadcast"]]:
+            assert 0 <= x < 100 and 0 <= y < 100
+            assert width > 0 and height > 0
+            assert x + width <= 100 and y + height <= 100
+        for plate in room["images"].values():
+            assert (STATIC / "sovereign" / plate).is_file()
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "showHover(definition.label, event)" in js
+    assert "sovereignObjectMarkup(definition)" in js
 
 
 def test_conference_phone_asset_has_alpha_channel():

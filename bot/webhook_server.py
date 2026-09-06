@@ -11352,6 +11352,12 @@ def create_app(config: dict):
             "broker": broker_status,
         }
 
+    @app.get("/health/live")
+    async def dashboard_liveness() -> dict:
+        # Keep the recovery dashboard reachable during broker outages.
+        # Trading readiness and execution guards remain on their existing paths.
+        return {"ok": True, "scope": "application", "trading_readiness": "/health"}
+
     @app.get("/api/desk/config")
     async def desk_config(request: Request) -> JSONResponse:
         return JSONResponse(content=workspace_config(request, engine.broker, product="Velez Swing"), headers={"Cache-Control": "no-store"})
