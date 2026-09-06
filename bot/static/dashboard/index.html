@@ -8,6 +8,8 @@
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/dashboard/assets/styles.css?v=6.40.4" />
     <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
+    <link rel="stylesheet" href="/dashboard/assets/sovereign.css?v=1.0.0" />
+  <link rel="stylesheet" href="/dashboard/assets/broadcast.css?v=sovereign-1.0.0" />
   </head>
   <body class="room-clear">
     <div id="desk-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -21,7 +23,7 @@
         aria-hidden="true"
       />
       <audio id="winston-audio-player" preload="auto" playsinline hidden></audio>
-      <div id="screen-terminal" class="screen-terminal" role="button" tabindex="0" aria-label="Trading screen">
+      <div id="screen-terminal" class="screen-terminal" role="region" tabindex="0" aria-label="TradingView chart">
         <div id="tradingview-screen" class="tradingview-screen" aria-label="TradingView chart"></div>
       </div>
       <div id="room-hotspots" class="room-hotspots" aria-label="Photoreal room objects"></div>
@@ -424,6 +426,7 @@
       <div class="hover-tag" id="hover-tag" hidden></div>
     </main>
 
-    <script type="module" src="/dashboard/assets/app.js?v=6.40.4"></script>
+    <script type="module" src="/dashboard/assets/app.js?v=sovereign-1.0.0"></script>
+  <script type="module" src="/dashboard/assets/broadcast.js?v=sovereign-1.0.0"></script>
   </body>
 </html>

@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+from .broadcast_market import BroadcastMarketService
+from .desk_workspace import broadcast_config as desk_broadcast_config, workspace_config
 import os
 import re
 import secrets
@@ -166,11 +168,11 @@ def _set_dashboard_security_headers(response: Response) -> Response:
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://unpkg.com https://s3.tradingview.com https://js-cdn.music.apple.com; "
+        "script-src 'self' 'unsafe-inline' https://unpkg.com https://s3.tradingview.com https://js-cdn.music.apple.com https://www.youtube.com https://s.ytimg.com; "
         "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; "
         "font-src 'self' data:; media-src 'self' data: blob: https:; "
         "connect-src 'self' https://*.tradingview.com https://api.music.apple.com https://amp-api.music.apple.com https://play.itunes.apple.com; "
-        "frame-src https://s.tradingview.com https://*.tradingview.com https://www.tradingview.com https://www.tradingview-widget.com; "
+        "frame-src https://s.tradingview.com https://*.tradingview.com https://www.tradingview.com https://www.tradingview-widget.com https://www.youtube-nocookie.com https://www.youtube.com; "
         "object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
     )
     return response
@@ -11262,6 +11264,7 @@ def create_app(config: dict):
     app = FastAPI(title="Trading Bull Desk Webhook", version="0.1.0", lifespan=lifespan)
     app.state.engine = engine
     app.state.apple_music = AppleMusicTokenService()
+    app.state.broadcast_market = BroadcastMarketService(engine.broker)
     dashboard_dir = Path(__file__).resolve().parent / "static" / "dashboard"
     dashboard_index = dashboard_dir / "index.html"
     mutation_limiter = _MutationRateLimiter(
@@ -11348,6 +11351,21 @@ def create_app(config: dict):
             "watch_only": engine._watch_only(),
             "broker": broker_status,
         }
+
+    @app.get("/api/desk/config")
+    async def desk_config(request: Request) -> JSONResponse:
+        return JSONResponse(content=workspace_config(request, engine.broker, product="Velez Swing"), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/broadcast/config")
+    async def broadcast_config() -> JSONResponse:
+        return JSONResponse(content=desk_broadcast_config(), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/broadcast/market")
+    async def broadcast_market(refresh: bool = Query(False)) -> JSONResponse:
+        if not desk_broadcast_config()["enabled"]:
+            return JSONResponse(status_code=404, content={"ok": False, "reason": "broadcast_disabled", "display_only": True}, headers={"Cache-Control": "no-store"})
+        result = await run_in_threadpool(app.state.broadcast_market.payload, refresh=refresh)
+        return JSONResponse(content=result, headers={"Cache-Control": "private, max-age=10"})
 
     @app.get("/api/dashboard/state")
     async def dashboard_state() -> dict:

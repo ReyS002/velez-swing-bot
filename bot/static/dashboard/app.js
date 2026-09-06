@@ -1,8 +1,9 @@
+import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.0.0";
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
-const PHOTO_WIDTH = 1680;
-const PHOTO_HEIGHT = 945;
+const PHOTO_WIDTH = 1672;
+const PHOTO_HEIGHT = 941;
 
 const roomHotspots = $("#room-hotspots");
 const deskPhoneObject = $("#desk-phone-object");
@@ -213,6 +214,7 @@ const winstonState = {
 };
 
 const panelCopy = {
+  account: ["Workspace access", "Account & access"],
   tv: ["TradingView | V6.23", "Trading Screen"],
   mission: ["Daily mission | V6.23", "Mission Card"],
   mentor: ["Eyes-on coaching | V6.26", "Velez Mentor AI"],
@@ -232,21 +234,7 @@ const panelCopy = {
 
 const screenRegion = { x: 0.348, y: 0.413, w: 0.296, h: 0.233 };
 const phoneObjectRegion = { x: 0.08, y: 0.645, w: 0.26, h: 0.23 };
-const hotspotDefinitions = [
-  { panel: "laptop", label: "Command center", icon: "laptop", x: 0.455, y: 0.738, w: 0.075, h: 0.07 },
-  { panel: "mission", label: "Daily mission", icon: "target", x: 0.45, y: 0.615, w: 0.12, h: 0.075 },
-  { panel: "journal", label: "Trade journal", icon: "book-open", x: 0.72, y: 0.735, w: 0.14, h: 0.105 },
-  { panel: "calendar", label: "Calendar and P/L", icon: "calendar-days", x: 0.71, y: 0.575, w: 0.06, h: 0.085 },
-  { panel: "safe", label: "Credential safe", icon: "shield-check", x: 0.875, y: 0.57, w: 0.055, h: 0.15 },
-  { panel: "music", label: "Music", icon: "music", x: 0.315, y: 0.742, w: 0.065, h: 0.075 },
-  { panel: "phone", label: "Call Winston", icon: "phone-call", x: 0.13, y: 0.665, w: 0.17, h: 0.17 },
-  { panel: "bookshelf", label: "Strategy library", icon: "library", x: 0.035, y: 0.16, w: 0.07, h: 0.16 },
-  { panel: "clock", label: "Market sessions", icon: "clock", x: 0.795, y: 0.13, w: 0.08, h: 0.12 },
-  { panel: "window", label: "Market weather", icon: "cloud-sun", x: 0.61, y: 0.18, w: 0.09, h: 0.1 },
-  { panel: "lamp", label: "Risk mood light", icon: "lamp", x: 0.155, y: 0.355, w: 0.095, h: 0.115 },
-  { panel: "drawer", label: "Backtest drawer", icon: "archive", x: 0.89, y: 0.875, w: 0.065, h: 0.06 },
-  { panel: "notes", label: "Bull Report", icon: "file-text", x: 0.93, y: 0.425, w: 0.055, h: 0.085 },
-];
+const hotspotDefinitions = getSovereignHotspots();
 
 function fallbackState() {
   return {
@@ -4138,7 +4126,7 @@ function updateNowPlayingFromMusic(music = musicInstance()) {
     currentTime,
     duration,
     progress: Number.isFinite(progress) ? progress : 0,
-    volume: Number.isFinite(Number(music.volume)) ? Number(music.volume) : appleMusicState.playback.volume,
+    volume: sovereignMusicBaseVolume ?? (Number.isFinite(Number(music.volume)) ? Number(music.volume) : appleMusicState.playback.volume),
   };
 }
 
@@ -4505,13 +4493,14 @@ async function skipAppleMusic(direction, options = {}) {
 async function setAppleMusicVolume(action) {
   try {
     const music = await ensureAppleMusicReady();
-    const current = Number(music.volume ?? appleMusicState.playback.volume ?? 1);
+    const current = Number(sovereignMusicBaseVolume ?? music.volume ?? appleMusicState.playback.volume ?? 1);
     let next = Number(action?.value);
     if (!Number.isFinite(next)) {
       next = current + (action?.direction === "down" ? -0.12 : 0.12);
     }
     next = Math.max(0, Math.min(1, next));
-    music.volume = next;
+    if (sovereignMusicBaseVolume !== null) { sovereignMusicBaseVolume = next; music.volume = next * 0.18; }
+    else music.volume = next;
     appleMusicState.playback = { ...appleMusicState.playback, volume: next };
     appleMusicState.message = `Volume ${Math.round(next * 100)}%`;
     refreshMusicPanel();
@@ -4780,6 +4769,7 @@ function stopWinstonAudio() {
   }
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();
   winstonState.speaking = false;
+  document.dispatchEvent(new CustomEvent("desk:winston-speaking", { detail: { speaking: false } }));
 }
 
 function unlockWinstonAudio() {
@@ -4810,6 +4800,7 @@ function unlockWinstonAudio() {
 
 function markServerVoiceFailure(detail) {
   winstonState.speaking = false;
+  document.dispatchEvent(new CustomEvent("desk:winston-speaking", { detail: { speaking: false } }));
   winstonState.speechController = null;
   winstonState.voice = {
     ...winstonState.voice,
@@ -4838,14 +4829,17 @@ function speakBrowserWinston(text) {
   } catch (_) { /* voice list unavailable — use default */ }
   utterance.onstart = () => {
     winstonState.speaking = true;
+  document.dispatchEvent(new CustomEvent("desk:winston-speaking", { detail: { speaking: true } }));
     refreshWinstonPanel();
   };
   utterance.onend = () => {
     winstonState.speaking = false;
+  document.dispatchEvent(new CustomEvent("desk:winston-speaking", { detail: { speaking: false } }));
     refreshWinstonPanel();
   };
   utterance.onerror = () => {
     winstonState.speaking = false;
+  document.dispatchEvent(new CustomEvent("desk:winston-speaking", { detail: { speaking: false } }));
     refreshWinstonPanel();
   };
   window.speechSynthesis.speak(utterance);
@@ -4968,6 +4962,7 @@ async function speakWinston(text) {
   winstonState.speechController = controller;
   try {
     winstonState.speaking = true;
+  document.dispatchEvent(new CustomEvent("desk:winston-speaking", { detail: { speaking: true } }));
     refreshWinstonPanel();
     const chunks = splitWinstonSpeech(text);
     let prepared = prepareServerVoiceChunk(chunks[0], controller.signal);
@@ -4991,6 +4986,7 @@ async function speakWinston(text) {
     }
     if (speechId === winstonState.speechRequestId) {
       winstonState.speaking = false;
+  document.dispatchEvent(new CustomEvent("desk:winston-speaking", { detail: { speaking: false } }));
       winstonState.speechController = null;
       refreshWinstonPanel();
     }
@@ -5026,6 +5022,7 @@ function endWinstonCall() {
   winstonState.callActive = false;
   winstonState.listening = false;
   winstonState.speaking = false;
+  document.dispatchEvent(new CustomEvent("desk:winston-speaking", { detail: { speaking: false } }));
   winstonState.status = "idle";
   winstonState.message = "Phone line ready";
   winstonTranscript("system", "Call ended.");
@@ -5166,6 +5163,7 @@ function winstonRoomContext() {
   const mission = dailyMission();
   const nowPlaying = appleMusicState.nowPlaying || {};
   return {
+    environment: roomSnapshot(),
     active: {
       panel: activePanel,
       label: panelCopy[activePanel]?.[1] || activePanel,
@@ -5576,6 +5574,7 @@ function renderPanel() {
 
   const renderers = {
     tv: renderTradingScreen,
+    account: workspaceAccountMarkup,
     mission: renderMission,
     mentor: renderMentor,
     laptop: renderLaptop,
@@ -5779,6 +5778,7 @@ function renderPanel() {
     button.addEventListener("click", openProConsole);
   });
   window.lucide?.createIcons();
+  updateSovereignChrome({ panel: activePanel, open: panelOpen, state: dashboardState, music: appleMusicState, winston: winstonState });
 }
 
 function capturePanelDrafts() {
@@ -5838,6 +5838,7 @@ function updateActiveChrome() {
   document.body.classList.toggle("phone-active", activePanel === "phone");
   document.body.classList.toggle("panel-open", panelOpen);
   updateWorkflowChrome();
+  updateSovereignChrome({ panel: activePanel, open: panelOpen, state: dashboardState, music: appleMusicState, winston: winstonState });
 }
 
 function applyRoomTheme(theme) {
@@ -5851,6 +5852,7 @@ function applyRoomTheme(theme) {
     themeToggle.innerHTML = `<i data-lucide="${isDay ? "moon" : "sun"}"></i><span>${isDay ? "Night" : "Day"}</span>`;
     window.lucide?.createIcons();
   }
+  syncRoomTheme(roomTheme);
 }
 
 function markTradingViewLoaded(loaded) {
@@ -7758,17 +7760,7 @@ function handleDashboardVisibility() {
 }
 
 function roomRect() {
-  const viewportWidth = window.innerWidth;
-  const viewportHeight = window.innerHeight;
-  const scale = Math.max(viewportWidth / PHOTO_WIDTH, viewportHeight / PHOTO_HEIGHT);
-  const width = PHOTO_WIDTH * scale;
-  const height = PHOTO_HEIGHT * scale;
-  return {
-    left: (viewportWidth - width) / 2,
-    top: (viewportHeight - height) / 2,
-    width,
-    height,
-  };
+  return sovereignRoomRect();
 }
 
 function applyRegion(element, region, rect) {
@@ -7781,12 +7773,13 @@ function applyRegion(element, region, rect) {
 function positionRoomElements() {
   const rect = roomRect();
   $$(".room-hotspot").forEach((hotspot) => {
-    const region = hotspotDefinitions.find((item) => item.panel === hotspot.dataset.panel);
+    const region = hotspotDefinitions.find((item) => item.id === hotspot.dataset.objectId);
     if (region) applyRegion(hotspot, region, rect);
   });
-  if (deskPhoneObject) applyRegion(deskPhoneObject, phoneObjectRegion, rect);
-  applyRegion(screenTerminal, screenRegion, rect);
-  screenTerminal.hidden = window.innerWidth < 720;
+  if (deskPhoneObject) deskPhoneObject.hidden = true;
+  const expanded = document.body.classList.contains("sovereign-chart-expanded");
+  if (!expanded) applyRegion(screenTerminal, sovereignRegions().screen, rect);
+  screenTerminal.hidden = window.innerWidth < 720 && !expanded;
 }
 
 function showHover(label, event) {
@@ -7801,17 +7794,19 @@ function hideHover() {
 }
 
 function buildHotspots() {
+  hotspotDefinitions.splice(0, hotspotDefinitions.length, ...getSovereignHotspots());
   roomHotspots.innerHTML = "";
   hotspotDefinitions.forEach((definition) => {
     const button = document.createElement("button");
-    button.className = "room-hotspot";
+    button.className = `room-hotspot${["phone", "music", "journal"].includes(definition.id) ? " sovereign-prop" : ""}`;
+    button.dataset.objectId = definition.id;
     button.type = "button";
     button.dataset.panel = definition.panel;
     button.dataset.label = definition.label;
     button.setAttribute("aria-label", definition.label);
     button.title = definition.label;
-    button.innerHTML = `<i data-lucide="${definition.icon}"></i><span>${definition.label}</span>`;
-    button.addEventListener("click", () => setActivePanel(definition.panel));
+    button.innerHTML = sovereignObjectMarkup(definition);
+    button.addEventListener("click", () => window.__sovereign ? window.__sovereign.open(definition.panel) : setActivePanel(definition.panel));
     button.addEventListener("pointermove", (event) => showHover(definition.label, event));
     button.addEventListener("pointerleave", hideHover);
     button.addEventListener("focus", () => {
@@ -7887,7 +7882,7 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-screenTerminal.addEventListener("click", () => setActivePanel("tv"));
+screenTerminal.addEventListener("click", (event) => { if (event.target === screenTerminal) setActivePanel("tv"); });
 screenTerminal.addEventListener("keydown", (event) => {
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
@@ -7968,10 +7963,11 @@ function init() {
     clickObject: (panel) => setActivePanel(panel),
     summonJarvis: () => setActivePanel("phone"),
   };
+  mountSovereign({ product: "Velez Swing", open: setActivePanel, close: closePanel, buildHotspots, position: positionRoomElements, setTheme: applyRoomTheme, state: () => dashboardState, openProConsole });
   window.__deskReady = true;
   window.__deskVersion = APP_BUILD;
 
-  applyRoomTheme(roomTheme);
+  applyRoomTheme(roomSnapshot().theme);
   updateWorkflowChrome();
   positionRoomElements();
   loadTradingViewWidget();
@@ -7986,3 +7982,18 @@ function init() {
 }
 
 init();
+
+    let sovereignMusicBaseVolume = null;
+ document.addEventListener("desk:winston-speaking", event => {
+   const music = musicInstance();
+   if (!music) return;
+   try {
+     if (event.detail?.speaking && sovereignMusicBaseVolume === null) {
+       sovereignMusicBaseVolume = Number(music.volume ?? 1);
+       music.volume = sovereignMusicBaseVolume * 0.18;
+     } else if (!event.detail?.speaking && sovereignMusicBaseVolume !== null) {
+       music.volume = sovereignMusicBaseVolume;
+       sovereignMusicBaseVolume = null;
+     }
+   } catch (_) { /* The player may be disconnected during sign-out. */ }
+ });

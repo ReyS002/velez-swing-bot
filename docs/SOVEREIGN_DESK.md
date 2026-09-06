@@ -1,0 +1,30 @@
+# Sovereign Desk
+
+Production code is under bot/. The edition keeps its own trading engine, account permissions and handlers. The room shell, artwork, and Broadcast code must remain identical in Bull Pilot, Velez Bot, and Velez Swing.
+
+Five calibrated rooms each have two lighting plates. Geometry is defined in bot/static/dashboard/sovereign-room.js as percentages of a 1672×941 plate and uses a shared contain-fit viewport calculation. Desktop charts use the existing TradingView widget; expansion is available on desktop and mobile. Chart bookmarks do not claim to be captured chart pixels.
+
+## Room controls
+
+- Glass handset → Winston. Opening it never starts a call. Start Call is explicit inside the panel.
+- Smaller pocket player → existing Apple Music connection and playback controls.
+- Journal → trades; related tab → Bull Report and notes.
+- Session Brief → mission, calendar, sessions, conditions; Watchlist opens Command.
+- Keyboard and trackpad → Command.
+- Lamp → Bull Matrix and risk controls. Lighting is in the header.
+- Approval drawer → approvals, vault and service status.
+- Bookshelf → strategy library. Bull statue → Bull Report and notes.
+- Tools → all original panels, including Research lab, Account, and Velez Pro Console.
+- Broadcast → one player retained between rooms; left wall in scenic rooms, upper wide wall screen in Executive. Hidden-tab playback pauses. Winston speech lowers both player volumes and restores the user's selected volume afterward.
+
+## Read-only presentation configuration
+
+GET /api/desk/config exposes product, broker provider, account mode and access tier, with no credentials. GET /api/broadcast/config describes explicit media assignment. These routes use the existing dashboard authentication middleware.
+
+DESK_BROADCAST_ENABLED controls availability, with the existing BULLPILOT_BROADCAST_ENABLED honored as fallback. DESK_BROADCAST_YOUTUBE_VIDEO_ID, DESK_BROADCAST_YOUTUBE_CHANNEL_URL, or DESK_BROADCAST_VIDEO_URL assign media. Unassigned workspaces display the bundled preview with a PREVIEW label; no live-channel claim is made. Market feeds use the existing DENDRIX_BROADCAST_FEED_URL/TOKEN or available Alpaca data connection, with explicit unavailable values for uncovered instruments.
+
+Apple Music subscriber authorization and broker OAuth remain private user sessions. The room redesign does not replace those credentials, activate trading, authorize orders, or invent unavailable market data. Winston is the existing assistant, not a public telephone service.
+
+## Verification
+
+Bull Pilot: npm run test:e2e and the Python suite. Velez: npm run test:visual and the Python suite. Visual baselines are generated in the pinned Playwright Linux container used by CI. Shared-shell edits should be verified against all five rooms, both lighting modes, mobile navigation, original feature panels, and Broadcast playback continuity.

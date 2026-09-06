@@ -258,6 +258,9 @@ const fixtures = {
   },
 };
 
+fixtures["/api/desk/config"]={product:"Velez Bot",broker_provider:"alpaca",authenticated:true,tier:"Pro"};
+fixtures["/api/broadcast/config"]={enabled:true,preview:true};
+fixtures["/api/broadcast/market"]={ok:false,items:[],reason:"market_feed_unavailable"};
 const iconStub = `
   window.lucide = {
     createIcons() {
@@ -356,6 +359,7 @@ async function openDashboard(page, viewport) {
       .visual-chart-fixture svg { width: 100%; height: 100%; }
     `,
   });
+  await page.waitForFunction(()=>Boolean(document.body.dataset.roomAsset));
   return pageErrors;
 }
 
@@ -390,84 +394,32 @@ async function capture(page, name, pageErrors) {
 const desktop = { width: 1440, height: 900 };
 const mobile = { width: 390, height: 844 };
 
-test("desktop Room — night", async ({ page }) => {
-  const errors = await openDashboard(page, desktop);
-  await expect(page.locator("body")).toHaveClass(/room-clear/);
-  await capture(page, "desktop-room-night.png", errors);
-});
-
-test("desktop Desk — night", async ({ page }) => {
-  const errors = await openDashboard(page, desktop);
-  await page.locator('.workflow-button[data-workflow="desk"]').click();
-  await expect(page.locator("body")).not.toHaveClass(/room-clear/);
-  await installChartFixture(page, "#tradingview-screen");
-  await expect(page.locator("body")).toHaveAttribute("data-room-theme", "night");
-  await capture(page, "desktop-desk-night.png", errors);
-});
-
-test("desktop Desk — day", async ({ page }) => {
-  const errors = await openDashboard(page, desktop);
-  await page.locator('.workflow-button[data-workflow="desk"]').click();
-  await page.evaluate(() => window.__deskDebug.setTheme("day"));
-  await installChartFixture(page, "#tradingview-screen");
-  await expect(page.locator("body")).toHaveAttribute("data-room-theme", "day");
-  await capture(page, "desktop-desk-day.png", errors);
-});
-
-test("desktop Review workspace — night", async ({ page }) => {
-  const errors = await openDashboard(page, desktop);
-  await page.locator('.workflow-button[data-workflow="review"]').click();
-  await expect(page.locator("body")).toHaveAttribute("data-workflow", "review");
-  await expect(page.locator("#detail-panel")).toHaveAttribute("aria-hidden", "false");
-  await expect(page.locator("#panel-title")).toHaveText("Trade Journal");
-  await capture(page, "desktop-review-night.png", errors);
-});
-
-test("desktop Pro Console — night", async ({ page }) => {
-  const errors = await openDashboard(page, desktop);
-  await page.evaluate(() => window.__deskDebug.openProConsole());
-  await expect(page.locator("#pro-console")).toHaveAttribute("aria-hidden", "false");
-  await installChartFixture(page, "#pro-tradingview-screen");
-  await capture(page, "desktop-pro-console-night.png", errors);
-});
-
-test("mobile Room — night", async ({ page }) => {
-  const errors = await openDashboard(page, mobile);
-  await expect(page.locator("body")).toHaveClass(/room-clear/);
-  await expect(page.locator("#mobile-desk-view")).not.toBeVisible();
-  await capture(page, "mobile-room-night.png", errors);
-});
-
-test("mobile Desk — night", async ({ page }) => {
-  const errors = await openDashboard(page, mobile);
-  await page.locator('.workflow-button[data-workflow="desk"]').click();
-  await expect(page.locator("body")).not.toHaveClass(/room-clear/);
-  await expect(page.locator("#mobile-desk-view")).toBeVisible();
-  await capture(page, "mobile-desk-night.png", errors);
-});
-
-test("mobile Desk — day", async ({ page }) => {
-  const errors = await openDashboard(page, mobile);
-  await page.locator('.workflow-button[data-workflow="desk"]').click();
-  await page.evaluate(() => window.__deskDebug.setTheme("day"));
-  await expect(page.locator("body")).toHaveAttribute("data-room-theme", "day");
-  await capture(page, "mobile-desk-day.png", errors);
-});
-
-test("mobile Trade workspace — night", async ({ page }) => {
-  const errors = await openDashboard(page, mobile);
-  await page.locator('.workflow-button[data-workflow="trade"]').click();
-  await expect(page.locator("body")).toHaveAttribute("data-workflow", "trade");
-  await expect(page.locator("#mobile-trade-view")).toBeVisible();
-  await installChartFixture(page, "#mobile-tradingview-screen");
-  await capture(page, "mobile-trade-night.png", errors);
-});
-
-test("mobile Review workspace — night", async ({ page }) => {
-  const errors = await openDashboard(page, mobile);
-  await page.locator('.workflow-button[data-workflow="review"]').click();
-  await expect(page.locator("body")).toHaveAttribute("data-workflow", "review");
-  await expect(page.locator("#detail-panel")).toHaveAttribute("aria-hidden", "false");
-  await expect(page.locator("#panel-title")).toHaveText("Trade Journal");
-  await capture(page, "mobile-review-night.png", errors);
+for(const room of ["media","pacific","tokyo","manhattan","dubai"]){
+ for(const theme of ["night","day"]){
+  test(room+" — "+theme,async({page})=>{
+   const errors=await openDashboard(page,desktop);
+   await page.locator("#sovereign-room-select").selectOption(room);
+   await page.evaluate(theme=>window.__deskDebug.setTheme(theme),theme);
+   await page.waitForFunction(()=>document.body.dataset.roomAsset?.includes(document.body.dataset.environment==="media"?"executive":document.body.dataset.environment==="pacific"?"hawaii":document.body.dataset.environment));
+   await installChartFixture(page,"#tradingview-screen");
+   await capture(page,room+"-"+theme+".png",errors);
+  });
+ }
+}
+for(const [id,label] of [["laptop","Command"],["journal","Trade journal"],["drawer","Research lab"],["account","Account & access"]]){
+ test("mobile "+label,async({page})=>{
+  const errors=await openDashboard(page,mobile);
+  await page.locator('.sovereign-dock [data-desk-action="tools"]').click();
+  await page.locator('#sovereign-tools [data-desk-action="'+id+'"]').click();
+  await expect(page.locator("#panel-title")).toHaveText(label);
+  await capture(page,"mobile-"+id+".png",errors);
+ });
+}
+test("desktop Pro Console remains available",async({page})=>{
+ const errors=await openDashboard(page,desktop);
+ await page.locator('.sovereign-dock [data-desk-action="tools"]').click();
+ await page.locator('#sovereign-tools [data-desk-action="pro-console"]').click();
+ await expect(page.locator("#pro-console")).toHaveAttribute("aria-hidden","false");
+ await installChartFixture(page,"#pro-tradingview-screen");
+ await capture(page,"desktop-pro-console-night.png",errors);
 });
