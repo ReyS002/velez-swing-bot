@@ -4,6 +4,8 @@ import hashlib
 import io
 import json
 from .broadcast_market import BroadcastMarketService
+from .desk_brief import DeskBriefService, brief_owner
+from .desk_workspace import broker_provider as desk_broker_provider
 from .desk_workspace import broadcast_config as desk_broadcast_config, workspace_config
 import os
 import re
@@ -4387,8 +4389,9 @@ class TradingViewWebhookEngine:
         risk = state.get("risk", {})
         pnl = calendar.get("pnl", {})
         session = calendar.get("session", {})
-        events = calendar.get("events", [])[:4]
-        earnings = calendar.get("earnings", [])[:4]
+        today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+        events = [item for item in calendar.get("events", []) if str(item.get("date", "")) >= today][:4]
+        earnings = [item for item in calendar.get("earnings", []) if str(item.get("date", "")) >= today][:4]
         pending = state.get("pending_approvals", [])
         event_text = "No high-priority macro events are loaded."
         if events:
@@ -4431,6 +4434,8 @@ class TradingViewWebhookEngine:
             "ok": True,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "voice_summary": " ".join(brief_lines),
+            "execution_armed": state.get("execution_armed", False),
+            "broker": state.get("broker", {}),
             "lines": brief_lines,
             "readiness": health,
             "sections": {
@@ -4450,6 +4455,8 @@ class TradingViewWebhookEngine:
             "risk": risk,
             "calendar": {
                 "range": calendar.get("range", {}),
+                "sources": calendar.get("sources", {}),
+                "timestamp": calendar.get("timestamp"),
                 "pnl": pnl,
                 "session": session,
                 "events": events,
@@ -11255,16 +11262,19 @@ def create_app(config: dict):
     async def lifespan(_app: FastAPI):
         engine.start_scanner()
         engine.start_operations_worker()
+        engine.calendar.earnings_cache.start()
         try:
             yield
         finally:
             engine.stop_operations_worker()
+            engine.calendar.earnings_cache.stop()
             engine.stop_scanner_worker()
 
     app = FastAPI(title="Trading Bull Desk Webhook", version="0.1.0", lifespan=lifespan)
     app.state.engine = engine
     app.state.apple_music = AppleMusicTokenService()
     app.state.broadcast_market = BroadcastMarketService(engine.broker)
+    app.state.desk_brief = DeskBriefService(engine.daily_brief_payload, app.state.broadcast_market.payload, engine.winston, product="Velez Swing", provider=lambda: desk_broker_provider(engine.broker))
     dashboard_dir = Path(__file__).resolve().parent / "static" / "dashboard"
     dashboard_index = dashboard_dir / "index.html"
     mutation_limiter = _MutationRateLimiter(
@@ -11363,8 +11373,24 @@ def create_app(config: dict):
         return JSONResponse(content=workspace_config(request, engine.broker, product="Velez Swing"), headers={"Cache-Control": "no-store"})
 
     @app.get("/api/broadcast/config")
-    async def broadcast_config() -> JSONResponse:
-        return JSONResponse(content=desk_broadcast_config(), headers={"Cache-Control": "no-store"})
+    async def broadcast_config(request: Request) -> JSONResponse:
+        config = desk_broadcast_config()
+        config["storage_scope"] = brief_owner(request)[:16]
+        return JSONResponse(content=config, headers={"Cache-Control": "private, no-store", "Vary": "Authorization, Cookie"})
+
+    @app.get("/api/broadcast/brief")
+    async def broadcast_brief(request: Request) -> JSONResponse:
+        result = await run_in_threadpool(app.state.desk_brief.create, brief_owner(request))
+        return JSONResponse(content=result, headers={"Cache-Control": "private, no-store", "Vary": "Authorization, Cookie"})
+
+    @app.post("/api/broadcast/brief/ask")
+    async def broadcast_brief_ask(request: Request) -> JSONResponse:
+        try:
+            payload = await _payload_from_request(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        result = await run_in_threadpool(app.state.desk_brief.ask, brief_owner(request), str(payload.get("brief_id", "")), str(payload.get("question", "")))
+        return JSONResponse(content=result, status_code=200 if result.get("ok") else 404, headers={"Cache-Control": "private, no-store", "Vary": "Authorization, Cookie"})
 
     @app.get("/api/broadcast/market")
     async def broadcast_market(refresh: bool = Query(False)) -> JSONResponse:

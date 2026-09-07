@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from .earnings_cache import EarningsCalendarCache
+
 
 MONTHS = {
     "january": 1,
@@ -110,6 +112,8 @@ class CalendarFeedService:
         self.lookahead_days = _int_env("CALENDAR_EVENT_LOOKAHEAD_DAYS", 45)
         self.tz = _zone(str(config.get("timezone", "America/New_York")))
         self._cache: Dict[str, tuple[float, Any]] = {}
+        self.earnings_cache = EarningsCalendarCache()
+        self.position_symbols_status = "not_checked"
 
     def month_payload(self) -> dict:
         now = self.now_fn()
@@ -365,51 +369,11 @@ class CalendarFeedService:
         }
 
     def _earnings(self, start: date, end: date) -> dict:
-        key = _first_env(("ALPHA_VANTAGE_API_KEY", "ALPHAVANTAGE_API_KEY", "AV_API_KEY", "ALPHA_VINTAGE_API_KEY"))
         symbols = self._equity_symbols()
-        source = {
-            "name": "Alpha Vantage Earnings Calendar",
-            "configured": bool(key),
-            "ok": False,
-            "symbols": symbols,
-        }
-        if not key:
-            source["reason"] = "missing_api_key"
-            return {"items": [], "source": source}
-        if not symbols:
-            source["ok"] = True
-            source["reason"] = "no_equity_symbols"
-            return {"items": [], "source": source}
-
-        cache_key = f"alpha_earnings:{start.isoformat()}:{end.isoformat()}:{','.join(symbols)}"
-        cached = self._cache_get(cache_key)
-        if cached is not None:
-            return cached
-
-        items: List[dict] = []
-        errors: List[str] = []
-        for symbol in symbols:
-            try:
-                response = requests.get(
-                    "https://www.alphavantage.co/query",
-                    params={"function": "EARNINGS_CALENDAR", "symbol": symbol, "horizon": "3month", "apikey": key},
-                    timeout=self.timeout,
-                )
-                if response.status_code >= 400:
-                    errors.append(f"{symbol}:http_{response.status_code}")
-                    continue
-                items.extend(self._parse_alpha_earnings(symbol, response.text, start, end))
-            except requests.RequestException as exc:
-                errors.append(f"{symbol}:{exc}")
-
-        items = self._dedupe_events(items, ("date", "symbol", "title"))[:24]
-        source["ok"] = bool(items) or not errors
-        source["count"] = len(items)
-        if errors:
-            source["errors"] = errors[:5]
-        result = {"items": items, "source": source}
-        self._cache_set(cache_key, result)
-        return result
+        cached = self.earnings_cache.payload()
+        items = [item for item in cached["items"] if item["symbol"] in symbols and start.isoformat() <= item["date"] <= end.isoformat()]
+        source = {**cached["source"], "symbols": symbols, "count": len(items), "position_symbols_status": self.position_symbols_status}
+        return {"items": items, "source": source}
 
     def _macro_events(self, start: date, end: date) -> dict:
         if not _bool_env("CALENDAR_MACRO_FEEDS_ENABLED", True):
@@ -660,16 +624,30 @@ class CalendarFeedService:
         }
 
     def _equity_symbols(self) -> List[str]:
-        symbols: List[str] = []
+        symbols = set()
+        def add(symbol):
+            value = str(symbol or "").strip().upper()
+            if re.fullmatch(r"[A-Z][A-Z0-9.-]{0,19}", value):
+                symbols.add(value)
         for item in self.config.get("symbols", []):
-            symbol = str(item.get("symbol", "")).strip().upper()
-            asset_type = str(item.get("type", "equity")).lower()
-            if not symbol or asset_type not in {"equity", "stock", "stocks"}:
-                continue
-            if any(char in symbol for char in (":", "/", "-", ".")):
-                continue
-            symbols.append(symbol)
-        return sorted(set(symbols))[:12]
+            if str(item.get("type", "equity")).lower() in {"equity", "stock", "stocks", "etf", "us_equity"}:
+                add(item.get("symbol"))
+        self.position_symbols_status = "unavailable"
+        if self._broker_configured():
+            getter = getattr(self.broker, "get_positions_raw", None) or getattr(self.broker, "get_positions", None)
+            if callable(getter):
+                try:
+                    for position in getter() or []:
+                        if isinstance(position, dict):
+                            kind = str(position.get("asset_class") or position.get("type") or "equity").lower()
+                            if kind in {"equity", "stock", "stocks", "etf", "us_equity"}:
+                                add(position.get("symbol"))
+                        else:
+                            add(getattr(position, "symbol", ""))
+                    self.position_symbols_status = "ready"
+                except Exception:
+                    self.position_symbols_status = "unavailable"
+        return sorted(symbols)
 
     def _broker_configured(self) -> bool:
         checker = getattr(self.broker, "is_configured", None)

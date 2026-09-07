@@ -26,6 +26,7 @@ def workspace_config(request, broker, *, product: str) -> dict:
 
 
 def broadcast_config() -> dict:
+    from .broadcast_channels import channel_catalog
     enabled = os.getenv("DESK_BROADCAST_ENABLED", os.getenv("BULLPILOT_BROADCAST_ENABLED", "true")).lower() in {"true", "1", "yes", "on"}
     video_id = os.getenv("DESK_BROADCAST_YOUTUBE_VIDEO_ID", "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
@@ -39,4 +40,7 @@ def broadcast_config() -> dict:
     parsed_channel = urlparse(channel)
     if parsed_channel.scheme != "https" or parsed_channel.hostname not in {"youtube.com", "www.youtube.com"}:
         channel = ""
-    return {"enabled": enabled, "youtube_video_id": video_id, "video_url": video_url, "youtube_channel_url": channel, "preview": not bool(video_id or video_url)}
+    channels = channel_catalog()
+    if video_id or video_url:
+        channels.insert(0, {"id": "assigned", "label": "Assigned broadcast", "kind": "replay", "youtube_video_id": video_id, "video_url": video_url, "youtube_channel_url": channel})
+    return {"enabled": enabled, "youtube_video_id": video_id, "video_url": video_url, "youtube_channel_url": channel, "preview": not bool(video_id or video_url), "channels": channels, "default_channel": channels[0]["id"]}

@@ -40,8 +40,9 @@ def config():
     }
 
 
-def test_calendar_payload_wires_alpaca_alerts_earnings_and_macro(monkeypatch):
+def test_calendar_payload_wires_alpaca_alerts_earnings_and_macro(monkeypatch, tmp_path):
     monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "demo-key")
+    monkeypatch.setenv("DESK_EARNINGS_CACHE_PATH", str(tmp_path / "earnings.json"))
     monkeypatch.setenv("CALENDAR_MACRO_FEEDS_ENABLED", "true")
 
     def fake_get(url, params=None, timeout=None, headers=None):
@@ -80,6 +81,7 @@ def test_calendar_payload_wires_alpaca_alerts_earnings_and_macro(monkeypatch):
         now_fn=lambda: datetime(2026, 5, 28, 15, 0, tzinfo=timezone.utc),
     )
 
+    service.earnings_cache.refresh()
     payload = service.month_payload()
 
     assert payload["pnl"]["month_pl"] == 1250.5

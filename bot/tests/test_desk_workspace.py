@@ -9,7 +9,10 @@ def test_video_configuration_is_explicit_and_never_exposes_credentials(monkeypat
     monkeypatch.setenv("DESK_BROADCAST_VIDEO_URL", "javascript:alert(1)")
     monkeypatch.setenv("DESK_BROADCAST_YOUTUBE_VIDEO_ID", "invalid-id")
     monkeypatch.setenv("DESK_BROADCAST_YOUTUBE_CHANNEL_URL", "https://untrusted.example/channel")
-    assert broadcast_config() == {"enabled": True, "preview": True, "video_url": "", "youtube_video_id": "", "youtube_channel_url": ""}
+    value = broadcast_config()
+    assert {key: value[key] for key in ("enabled", "preview", "video_url", "youtube_video_id", "youtube_channel_url")} == {"enabled": True, "preview": True, "video_url": "", "youtube_video_id": "", "youtube_channel_url": ""}
+    assert value["default_channel"] == "bloomberg"
+    assert next(c for c in value["channels"] if c["id"] == "academy")["kind"] == "coming-soon"
     monkeypatch.setenv("DESK_BROADCAST_VIDEO_URL", "https://media.example/briefing.mp4")
     assert broadcast_config()["preview"] is False
     monkeypatch.setenv("DESK_BROADCAST_ENABLED", "false")
