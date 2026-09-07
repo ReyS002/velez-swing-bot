@@ -7997,3 +7997,11 @@ init();
      }
    } catch (_) { /* The player may be disconnected during sign-out. */ }
  });
+
+// Explicit audio handoff prevents phone recognition or narration overlapping a brief.
+document.addEventListener("desk:brief-playback-start", () => {
+  if (winstonState.callActive || winstonState.speaking || winstonState.listening) {
+    winstonState.callActive = false;
+    endWinstonCall();
+  }
+});

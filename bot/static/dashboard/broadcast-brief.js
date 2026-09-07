@@ -65,6 +65,7 @@ export function createBriefView(root, onPlayback) {
   }
   async function play(){
     if(busy)return;
+    document.dispatchEvent(new CustomEvent("desk:brief-playback-start"));
     if(!snapshot){await prepare();if(!snapshot)return;}
     if(mode==='read')setMode('listen',false);
     if(audio?.paused&&!audio.ended&&active>=0){try{await audio.play();}catch{status('Press Listen to resume narration.');}return;}

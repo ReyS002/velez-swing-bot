@@ -1,6 +1,6 @@
 // One Broadcast player follows the room's own calibrated wall surface.
 import {broadcastCorners, roomSnapshot} from "./sovereign-room.js?v=1.1.0";
-import {createBriefView} from "./broadcast-brief.js?v=1.2.0";
+import {createBriefView} from "./broadcast-brief.js?v=1.2.1";
 const $ = selector => document.querySelector(selector);
 const state = {enabled:false, expanded:false, playing:false, muted:false, volume:0.6, ducked:false, provider:"native", youtube:null, youtubeReady:false, lastFocus:null, config:{}};
 const tickerLinks = {
@@ -170,6 +170,7 @@ async function market() {
       const change=(item.change_percent==null?NaN:Number(item.change_percent));
       return `<a href="${tickerLinks[item.symbol]}" target="_blank" rel="noopener noreferrer" title="${escape([item.instrument_label||item.symbol,item.source||"Unavailable",item.freshness||item.status,item.as_of||"No update time"].join(" · "))}" aria-label="Open ${escape(item.symbol)} market details in a new tab"><b>${escape(item.symbol==='GLD'?'GLD ETF':item.symbol||item.label)}</b> ${Number.isFinite(value)?value.toLocaleString(undefined,{maximumFractionDigits:2}):"—"}${item.stale?" (stale)":item.delayed?" (delayed)":""} <em class="${change<0?"negative":"positive"}">${Number.isFinite(change)?`${change>0?"+":""}${change.toFixed(2)}%`:""}</em></a>`;
     }).join("");
+    if(data.market_status==="closed")$("#broadcast-market-status").textContent+=" · Equities closed";
     const updated=data.as_of||data.updated_at||data.timestamp;
     if(updated)$("#broadcast-market-status").textContent+=` · ${new Date(updated).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}`;
   }catch{$("#broadcast-market-status").textContent="Market feed unavailable";$("#bull-tape").innerHTML="<span>Unable to refresh market data</span>";}

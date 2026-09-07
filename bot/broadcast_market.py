@@ -178,6 +178,9 @@ class BroadcastMarketService:
         response.raise_for_status()
         raw = response.json()
         items = self._normalize_external_items(raw.get("items") if isinstance(raw, dict) else [])
+        if isinstance(raw, dict) and raw.get("delayed"):
+            for item in items:
+                item["delayed"] = True
         return {
             "ok": any(item["status"] == "available" for item in items),
             "source": str(raw.get("source") or "Dendrix shared feed")[:80] if isinstance(raw, dict) else "Dendrix shared feed",
