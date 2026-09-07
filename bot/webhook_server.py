@@ -173,7 +173,7 @@ def _set_dashboard_security_headers(response: Response) -> Response:
         "script-src 'self' 'unsafe-inline' https://unpkg.com https://s3.tradingview.com https://js-cdn.music.apple.com https://www.youtube.com https://s.ytimg.com; "
         "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; "
         "font-src 'self' data:; media-src 'self' data: blob: https:; "
-        "connect-src 'self' https://*.tradingview.com https://api.music.apple.com https://amp-api.music.apple.com https://play.itunes.apple.com; "
+        "connect-src 'self' https://*.tradingview.com https://*.music.apple.com https://*.itunes.apple.com https://*.mzstatic.com; "
         "frame-src https://s.tradingview.com https://*.tradingview.com https://www.tradingview.com https://www.tradingview-widget.com https://www.youtube-nocookie.com https://www.youtube.com; "
         "object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
     )

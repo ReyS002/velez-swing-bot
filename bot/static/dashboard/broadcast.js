@@ -1,5 +1,5 @@
 // One Broadcast player follows the room's own calibrated wall surface.
-import {broadcastCorners, roomSnapshot} from "./sovereign-room.js?v=1.1.0";
+import {broadcastCorners, roomSnapshot} from "./sovereign-room.js?v=1.1.1";
 import {createBriefView} from "./broadcast-brief.js?v=1.2.2";
 const $ = selector => document.querySelector(selector);
 const state = {enabled:false, expanded:false, playing:false, muted:false, volume:0.6, ducked:false, provider:"native", youtube:null, youtubeReady:false, lastFocus:null, config:{}};
@@ -85,10 +85,12 @@ function volume() {
 }
 function fitYoutube(){
   const iframe=$("#broadcast-youtube");if(iframe?.tagName!=="IFRAME")return;
-  const box=$(".broadcast-picture").getBoundingClientRect();
   const parent=$(".broadcast-picture"),w=parent.clientWidth,h=parent.clientHeight;
-  const logicalW=Math.max(480,w),logicalH=Math.max(270,h);
-  Object.assign(iframe.style,{width:logicalW+"px",height:logicalH+"px",transform:`scale(${w/logicalW},${h/logicalH})`,transformOrigin:"0 0"});
+  if(!w||!h)return;
+  // Meet YouTube's minimum viewport with one scale on both axes. Its player
+  // then fits the source video naturally, without stretching faces or captions.
+  const scale=Math.min(1,w/480,h/270);
+  Object.assign(iframe.style,{width:(w/scale)+"px",height:(h/scale)+"px",transform:`scale(${scale})`,transformOrigin:"0 0"});
 }
 async function youtubePlayer() {
   if(state.youtubeReady)return state.youtube;

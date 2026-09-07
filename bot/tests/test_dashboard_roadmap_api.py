@@ -184,6 +184,12 @@ def test_dashboard_auth_and_security_headers_cover_new_private_routes(monkeypatc
     assert authenticated.headers["x-content-type-options"] == "nosniff"
     assert "frame-ancestors 'none'" in authenticated.headers["content-security-policy"]
     assert "https://www.tradingview-widget.com" in authenticated.headers["content-security-policy"]
+    policy = authenticated.headers["content-security-policy"]
+    connect = next(part.strip() for part in policy.split(";") if part.strip().startswith("connect-src "))
+    for apple_host in ["https://*.music.apple.com", "https://*.itunes.apple.com", "https://*.mzstatic.com"]:
+        assert apple_host in connect.split()
+    assert "https:" not in connect.split() and "*" not in connect.split()
+    assert "object-src 'none'" in policy and "frame-ancestors 'none'" in policy
 
 
 def test_market_playbook_annotations_missed_and_discipline_empty_states_are_honest():

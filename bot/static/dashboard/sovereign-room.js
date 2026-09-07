@@ -1,9 +1,9 @@
 // Shared Sovereign room shell. Keep byte-identical across bot editions.
-export const SOVEREIGN_VERSION = "1.1.0";
+export const SOVEREIGN_VERSION = "1.1.1";
 const ASSETS = "/dashboard/assets/sovereign/";
 const percent = ([x, y, w, h]) => ({ x: x / 100, y: y / 100, w: w / 100, h: h / 100 });
 export const ROOMS = {
-  media: { name: "Executive", modes: { night: "Cinema", day: "Focus" }, defaultTheme: "night", images: { night: "executive-cinema-clean.png", day: "executive-focus-clean.png" }, screen: [37.25,45.55,25.1,18.1], broadcast: [33.8,19.3,31.4,20.7], objects: { phone:[19.6,65.8,9.7,15.8],music:[32.5,66.8,4.6,11.7],journal:[68.8,76.4,10.8,8.7],keyboard:[38.5,74.6,19.2,6],trackpad:[58.6,75.6,5.9,4.8],lamp:[12,48,15,25],mission:[69.65,59.3,6.45,10.6],notes:[78.5,61,12,14],safe:[75.8,90.5,14,4.5],bookshelf:[8,15,7,36] } },
+  media: { name: "Executive", modes: { night: "Cinema", day: "Focus" }, defaultTheme: "night", images: { night: "executive-cinema-clean.png", day: "executive-focus-clean.png" }, screen: [37.25,45.55,25.1,18.1], broadcast: [31.699,15.409,36.603,27.843], objects: { phone:[19.6,65.8,9.7,15.8],music:[32.5,66.8,4.6,11.7],journal:[68.8,76.4,10.8,8.7],keyboard:[38.5,74.6,19.2,6],trackpad:[58.6,75.6,5.9,4.8],lamp:[12,48,15,25],mission:[69.65,59.3,6.45,10.6],notes:[78.5,61,12,14],safe:[75.8,90.5,14,4.5],bookshelf:[8,15,7,36] } },
   pacific: { name: "Hawaii", modes: { night: "Sunset", day: "Day" }, defaultTheme: "night", images: { night: "hawaii-sunset-clean.png", day: "hawaii-day-clean.png" }, screen: [33.7,40.65,27.2,20.65], broadcast: [4.8,21.6,11.6,25.5], objects: {phone:[13.5,67.5,11.6,17],music:[27,66.8,4.6,10.7],journal:[69.5,77,10.1,10.1],keyboard:[32.5,71.5,25,6.5],trackpad:[58.4,72.9,5.9,4.9],lamp:[7,47,16.5,24.5],mission:[70.7,55.9,7,11.5],notes:[81.5,55,11.5,17],safe:[80,94,17,4.4],bookshelf:[18.4,17,7.5,30]} },
   tokyo: { name: "Tokyo", modes: { day: "Clear Day", night: "Blue Hour" }, defaultTheme: "day", images: { day: "tokyo-day-clean.png", night: "tokyo-night-clean.png" }, screen:[36.55,41.6,25.4,19.8], broadcast:[6.7,18.5,10.35,27.6], objects:{phone:[12,66,13.9,17.7],music:[31,65.5,5.4,12.5],journal:[66.9,74.1,10.6,10.4],keyboard:[36.8,72.6,19.5,5.8],trackpad:[57.3,74.1,6.7,4.6],lamp:[8.5,39,19.5,27.5],mission:[69.8,54.8,6.15,12.1],notes:[79.7,56.5,10.5,13.4],safe:[81.5,92,13.7,3.5],bookshelf:[18.8,20,6.5,19]} },
   manhattan: { name:"New York", modes:{night:"Night",day:"Day"}, defaultTheme:"night", images:{night:"manhattan-night-clean.png",day:"manhattan-day-clean.png"},screen:[34.35,41.65,27.4,19.85],broadcast:[4.05,22.1,12.85,24.8],objects:{phone:[13.8,63,10.9,17],music:[27.8,66.3,4.4,11],journal:[69.6,73.6,8.9,9.4],keyboard:[33.3,72.5,24,6.3],trackpad:[58.7,73.3,6.5,4.8],lamp:[7.5,47,15.4,23.5],mission:[70.2,54.35,6.7,11.8],notes:[80.7,55.8,9.2,13.8],safe:[79.7,91.5,10.5,3.7],bookshelf:[19,12,7.1,33]} },
@@ -12,7 +12,7 @@ export const ROOMS = {
 // Clockwise wall-plane corners in the original 1672 × 941 room artwork.
 // Executive faces the viewer; the scenic-room walls recede toward the window.
 const BROADCAST_CORNERS = {
-  media: [[565,182],[1090,182],[1090,377],[565,377]],
+  media: [[530,145],[1142,145],[1142,407],[530,407]],
   pacific: [[75,197],[278,220],[278,432],[75,449]],
   tokyo: [[105,160],[294,197],[294,434],[105,445]],
   manhattan: [[66,193],[289,228],[289,436],[66,450]],
