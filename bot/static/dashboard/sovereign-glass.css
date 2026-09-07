@@ -1,0 +1,178 @@
+/* Shared glass surfaces. Room lighting changes surfaces, never content opacity. */
+body.sovereign {
+  --desk-glass-rgb: 15 19 19;
+  --desk-glass-alpha: .48;
+  --desk-glass-card-alpha: .38;
+  --desk-glass-blur: 5px;
+  --desk-glass-ink: #fff9ed;
+  --desk-glass-muted: #eee4d3;
+  --desk-glass-accent: #f6dca8;
+  --desk-glass-line: rgb(221 193 144 / .38);
+  --desk-glass-control: rgb(17 23 23 / .64);
+  --desk-glass-primary: #ddc18c;
+  --desk-glass-primary-ink: #211b13;
+  --desk-glass-good: #b7f5cc;
+  --desk-glass-bad: #ffcec5;
+  --desk-glass-shadow: 0 16px 48px rgb(0 0 0 / .22);
+  --desk-glass-scheme: dark;
+}
+body.sovereign[data-room-theme="day"] {
+  --desk-glass-rgb: 252 240 216;
+  --desk-glass-alpha: .32;
+  --desk-glass-card-alpha: .44;
+  --desk-glass-blur: 3px;
+  --desk-glass-ink: #211b14;
+  --desk-glass-muted: #30271d;
+  --desk-glass-accent: #493111;
+  --desk-glass-line: rgb(77 53 24 / .42);
+  --desk-glass-control: rgb(252 240 216 / .64);
+  --desk-glass-primary: #2d2921;
+  --desk-glass-primary-ink: #fff5e2;
+  --desk-glass-good: #143c23;
+  --desk-glass-bad: #691e15;
+  --desk-glass-shadow: 0 16px 48px rgb(52 37 16 / .14);
+  --desk-glass-scheme: light;
+}
+
+.sovereign :is(#detail-panel, #sovereign-tools, #pro-console) {
+  --ink: var(--desk-glass-ink);
+  --muted: var(--desk-glass-muted);
+  --dim: var(--desk-glass-muted);
+  --amber: var(--desk-glass-accent);
+  --green: var(--desk-glass-good);
+  --red: var(--desk-glass-bad);
+  --line: var(--desk-glass-line);
+  --panel: rgb(var(--desk-glass-rgb) / var(--desk-glass-card-alpha));
+  --panel-strong: var(--desk-glass-control);
+  --glass: rgb(var(--desk-glass-rgb) / var(--desk-glass-alpha));
+  --glass-strong: var(--desk-glass-control);
+  color: var(--ink);
+  color-scheme: var(--desk-glass-scheme);
+  background: var(--glass) !important;
+  border-color: var(--line) !important;
+  backdrop-filter: blur(var(--desk-glass-blur));
+  -webkit-backdrop-filter: blur(var(--desk-glass-blur));
+  box-shadow: var(--desk-glass-shadow);
+}
+/* Normalize legacy hard-coded day/night colors within the opened surfaces only. */
+.sovereign :is(#detail-panel, #sovereign-tools, #pro-console) :where(*) {
+  color: inherit;
+  border-color: var(--line);
+}
+.sovereign :is(#detail-panel, #sovereign-tools, #pro-console) :is(h1, h2, h3, h4, strong, .value, .row-value, .decision-title, .call-name, .music-title, .music-result-title) {
+  color: var(--ink);
+}
+.sovereign :is(#detail-panel, #sovereign-tools, #pro-console) :is(p, small, label, .label, .sub, .muted, .row-label, .call-status, .decision-summary, .surface-guardrail, .pro-factor, .pro-risk-lines) {
+  color: var(--muted);
+}
+.sovereign :is(#detail-panel, #sovereign-tools, #pro-console) :is(#panel-kicker, .eyebrow, .sample-warning, .pro-badge, .pro-review-state, .pro-console-status .execution) {
+  color: var(--amber);
+}
+.sovereign #detail-panel #panel-body {
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  scrollbar-color: var(--desk-glass-accent) transparent;
+}
+.sovereign #detail-panel #panel-body > p.muted {
+  padding: 12px;
+  border-radius: 9px;
+  background: var(--panel);
+}
+.sovereign :is(#detail-panel, #sovereign-tools, #pro-console) :is(.panel-heading, #sovereign-panel-tabs, .pro-console-header, .pro-console-disclosure) {
+  background: var(--panel);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.sovereign :is(#detail-panel, #sovereign-tools, #pro-console) :is(
+  .metric, .decision, .empty-state, .strategy-card, .object-card, .mood-card,
+  .sticky-line, .heat-chip, .review-line, .receipt-card, .ritual-card,
+  .health-card, .health-component, .replay-event, .timeline-item, .data-list,
+  .mentor-hero, .music-player, .music-result, .call-card, .approval-box,
+  .approval-card, .transcript-line, .tool-section, .decision-surface,
+  .breakdown-details, .formula-details, .playbook-card, .planner-result,
+  .planner-messages article, .rolling-grid article, .missed-grid article,
+  .pro-console-launch, .pro-card, .pro-opportunity, .pro-plan-value,
+  .pro-risk-split > div, .mobile-decision-context
+) {
+  background: var(--panel);
+  border-color: var(--line);
+  border-radius: 9px;
+  box-shadow: inset 0 1px rgb(255 255 255 / .06);
+}
+.sovereign :is(#detail-panel, #sovereign-tools, #pro-console) :is(input:not([type="range"]):not([type="checkbox"]):not([type="radio"]), textarea, select) {
+  color: var(--ink);
+  background: var(--desk-glass-control);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color-scheme: var(--desk-glass-scheme);
+}
+.sovereign :is(#detail-panel, #sovereign-tools, #pro-console) :is(input, textarea)::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+.sovereign :is(#detail-panel, #sovereign-tools, #pro-console) option {
+  background: rgb(var(--desk-glass-rgb));
+  color: var(--ink);
+}
+.sovereign :is(#detail-panel, #sovereign-tools, #pro-console) :is(button, .text-link, .decision-link, .symbol-chip, .badge, .pro-badge, .pro-console-status span) {
+  color: var(--ink);
+  background: var(--desk-glass-control);
+  border-color: var(--line);
+  border-radius: 7px;
+}
+.sovereign :is(#detail-panel, #sovereign-tools, #pro-console) button:not(:disabled):hover {
+  background: rgb(var(--desk-glass-rgb) / .82);
+  border-color: var(--desk-glass-accent);
+}
+.sovereign :is(#detail-panel, #sovereign-tools, #pro-console) :is(.action-button:not(.subtle), .icon-button.primary, .pro-planner-actions .primary, .pro-console-launch button, button[aria-pressed="true"], .symbol-button.active, .pro-symbol-switcher button.active) {
+  color: var(--desk-glass-primary-ink);
+  background: var(--desk-glass-primary);
+  border-color: var(--desk-glass-primary);
+}
+.sovereign :is(#detail-panel, #sovereign-tools, #pro-console) :is(.action-button:not(.subtle), .icon-button.primary, .pro-planner-actions .primary, button[aria-pressed="true"]):not(:disabled):hover {
+  color: var(--desk-glass-primary-ink);
+  background: var(--desk-glass-primary);
+  filter: brightness(1.08);
+}
+.sovereign :is(#detail-panel, #sovereign-tools, #pro-console) :is(.positive, .badge.buy, .pro-safe-state.safe, .good > strong) { color: var(--green); }
+.sovereign :is(#detail-panel, #sovereign-tools, #pro-console) :is(.negative, .badge.sell, .empty-state.attention, .blocked > strong) { color: var(--red); }
+.sovereign :is(#detail-panel, #sovereign-tools, #pro-console) :is(.positive, .negative) :is(strong, span) { color: inherit; }
+.sovereign :is(#detail-panel, #sovereign-tools, #pro-console) :is(button, a, summary, input, select, textarea):focus-visible {
+  outline: 2px solid var(--desk-glass-accent) !important;
+  outline-offset: 3px;
+}
+.sovereign :is(#detail-panel, #sovereign-tools, #pro-console) button:disabled { opacity: .6; cursor: not-allowed; }
+.sovereign #sovereign-tools header { padding: 12px; border-radius: 9px; background: var(--panel); }
+.sovereign #sovereign-tools header :is(small, button) { color: var(--desk-glass-accent); }
+.sovereign #sovereign-tools .sovereign-tools-grid button { background: var(--panel-strong); }
+.sovereign #sovereign-tools .sovereign-tools-grid button span { color: inherit; }
+
+/* Broadcast media and chart pixels stay opaque; only expanded player chrome is glass. */
+.sovereign.broadcast-expanded #broadcast-stage {
+  background: rgb(var(--desk-glass-rgb) / var(--desk-glass-alpha));
+  border-color: var(--desk-glass-line);
+  color: var(--desk-glass-ink);
+  backdrop-filter: blur(var(--desk-glass-blur));
+  -webkit-backdrop-filter: blur(var(--desk-glass-blur));
+}
+.sovereign.broadcast-expanded #broadcast-stage :is(.broadcast-header, .broadcast-controls, .broadcast-tape, .broadcast-footer) {
+  background: rgb(var(--desk-glass-rgb) / var(--desk-glass-card-alpha));
+  border-color: var(--desk-glass-line);
+  color: var(--desk-glass-ink);
+}
+.sovereign.broadcast-expanded #broadcast-stage :is(.broadcast-header strong, .broadcast-header > span, #broadcast-time, .broadcast-tape > small, #bull-tape, #bull-tape b) { color: var(--desk-glass-ink); }
+.sovereign.broadcast-expanded #broadcast-stage .positive { color: var(--desk-glass-good); }
+.sovereign.broadcast-expanded #broadcast-stage .negative { color: var(--desk-glass-bad); }
+.sovereign.broadcast-expanded #broadcast-stage button { color: var(--desk-glass-ink); background: var(--desk-glass-control); border-color: var(--desk-glass-line); }
+.sovereign.broadcast-expanded #broadcast-scrim { background: transparent; }
+
+/* A fallback keeps text readable where the browser cannot frost the scene. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  body.sovereign[data-room-theme] { --desk-glass-alpha: .9; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  body.sovereign[data-room-theme] { --desk-glass-alpha: .96; --desk-glass-card-alpha: .9; --desk-glass-blur: 0px; }
+}
+@media (forced-colors: active) {
+  .sovereign :is(#detail-panel, #sovereign-tools, #pro-console) { background: Canvas !important; color: CanvasText; backdrop-filter: none; }
+}

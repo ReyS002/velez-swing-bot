@@ -32,3 +32,12 @@ Bull Pilot: npm run test:e2e and the Python suite. Velez: npm run test:visual an
 ## Room refinements (1.0.1)
 
 The phone stays grounded without an offset shadow or lift on hover. The pocket player sits farther back beside each room’s keyboard. Broadcast uses calibrated clockwise wall corners, projected with a CSS matrix across the full player and its controls. Opening and returning use a reversible 440 ms transform on the existing player; the video element and playback session are never replaced. The expanded view stays wide and centered. Reduced motion skips the transition; resizing or changing rooms cancels an in-flight movement and uses the current destination. No room artwork or trading configuration changes in this refinement.
+
+
+## Adaptive glass (1.1.0)
+
+All five rooms use clear champagne glass with dark text in day/Focus lighting and smoked glass with ivory text in night/Cinema/Sunset/Blue Hour lighting. The shared surface layer covers every detail panel, related tabs, Tools, Pro Console where available, and expanded Broadcast controls. Charts and video remain opaque. Existing forms, data, actions, and object positions are preserved. The fixed side panel uses one content column so older wide-workflow styles cannot split it into cramped columns.
+
+Panel background opacity is separate from content opacity; lightly frosted panels reveal the room while denser translucent cards protect text. Reduced-transparency preferences request stronger surfaces. Browsers without backdrop-filter use a stronger fallback. Keyboard outlines follow the active glass palette.
+
+The phone keeps its existing raster artwork and size. Its native SVG silhouette now follows the curved base more closely, excluding the baked pale background at the sides and underneath; its existing grounded hover behavior remains.

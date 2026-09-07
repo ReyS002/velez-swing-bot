@@ -403,6 +403,10 @@ for(const room of ["media","pacific","tokyo","manhattan","dubai"]){
    await page.waitForFunction(()=>document.body.dataset.roomAsset?.includes(document.body.dataset.environment==="media"?"executive":document.body.dataset.environment==="pacific"?"hawaii":document.body.dataset.environment));
    await installChartFixture(page,"#tradingview-screen");
    await capture(page,room+"-"+theme+".png",errors);
+   await page.locator('[data-object-id="phone"]').click();
+   await expect(page.locator("#detail-panel")).toHaveCSS("opacity","1");
+   await expect(page.locator("body")).toHaveAttribute("data-glass-treatment",theme==="day"?"champagne":"smoked");
+   await capture(page,room+"-"+theme+"-winston-glass.png",errors);
   });
  }
 }
@@ -422,4 +426,29 @@ test("desktop Pro Console remains available",async({page})=>{
  await expect(page.locator("#pro-console")).toHaveAttribute("aria-hidden","false");
  await installChartFixture(page,"#pro-tradingview-screen");
  await capture(page,"desktop-pro-console-night.png",errors);
+});
+
+for(const theme of ["night","day"]){
+ test("glass Tools — "+theme,async({page})=>{
+  const errors=await openDashboard(page,desktop);
+  await page.evaluate(theme=>window.__deskDebug.setTheme(theme),theme);
+  await page.locator('.sovereign-dock [data-desk-action="tools"]').click();
+  await capture(page,"tools-"+theme+"-glass.png",errors);
+ });
+}
+test("day Pro Console glass preserves the chart",async({page})=>{
+ const errors=await openDashboard(page,desktop);
+ await page.evaluate(()=>window.__deskDebug.setTheme("day"));
+ await page.locator('.sovereign-dock [data-desk-action="tools"]').click();
+ await page.locator('#sovereign-tools [data-desk-action="pro-console"]').click();
+ await expect(page.locator("#pro-console")).toHaveAttribute("aria-hidden","false");
+ await installChartFixture(page,"#pro-tradingview-screen");
+ await capture(page,"desktop-pro-console-day-glass.png",errors);
+});
+test("mobile day Command glass",async({page})=>{
+ const errors=await openDashboard(page,mobile);
+ await page.evaluate(()=>window.__deskDebug.setTheme("day"));
+ await page.locator('.sovereign-dock [data-desk-action="laptop"]').click();
+ await expect(page.locator("#detail-panel")).toHaveCSS("opacity","1");
+ await capture(page,"mobile-command-day-glass.png",errors);
 });

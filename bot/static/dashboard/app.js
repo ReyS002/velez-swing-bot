@@ -1,4 +1,4 @@
-import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.0.1";
+import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.1.0";
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 

@@ -1,5 +1,5 @@
 // Shared Sovereign room shell. Keep byte-identical across bot editions.
-export const SOVEREIGN_VERSION = "1.0.1";
+export const SOVEREIGN_VERSION = "1.1.0";
 const ASSETS = "/dashboard/assets/sovereign/";
 const percent = ([x, y, w, h]) => ({ x: x / 100, y: y / 100, w: w / 100, h: h / 100 });
 export const ROOMS = {
@@ -44,7 +44,7 @@ export function roomRegions() { const r=ROOMS[roomId]; return {screen:percent(r.
 export function roomHotspots() {return Object.entries(ROOMS[roomId].objects).map(([id,rect])=>({id,panel:OBJECTS[id][0],label:OBJECTS[id][1],icon:OBJECTS[id][2],...percent(rect)}));}
 export function objectMarkup(definition) {
   const id=definition.id;
-  if(id==="phone") return `<span class="prop-art phone-art"><svg viewBox="80 145 1100 980" aria-hidden="true"><defs><clipPath id="phone-silhouette"><path d="M84 977 L84 889 L138 784 L154 278 Q160 226 206 221 L809 219 Q857 223 868 273 L875 209 Q882 157 927 152 L1032 150 Q1082 153 1090 197 L1119 802 L1155 888 L1173 981 L1173 1080 Q1170 1114 1127 1115 L122 1111 Q84 1109 84 1065 Z"/></clipPath></defs><image href="${ASSETS}phone-glass.png" width="1254" height="1254" clip-path="url(#phone-silhouette)"/></svg><span class="phone-display"><small>WINSTON</small><strong>Start call</strong><span>Brief · Research</span></span></span><span class="prop-caption">Winston</span>`;
+  if(id==="phone") return `<span class="prop-art phone-art"><svg viewBox="80 145 1100 980" aria-hidden="true"><defs><clipPath id="phone-silhouette"><path d="M86 978 L98 930 L111 881 L133 801 L142 784 L157 278 Q163 230 208 224 L809 222 Q853 225 865 275 L878 210 Q885 160 929 155 L1032 153 Q1078 156 1087 199 L1116 800 L1144 881 L1163 950 L1168 978 L1168 1048 Q1168 1073 1139 1090 Q1128 1103 1109 1108 L149 1108 Q128 1102 116 1088 Q88 1069 87 1048 Z"/></clipPath></defs><image href="${ASSETS}phone-glass.png" width="1254" height="1254" clip-path="url(#phone-silhouette)"/></svg><span class="phone-display"><small>WINSTON</small><strong>Start call</strong><span>Brief · Research</span></span></span><span class="prop-caption">Winston</span>`;
   if(id==="music") return `<span class="prop-art music-art"><svg viewBox="58 46 910 1420" aria-hidden="true"><defs><clipPath id="player-silhouette"><path d="M160 129 Q162 49 235 50 L795 50 Q865 51 866 125 L884 1148 Q926 1160 939 1205 L963 1310 L963 1394 Q963 1447 900 1457 L119 1457 Q61 1447 61 1395 L61 1310 L84 1213 Q95 1171 139 1154 Z"/></clipPath></defs><image href="${ASSETS}pocket-player.png" width="1024" height="1536" clip-path="url(#player-silhouette)"/></svg><span class="music-display"><small>APPLE MUSIC</small><span class="prop-now-playing">Your music</span></span></span><span class="prop-caption">Music</span>`;
   if(id==="journal") return `<span class="prop-art journal-art"><svg viewBox="100 130 1350 768" aria-hidden="true"><defs><clipPath id="journal-silhouette"><path d="M167 243 L901 138 Q935 135 952 150 L1415 620 Q1448 661 1416 672 L1438 720 Q1448 743 1419 752 L518 890 Q487 898 477 878 L124 374 Q84 300 137 260 Z"/></clipPath></defs><image href="${ASSETS}journal.png" width="1536" height="1024" clip-path="url(#journal-silhouette)"/></svg></span><span class="prop-caption">Journal</span>`;
   if(id==="mission") return `<span class="brief-face"><strong>SESSION BRIEF</strong><span>Mission</span><span>Calendar</span><span>Watchlist</span></span>`;
@@ -63,6 +63,7 @@ export function syncRoomTheme(theme) {
   localStorage.setItem("sovereign-room-lighting",JSON.stringify(lighting));
   document.body.dataset.environment=roomId;
   document.body.dataset.roomTheme=lighting[roomId];
+  document.body.dataset.glassTreatment=lighting[roomId]==="day"?"champagne":"smoked";
   const url=ASSETS+ROOMS[roomId].images[lighting[roomId]];
   const plate=$(".photo-room");
   if(plate){const token=++preloadToken;const image=new Image();image.onload=()=>{if(token===preloadToken){plate.style.backgroundImage=`url("${url}")`;document.body.dataset.roomAsset=ROOMS[roomId].images[lighting[roomId]];}};image.onerror=()=>announce("This room image could not load. Try switching rooms again.");image.src=url;}
