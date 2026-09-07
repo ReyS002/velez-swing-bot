@@ -84,14 +84,17 @@ def test_room_regions_keep_realistic_objects_in_all_five_rooms():
     import re
 
     source = (STATIC / "sovereign-room.js").read_text(encoding="utf-8")
-    literal = source.split("export const ROOMS = ", 1)[1].split(";\nexport const PANEL_LABELS", 1)[0]
+    literal = source.split("export const ROOMS = ", 1)[1]
     literal = re.sub(r'([,{]\s*)([A-Za-z_]\w*)\s*:', r'\1"\2":', literal)
-    rooms = json.loads(literal)
+    # Decode the first object without depending on which declaration follows it.
+    rooms, _ = json.JSONDecoder().raw_decode(literal)
     assert set(rooms) == {"media", "pacific", "tokyo", "manhattan", "dubai"}
     for room in rooms.values():
         objects = room["objects"]
         assert objects["phone"][0] < objects["music"][0]
         assert objects["music"][2] < objects["phone"][2]
+        assert objects["music"][0] + objects["music"][2] < objects["keyboard"][0]
+        assert objects["music"][1] + objects["music"][3] < objects["keyboard"][1] + objects["keyboard"][3]
         assert objects["trackpad"][2] < objects["keyboard"][2]
         assert room["screen"][2] < 30
         assert len(objects) == 10
