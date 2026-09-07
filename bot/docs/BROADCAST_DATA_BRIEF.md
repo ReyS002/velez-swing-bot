@@ -2,7 +2,7 @@
 
 The wall Broadcast now opens a channel selector in every room. One player retains the selected channel and audio settings across room changes. Bloomberg, Yahoo Finance and Schwab use verified official YouTube streams. tastylive and Federal Reserve have explicitly labeled replays. Academy remains Coming soon until its owner creates a channel. Playback requires a user gesture; blocked or ended streams provide an official-channel link. YouTube Premium is a personal viewing account, not a server integration credential.
 
-Winston Desk Brief prepares a private, timestamped snapshot using the existing Daily Brief, independent display quotes and shared earnings calendar. Read displays the facts. Listen and Watch brief narrate those same cards through the existing locked Winston voice; cards advance when their audio ends. Ask Winston retains the snapshot for 30 minutes and cannot invoke the execution-command dispatcher. Brief text/audio are kept in browser memory, never local storage. Only public channel/audio preferences persist.
+Winston Desk Brief prepares a private, timestamped snapshot using the existing Daily Brief, independent display quotes and shared earnings calendar. Read displays the facts. Listen and Watch brief narrate those same cards through the existing locked Winston voice; cards advance when their audio ends. Ask Winston retains the snapshot for 30 minutes, uses Winston’s primary brain independently of legacy research-provider settings, and cannot invoke the execution-command dispatcher. Brief text/audio are kept in browser memory, never local storage. Only public channel/audio preferences persist.
 
 ## Runtime settings
 

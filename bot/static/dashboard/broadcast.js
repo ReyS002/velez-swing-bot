@@ -1,6 +1,6 @@
 // One Broadcast player follows the room's own calibrated wall surface.
 import {broadcastCorners, roomSnapshot} from "./sovereign-room.js?v=1.1.0";
-import {createBriefView} from "./broadcast-brief.js?v=1.2.1";
+import {createBriefView} from "./broadcast-brief.js?v=1.2.2";
 const $ = selector => document.querySelector(selector);
 const state = {enabled:false, expanded:false, playing:false, muted:false, volume:0.6, ducked:false, provider:"native", youtube:null, youtubeReady:false, lastFocus:null, config:{}};
 const tickerLinks = {
@@ -103,11 +103,15 @@ async function youtubePlayer() {
         playerVars:{playsinline:1,rel:0,origin:location.origin},
         events:{
           onReady:()=>{clearTimeout(timer);state.youtubeReady=true;fitYoutube();$("#broadcast-youtube").hidden=state.provider!=="youtube";if(selected?.youtube_playlist_id)state.youtube.cuePlaylist({listType:"playlist",list:selected.youtube_playlist_id});volume();resolve(state.youtube);},
-          onStateChange:event=>{if(state.provider!=="youtube")return;state.playing=event.data===1;
+          onStateChange:event=>{if(state.provider!=="youtube")return;
+            const matches=!selected?.youtube_video_id||state.youtube?.getVideoData?.().video_id===selected.youtube_video_id;
+            if(event.data===5&&matches&&state.requestedPlay)state.youtube.playVideo();
+            state.playing=event.data===1&&matches;
+            if(state.playing)state.requestedPlay=false;
             if(event.data===1){$("#broadcast-message").textContent="";playerRevealed=true;}
             if(event.data===0&&selected?.kind==="live"){$("#broadcast-source").textContent="STREAM ENDED";$("#broadcast-message").textContent="This stream has ended. Choose another channel or visit its official page.";}
             chrome();},
-          onError:event=>{clearTimeout(timer);if(state.provider!=="youtube")return;state.playing=false;chrome();$("#broadcast-message").textContent=`This stream cannot play here (${event.data}). Choose another channel or use Visit channel.`;reject(new Error("Video unavailable"));}
+          onError:event=>{state.requestedPlay=false;clearTimeout(timer);if(state.provider!=="youtube")return;state.playing=false;chrome();$("#broadcast-message").textContent=`This stream cannot play here (${event.data}). Choose another channel or use Visit channel.`;reject(new Error("Video unavailable"));}
         }
       });
     }
@@ -126,13 +130,13 @@ async function play() {
     if(state.provider==="brief"){expand();await brief.play();return;}
     if(state.provider==="none"){expand();return;}
     const version=selectionVersion;
-    if(state.provider==="youtube"){playerRevealed=true;chrome();const player=await youtubePlayer();if(version!==selectionVersion)return;player.playVideo();}
+    if(state.provider==="youtube"){state.requestedPlay=true;playerRevealed=true;chrome();const player=await youtubePlayer();if(version!==selectionVersion)return;player.playVideo();}
     else await video.play();
     $("#broadcast-message").textContent="";
   }catch(error){$("#broadcast-message").textContent=error.message||"Playback could not start. Press Play to retry.";}
   chrome();
 }
-function pause(){brief?.pause();video?.pause();state.youtube?.pauseVideo?.();state.playing=false;if(stage)chrome();}
+function pause(){state.requestedPlay=false;brief?.pause();video?.pause();state.youtube?.pauseVideo?.();state.playing=false;if(stage)chrome();}
 function expand(){
   if(!stage||state.expanded)return;
   const from=visibleCorners();cancelSurfaceMotion();
@@ -168,7 +172,7 @@ async function market() {
     $("#bull-tape").innerHTML=items.slice(0,12).map(item=>{
       const value=(item.price==null?NaN:Number(item.price));
       const change=(item.change_percent==null?NaN:Number(item.change_percent));
-      return `<a href="${tickerLinks[item.symbol]}" target="_blank" rel="noopener noreferrer" title="${escape([item.instrument_label||item.symbol,item.source||"Unavailable",item.freshness||item.status,item.as_of||"No update time"].join(" · "))}" aria-label="Open ${escape(item.symbol)} market details in a new tab"><b>${escape(item.symbol==='GLD'?'GLD ETF':item.symbol||item.label)}</b> ${Number.isFinite(value)?value.toLocaleString(undefined,{maximumFractionDigits:2}):"—"}${item.stale?" (stale)":item.delayed?" (delayed)":""} <em class="${change<0?"negative":"positive"}">${Number.isFinite(change)?`${change>0?"+":""}${change.toFixed(2)}%`:""}</em></a>`;
+      return `<a href="${tickerLinks[item.symbol]}" target="_blank" rel="noopener noreferrer" title="${escape([item.instrument_label||item.symbol,item.source||"Unavailable",item.freshness||item.status,item.as_of||"No update time"].join(" · "))}" aria-label="Open ${escape(item.symbol)} market details in a new tab"><b>${escape(item.symbol==='GLD'?'GLD ETF':item.symbol||item.label)}</b> ${Number.isFinite(value)?value.toLocaleString(undefined,{maximumFractionDigits:2}):"—"}${item.price!=null&&item.stale?" (stale)":item.price!=null&&item.delayed?" (delayed)":""} <em class="${change<0?"negative":"positive"}">${Number.isFinite(change)?`${change>0?"+":""}${change.toFixed(2)}%`:""}</em></a>`;
     }).join("");
     if(data.market_status==="closed")$("#broadcast-market-status").textContent+=" · Equities closed";
     const updated=data.as_of||data.updated_at||data.timestamp;
@@ -216,6 +220,7 @@ async function init(){
   let scrim=$("#broadcast-scrim");if(!scrim){scrim=document.createElement("div");scrim.id="broadcast-scrim";scrim.className="broadcast-scrim";$("#app-shell").append(scrim);}scrim.hidden=true;scrim.addEventListener("click",minimize);
   video=$("#broadcast-video");
   new ResizeObserver(fitYoutube).observe($(".broadcast-picture"));
+  $("#broadcast-brief").addEventListener("brief:timeupdate",chrome);
   brief=createBriefView($("#broadcast-brief"),playing=>{if(state.provider==="brief"){state.playing=playing;chrome();}});
   $("#broadcast-select").addEventListener("change",event=>selectChannel(event.target.value));
   video.addEventListener("play",()=>{state.playing=true;chrome();});
@@ -258,7 +263,7 @@ async function init(){
   await selectChannel(state.config.channels.some(c=>c.id===saved.channel)?saved.channel:state.config.default_channel||state.config.channels[0].id);
   if(!state.enabled)$("#broadcast-message").textContent="Broadcast is disabled for this workspace.";
   volume();scheduleMarket();
-  window.__broadcastDebug={state:()=>({enabled:state.enabled,expanded:state.expanded,playing:state.playing,time:state.provider==="youtube"?state.youtube?.getCurrentTime?.():video.currentTime,provider:state.provider,preview:state.config.preview,channel:selected?.id,muted:state.muted,volume:state.volume,environment:roomSnapshot().id}),expand,minimize,play,pause,position:positionStage};
+  window.__broadcastDebug={state:()=>({enabled:state.enabled,expanded:state.expanded,playing:state.playing,time:state.provider==="brief"?brief?.time():state.provider==="youtube"?state.youtube?.getCurrentTime?.():video.currentTime,provider:state.provider,preview:state.config.preview,channel:selected?.id,muted:state.muted,volume:state.volume,environment:roomSnapshot().id}),expand,minimize,play,pause,position:positionStage};
   window.__broadcastReady=true;
 }
 init();

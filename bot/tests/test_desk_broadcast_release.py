@@ -112,7 +112,7 @@ def test_brief_is_factual_broker_aware_and_about_one_minute():
 def test_followup_owner_isolation_expiry_and_saved_snapshot(monkeypatch):
     calls=[]; clock=[1]
     monkeypatch.setattr('bot.desk_brief.time.monotonic',lambda:clock[0])
-    brain=SimpleNamespace(research_reply=lambda q,c,f:(calls.append(c) or {'reply':'Review the saved events.','provider':'test'}))
+    brain=SimpleNamespace(brief_reply=lambda q,c,f:(calls.append(c) or {'reply':'Review the saved events.','provider':'test'}))
     service=DeskBriefService(daily,lambda:{'items':[]},brain,product='Bull Pilot',provider=lambda:'Robinhood')
     brief=service.create('owner-a')
     assert not service.ask('owner-b',brief['id'],'What next?')['ok']
@@ -146,7 +146,7 @@ def test_brief_endpoints_require_auth_and_keep_snapshot_private(monkeypatch,tmp_
     app=create_app({'portfolio':{'initial_cash':100000},'risk':{},'symbols':[],'webhook':{'execute_orders':False},'scanner':{'enabled':False},'mentor_operations':{'enabled':False},'telegram_command_center':{'enabled':False}})
     app.state.desk_brief.daily=daily
     app.state.desk_brief.market=lambda:{'items':[]}
-    app.state.desk_brief.winston=SimpleNamespace(research_reply=lambda q,c,f:f)
+    app.state.desk_brief.winston=SimpleNamespace(brief_reply=lambda q,c,f:f)
     client=TestClient(app)
     assert client.get('/api/broadcast/brief').status_code==401
     client.auth=('operator','test-only-password')
@@ -158,3 +158,25 @@ def test_brief_endpoints_require_auth_and_keep_snapshot_private(monkeypatch,tmp_
     assert ask.status_code==200 and ask.json()['brief_id']==value['id']
     unknown=client.post('/api/broadcast/brief/ask',headers={'Origin':'http://testserver'},json={'brief_id':'unknown','question':'Explain'})
     assert unknown.status_code==404
+
+def test_brief_uses_primary_brain_and_never_refreshes_engine(monkeypatch):
+    from bot.webhook_server import WinstonAIService
+    monkeypatch.setenv('WINSTON_LLM_PROVIDER','openai_compatible')
+    monkeypatch.setenv('WINSTON_LLM_BASE_URL','https://primary.example/v1')
+    monkeypatch.setenv('WINSTON_LLM_MODEL','openai/gpt-oss-20b')
+    monkeypatch.setenv('WINSTON_LLM_API_KEY','test-only')
+    monkeypatch.setenv('WINSTON_RESEARCH_LLM_PROVIDER','gemini')
+    monkeypatch.setenv('WINSTON_RESEARCH_LLM_BASE_URL','https://unrelated.example')
+    calls=[]
+    def post(url,**kwargs):
+        calls.append((url,kwargs))
+        return Response({'choices':[{'message':{'content':'The saved snapshot reports that Robinhood is not ready. Display quotes are independent.'}}]})
+    monkeypatch.setattr('bot.webhook_server.requests.post',post)
+    class NoLiveEngine:
+        def __getattribute__(self,name):raise AssertionError('Live engine read: '+name)
+    result=WinstonAIService(NoLiveEngine()).brief_reply('Is the broker ready?',{'snapshot':{'narration':'Robinhood is not ready. Display quotes are independent.'}},{'reply':'Saved reference'})
+    assert not result['degraded'] and result['provider']=='openai_compatible'
+    assert calls[0][0]=='https://primary.example/v1/chat/completions'
+    assert calls[0][1]['json']['reasoning_effort']=='low'
+    assert 'Saved briefing context' in calls[0][1]['json']['messages'][1]['content']
+    assert 'Robinhood is not ready' in calls[0][1]['json']['messages'][1]['content']

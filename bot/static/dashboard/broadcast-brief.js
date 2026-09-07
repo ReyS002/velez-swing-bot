@@ -1,7 +1,7 @@
 // Private brief content stays in memory. Voice cards advance on actual audio completion.
 export function createBriefView(root, onPlayback) {
   let snapshot=null, audio=null, active=-1, generation=0, controller=null, muted=false, level=.6, mode='read', busy=false;
-  const urls=new Map(), preparing=new Map(), requests=new Set();
+  const urls=new Map(), durations=new Map(), preparing=new Map(), requests=new Set();
   root.innerHTML=`<div class="desk-brief-heading"><div><small>PRIVATE · YOUR DESK</small><h2>Winston Desk Brief</h2></div><button type="button" data-action="refresh">Prepare brief</button></div>
     <p class="desk-brief-status" role="status">A fresh snapshot of your markets, calendar and desk, narrated by Winston.</p>
     <nav class="desk-brief-modes" aria-label="Brief format"><button type="button" data-mode="read" aria-pressed="true">Read</button><button type="button" data-mode="listen" aria-pressed="false">Listen</button><button type="button" data-mode="watch" aria-pressed="false">Watch brief</button></nav>
@@ -9,7 +9,7 @@ export function createBriefView(root, onPlayback) {
   const $=s=>root.querySelector(s), status=text=>$('.desk-brief-status').textContent=text;
   const speaking=value=>{onPlayback(value);document.dispatchEvent(new CustomEvent('desk:winston-speaking',{detail:{speaking:value,source:'broadcast-brief'}}));};
   function pause(){if(busy){generation++;controller?.abort();busy=false;}audio?.pause();speaking(false);}
-  function stop(){generation++;for(const request of requests)request.abort();requests.clear();preparing.clear();controller?.abort();controller=null;busy=false;pause();if(audio){audio.removeAttribute('src');audio.load();audio=null;}for(const url of urls.values())URL.revokeObjectURL(url);urls.clear();active=-1;}
+  function stop(){generation++;for(const request of requests)request.abort();requests.clear();preparing.clear();controller?.abort();controller=null;busy=false;pause();if(audio){audio.removeAttribute('src');audio.load();audio=null;}for(const url of urls.values())URL.revokeObjectURL(url);urls.clear();durations.clear();active=-1;}
   function volume(value,isMuted){level=value;muted=isMuted;if(audio){audio.volume=level;audio.muted=muted;}}
   function highlight(index){root.dataset.mode=mode;root.querySelectorAll('.desk-brief-card').forEach((card,i)=>{card.classList.toggle('active',i===index);card.setAttribute('aria-current',String(i===index));});}
   async function prepare(){
@@ -53,7 +53,9 @@ export function createBriefView(root, onPlayback) {
     try{
       const url=await audioFor(index,mine);
       if(mine!==generation)return;
-      audio=new Audio(url);volume(level,muted);
+      audio=new Audio(url);const currentAudio=audio;volume(level,muted);
+      audio.onloadedmetadata=()=>durations.set(index,currentAudio.duration);
+      audio.ontimeupdate=()=>root.dispatchEvent(new Event("brief:timeupdate"));
       audio.onplay=()=>{if(mine===generation)speaking(true);};audio.onpause=()=>{if(mine===generation)speaking(false);};
       audio.onended=()=>playSection(index+1,mine);
       audio.onerror=()=>{if(mine!==generation)return;speaking(false);status('Audio playback failed. Press Listen to retry, or read the brief.');};
@@ -85,5 +87,5 @@ export function createBriefView(root, onPlayback) {
       $('.desk-brief-answer').textContent=(result.degraded?'Saved brief reference: ':'Winston’s interpretation: ')+result.reply;
     }catch(error){if(mine===generation)$('.desk-brief-answer').textContent=error.message;}finally{button.disabled=false;}
   };
-  return {play,pause,stop,volume,prepare,reset(){stop();snapshot=null;$('.desk-brief-cards').replaceChildren();$('.desk-brief-ask').hidden=true;status('Prepare a fresh snapshot of your desk.');},time:()=>audio?.currentTime||0};
+  return {play,pause,stop,volume,prepare,reset(){stop();snapshot=null;$('.desk-brief-cards').replaceChildren();$('.desk-brief-ask').hidden=true;status('Prepare a fresh snapshot of your desk.');},time:()=>active<0?[...durations.values()].reduce((total,duration)=>total+duration,0):[...durations].filter(([index])=>index<active).reduce((total,[,duration])=>total+duration,0)+(audio?.currentTime||0)};
 }

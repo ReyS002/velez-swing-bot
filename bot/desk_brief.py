@@ -113,7 +113,7 @@ class DeskBriefService:
         # The summary and sources fit before optional detailed position arrays in LLM context.
         context["snapshot"] = {k: context["snapshot"][k] for k in ("id", "snapshot_at", "narration", "source_status")}
         fallback = {"ok": True, "reply": "The saved briefing says: " + context["snapshot"]["narration"], "degraded": True}
-        result = self.winston.research_reply(question, context, fallback)
+        result = self.winston.brief_reply(question, context, fallback)
         reply = str(result.get("reply") or fallback["reply"])
         with self._lock:
             current = self._snapshots.get((owner, brief_id))
