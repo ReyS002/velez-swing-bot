@@ -1,5 +1,5 @@
 // One Broadcast player follows the room's own calibrated wall surface.
-import {roomRect, roomRegions, roomSnapshot} from "./sovereign-room.js?v=1.0.0";
+import {broadcastCorners, roomSnapshot} from "./sovereign-room.js?v=1.0.1";
 const $ = selector => document.querySelector(selector);
 const state = {enabled:false, expanded:false, playing:false, muted:false, volume:0.6, ducked:false, provider:"native", youtube:null, youtubeReady:false, lastFocus:null, config:{}};
 const tickerLinks = {
@@ -12,15 +12,56 @@ const tickerLinks = {
   BTC: "https://finance.yahoo.com/quote/BTC-USD/",
   ETH: "https://finance.yahoo.com/quote/ETH-USD/",
 };
-let stage, video, marketTimer, youtubePromise;
+let stage, video, marketTimer, youtubePromise, surfaceMotion;
 const escape = value => {const node=document.createElement("span");node.textContent=String(value??"");return node.innerHTML;};
 const time = seconds => {const n=Math.max(0,Math.floor(Number(seconds)||0));return String(Math.floor(n/60)).padStart(2,"0")+":"+String(n%60).padStart(2,"0");};
 
+// Project the entire live player onto four wall corners, including its hit targets.
+// CSS matrix3d is column-major; the last row supplies perspective division.
+function surfaceTransform(points,width,height) {
+  const [[x0,y0],[x1,y1],[x2,y2],[x3,y3]]=points;
+  const dx1=x1-x2,dx2=x3-x2,dx3=x0-x1+x2-x3;
+  const dy1=y1-y2,dy2=y3-y2,dy3=y0-y1+y2-y3;
+  const denominator=dx1*dy2-dx2*dy1;
+  const g=Math.abs(denominator)>1e-8?(dx3*dy2-dx2*dy3)/denominator:0;
+  const h=Math.abs(denominator)>1e-8?(dx1*dy3-dx3*dy1)/denominator:0;
+  return `matrix3d(${[(x1-x0+g*x1)/width,(y1-y0+g*y1)/width,0,g/width,(x3-x0+h*x3)/height,(y3-y0+h*y3)/height,0,h/height,0,0,1,0,x0,y0,0,1].join(",")})`;
+}
+function surfaceBox() {
+  const style=getComputedStyle(stage);
+  return {left:parseFloat(style.left),top:parseFloat(style.top),width:parseFloat(style.width),height:parseFloat(style.height)};
+}
+function visibleCorners() {
+  if(!stage.getClientRects().length)return null;
+  const box=surfaceBox(),transform=getComputedStyle(stage).transform;
+  const matrix=new DOMMatrix(transform==="none"?undefined:transform);
+  return [[0,0],[box.width,0],[box.width,box.height],[0,box.height]].map(([x,y])=>{
+    const point=new DOMPoint(x,y).matrixTransform(matrix);
+    return [box.left+point.x/point.w,box.top+point.y/point.w];
+  });
+}
+function cancelSurfaceMotion() {
+  surfaceMotion?.cancel();surfaceMotion=null;stage?.classList.remove("broadcast-moving");
+}
+function moveSurface(from) {
+  if(!from||!stage.getClientRects().length||!stage.animate||matchMedia("(prefers-reduced-motion: reduce)").matches)return;
+  const box=surfaceBox();
+  const start=surfaceTransform(from.map(([x,y])=>[x-box.left,y-box.top]),box.width,box.height);
+  const end=getComputedStyle(stage).transform;
+  stage.classList.add("broadcast-moving");
+  const animation=stage.animate([{transform:start},{transform:end}],{duration:440,easing:"cubic-bezier(.22,.75,.2,1)",fill:"both"});
+  surfaceMotion=animation;
+  animation.onfinish=()=>{if(surfaceMotion===animation)cancelSurfaceMotion();};
+}
 function positionStage() {
-  if(!stage||state.expanded)return;
-  const r=roomRect(),p=roomRegions().broadcast;
-  Object.assign(stage.style,{left:`${r.left+p.x*r.width}px`,top:`${r.top+p.y*r.height}px`,width:`${p.w*r.width}px`,height:`${p.h*r.height}px`});
-  stage.dataset.orientation=p.w/p.h>1?"wide":"portrait";
+  if(!stage)return;
+  cancelSurfaceMotion();
+  if(state.expanded){stage.style.transform="none";return;}
+  const corners=broadcastCorners();
+  const left=Math.min(...corners.map(p=>p[0])),top=Math.min(...corners.map(p=>p[1]));
+  const width=Math.max(...corners.map(p=>p[0]))-left,height=Math.max(...corners.map(p=>p[1]))-top;
+  Object.assign(stage.style,{left:`${left}px`,top:`${top}px`,width:`${width}px`,height:`${height}px`,transform:surfaceTransform(corners.map(([x,y])=>[x-left,y-top]),width,height)});
+  stage.dataset.orientation=roomSnapshot().id==="media"?"wide":"portrait";
 }
 function chrome() {
   $("#broadcast-play").textContent=state.playing?"Ⅱ":"▶";
@@ -76,18 +117,25 @@ async function play() {
 function pause(){video?.pause();state.youtube?.pauseVideo?.();state.playing=false;if(stage)chrome();}
 function expand(){
   if(!stage||state.expanded)return;
+  const from=visibleCorners();cancelSurfaceMotion();
   state.lastFocus=document.activeElement;state.expanded=true;
   document.body.classList.add("broadcast-expanded");
+  stage.style.transform="none";
   stage.setAttribute("role","dialog");stage.setAttribute("aria-modal","true");
   $("#broadcast-scrim").hidden=false;$("#broadcast-minimize").hidden=false;
-  $("#broadcast-minimize").focus();
+  moveSurface(from);$("#broadcast-minimize").focus({preventScroll:true});
 }
-function minimize(){
+async function minimize(){
   if(!state.expanded)return;
+  if(document.fullscreenElement===stage){
+    try{await document.exitFullscreen();}catch{return;}
+    if(!state.expanded)return;
+  }
+  const from=visibleCorners();cancelSurfaceMotion();
   state.expanded=false;document.body.classList.remove("broadcast-expanded");
   stage.setAttribute("role","region");stage.removeAttribute("aria-modal");
   $("#broadcast-scrim").hidden=true;$("#broadcast-minimize").hidden=true;
-  positionStage();state.lastFocus?.focus();
+  positionStage();moveSurface(from);state.lastFocus?.focus({preventScroll:true});
 }
 async function market() {
   if(document.hidden||!state.enabled)return;
@@ -112,7 +160,7 @@ function scheduleMarket(){clearInterval(marketTimer);marketTimer=null;if(!docume
 async function init(){
   stage=$("#broadcast-stage")||document.createElement("section");
   stage.id="broadcast-stage";stage.className="broadcast-stage";stage.removeAttribute("aria-hidden");stage.setAttribute("role","region");stage.setAttribute("aria-label","Broadcast");
-  stage.innerHTML=`<header class="broadcast-header"><strong>BROADCAST</strong><span id="broadcast-source">Loading</span><button id="broadcast-minimize" type="button" aria-label="Return Broadcast to wall" hidden>Return to room</button></header>
+  stage.innerHTML=`<header class="broadcast-header"><strong>BROADCAST</strong><span id="broadcast-source">Loading</span><button id="broadcast-minimize" type="button" aria-label="Return Broadcast to wall" hidden>Return to wall ×</button></header>
     <div class="broadcast-picture"><video id="broadcast-video" preload="none" playsinline loop poster="/dashboard/assets/broadcast/broadcast-preview-poster.png"></video><div id="broadcast-youtube" hidden></div><button id="broadcast-feature" type="button" aria-label="Open Broadcast"><span>YOUR PRIVATE STUDIO</span><strong>Broadcast</strong><small>Open to watch ↗</small></button></div>
     <div class="broadcast-controls"><button id="broadcast-play" type="button" aria-label="Play Broadcast">▶</button><button id="broadcast-mute" type="button" aria-label="Mute Broadcast">Sound</button><label class="broadcast-volume"><input id="broadcast-volume" type="range" min="0" max="100" value="60" aria-label="Broadcast volume"></label><span id="broadcast-time">00:00</span><button id="broadcast-expand" type="button" aria-label="Expand Broadcast">↗</button><button id="broadcast-fullscreen" type="button" aria-label="View Broadcast fullscreen">⛶</button></div>
     <div class="broadcast-tape"><small id="broadcast-market-status">Market feed standby</small><div id="bull-tape"><span>Awaiting market data</span></div></div>
@@ -125,6 +173,7 @@ async function init(){
   video.addEventListener("timeupdate",chrome);
   video.addEventListener("error",()=>{$("#broadcast-message").textContent="Broadcast video could not load. Try again later.";});
   $("#broadcast-feature").addEventListener("click",expand);
+  stage.addEventListener("click",event=>{if(!state.expanded&&!event.target.closest("button,input,a,label,iframe"))expand();});
   $("#broadcast-expand").addEventListener("click",expand);
   $("#broadcast-minimize").addEventListener("click",minimize);
   $("#broadcast-stop").addEventListener("click",()=>{pause();video.currentTime=0;state.youtube?.seekTo?.(0,true);minimize();chrome();});
@@ -142,7 +191,8 @@ async function init(){
     if(event.key==="Escape"){event.preventDefault();event.stopImmediatePropagation();minimize();}
     if(event.key==="Tab"){const elements=[...stage.querySelectorAll("button,input,a[href],iframe")].filter(el=>!el.hidden&&el.getClientRects().length);const first=elements[0],last=elements.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}}
   },true);
-  document.addEventListener("fullscreenchange",()=>$("#broadcast-fullscreen").setAttribute("aria-label",document.fullscreenElement?"Exit Broadcast fullscreen":"View Broadcast fullscreen"));
+  document.addEventListener("fullscreenchange",()=>{cancelSurfaceMotion();$("#broadcast-fullscreen").setAttribute("aria-label",document.fullscreenElement?"Exit Broadcast fullscreen":"View Broadcast fullscreen");});
+  matchMedia("(prefers-reduced-motion: reduce)").addEventListener("change",event=>{if(event.matches)cancelSurfaceMotion();});
   window.addEventListener("resize",positionStage);positionStage();
   try{const response=await fetch("/api/broadcast/config",{cache:"no-store"});if(!response.ok)throw Error();state.config=await response.json();state.enabled=Boolean(state.config.enabled);}
   catch{state.config={};$("#broadcast-message").textContent="Broadcast configuration is unavailable.";}

@@ -28,3 +28,7 @@ Apple Music subscriber authorization and broker OAuth remain private user sessio
 ## Verification
 
 Bull Pilot: npm run test:e2e and the Python suite. Velez: npm run test:visual and the Python suite. Visual baselines are generated in the pinned Playwright Linux container used by CI. Shared-shell edits should be verified against all five rooms, both lighting modes, mobile navigation, original feature panels, and Broadcast playback continuity.
+
+## Room refinements (1.0.1)
+
+The phone stays grounded without an offset shadow or lift on hover. The pocket player sits farther back beside each room’s keyboard. Broadcast uses calibrated clockwise wall corners, projected with a CSS matrix across the full player and its controls. Opening and returning use a reversible 440 ms transform on the existing player; the video element and playback session are never replaced. The expanded view stays wide and centered. Reduced motion skips the transition; resizing or changing rooms cancels an in-flight movement and uses the current destination. No room artwork or trading configuration changes in this refinement.

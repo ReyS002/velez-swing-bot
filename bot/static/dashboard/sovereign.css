@@ -33,6 +33,12 @@ body.sovereign { background:#080c0d; color:#f2eee5; font-family:Inter,ui-sans-se
 .sovereign .sovereign-prop:hover .prop-art,.sovereign .sovereign-prop:focus-visible .prop-art {transform:translateY(-4px) rotateX(4deg) rotateY(-5deg);filter:drop-shadow(0 11px 8px #000a) brightness(1.08);}
 .sovereign .sovereign-prop:active .prop-art {transform:translateY(-8px) rotateX(7deg) rotateY(5deg) scale(1.025);}
 .sovereign .sovereign-prop.active .prop-art {transform:translateY(-3px) rotateY(-3deg);}
+/* The handset base stays in contact with the desk in every interaction state. */
+.sovereign .sovereign-prop .phone-art,
+.sovereign .sovereign-prop.active .phone-art {filter:none;transform:none;}
+.sovereign .sovereign-prop:hover .phone-art,
+.sovereign .sovereign-prop:focus-visible .phone-art {filter:brightness(1.06);transform:none;}
+.sovereign .sovereign-prop:active .phone-art {filter:brightness(1.02);transform:scale(.995);}
 .sovereign .prop-caption {display:block;position:absolute;top:103%;left:50%;transform:translateX(-50%);font-size:11px;font-weight:550;color:#fbecd4;padding:5px 9px;background:#0b151ae8;border:1px solid var(--sovereign-line);border-radius:6px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .18s;}
 .sovereign .sovereign-prop:hover .prop-caption,.sovereign .sovereign-prop:focus-visible .prop-caption {opacity:1!important;}
 .phone-display {position:absolute;left:12%;top:17%;width:54%;height:58%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:calc(15px * var(--room-scale));font-size:calc(10px * var(--room-scale));color:#f1e5d0;text-shadow:0 0 5px #eed7a522;}
