@@ -52,3 +52,16 @@ body.sovereign[data-room-theme="day"] { --desk-glass-alpha:.29; --desk-glass-car
 @media(prefers-reduced-motion:reduce){.desk-motion-vault-interior{display:none!important}}
 
 .sovereign .photo-room > .room-art-patch{position:fixed;display:block;pointer-events:none;background-repeat:no-repeat;mask-image:linear-gradient(to right,transparent,#000 2px,#000 calc(100% - 2px),transparent),linear-gradient(to bottom,transparent,#000 2px,#000 calc(100% - 2px),transparent);mask-composite:intersect;}
+
+/* Book cover and outward safe motion. */
+.sovereign .desk-motion-cover{transform-origin:0 0;transform-box:view-box}
+.sovereign .desk-pen{position:absolute;left:104%;top:20%;width:31%;height:68%;pointer-events:none;filter:drop-shadow(1px 2px 1px #0005)}
+.sovereign .desk-pen svg{display:block;width:100%;height:100%;overflow:visible}
+.desk-motion-vault-door{backface-visibility:visible;transform-style:preserve-3d;box-shadow:none}
+.vault-front,.vault-back{position:absolute;inset:0;display:block;border:1px solid #a88a51;backface-visibility:hidden;border-radius:1px}
+.vault-front{background-repeat:no-repeat;transform:translateZ(1px)}
+.vault-back{transform:rotateY(180deg) translateZ(1px);background:linear-gradient(100deg,#312c23,#635541 50%,#27231c);box-shadow:0 7px 8px #0006}
+.vault-back i{position:absolute;inset:12% 15%;border:1px solid #af9157;border-radius:2px;background:#25231e}
+.vault-back b{position:absolute;right:-3px;top:18%;width:5px;height:65%;background:linear-gradient(#dec18a,#605039,#c2a36b);border-radius:2px}
+.sovereign .room-hotspot>.desk-pen{display:block!important;opacity:1!important;position:absolute;left:104%;top:20%;width:31%;height:68%;pointer-events:none}
+.sovereign[data-animating-object=journal] .journal-art{transform:none!important;filter:drop-shadow(0 2px 2px #0005)!important}

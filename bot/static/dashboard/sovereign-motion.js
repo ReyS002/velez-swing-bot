@@ -30,7 +30,7 @@ export function mountObjectMotion({open,roomRect,roomSnapshot}) {
     const img=(file,w,h,attr='')=>`<image href="${ASSETS+file}" width="${w}" height="${h}" ${attr}/>`;
     const layer=(rect)=>{
       const e=append(document.body,'','desk-motion-slice');const room=roomRect();
-      Object.assign(e.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px',backgroundImage:panel==='vault'&&roomSnapshot().id!=='media'?`url("${ASSETS}objects-${document.body.dataset.roomAsset}?v=1.4.0")`:getComputedStyle(document.querySelector('.photo-room')).backgroundImage,backgroundSize:`${room.width}px ${room.height}px`,backgroundPosition:`${room.left-rect.left}px ${room.top-rect.top}px`});return e;
+      Object.assign(e.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px',backgroundImage:panel==='vault'&&roomSnapshot().id!=='media'?`url("${ASSETS}objects-${document.body.dataset.roomAsset}?v=1.4.1")`:getComputedStyle(document.querySelector('.photo-room')).backgroundImage,backgroundSize:`${room.width}px ${room.height}px`,backgroundPosition:`${room.left-rect.left}px ${room.top-rect.top}px`});return e;
     };
     try {
       if(panel==='phone'){
@@ -45,8 +45,19 @@ export function mountObjectMotion({open,roomRect,roomSnapshot}) {
         animate(art.querySelector('.music-display'),[{filter:'brightness(1)'},{filter:'brightness(1.35)'}],360);
       } else if(panel==='journal'){
         const art=target.querySelector('.journal-art');
-        const e=append(art,svg('100 130 1350 768',`<defs><clipPath id="motion-cover"><path d="M167 243 L901 138 Q935 135 952 150 L1415 620 Q1448 661 1416 672 L518 810 Q487 818 477 798 L124 304Z"/></clipPath></defs><path fill="#ede0bd" stroke="#ba9c69" stroke-width="8" d="M167 243 L920 138 L1430 660 L500 810 L124 304Z"/><g class="desk-motion-cover">${img('journal.png',1536,1024,'clip-path="url(#motion-cover)"')}</g>`),'desk-motion-art');
-        animate(e.querySelector('g'),[{transform:'rotate3d(.82,-.12,0,0deg)'},{transform:'rotate3d(.82,-.12,0,-105deg)'}],480);
+        const e=append(art,svg('100 130 1350 768',`<defs><clipPath id="motion-cover"><path d="M167 243 L901 138 Q935 135 952 150 L1415 620 Q1448 661 1416 672 L518 810 Q487 818 477 798 L124 304Z"/></clipPath></defs><path fill="#ede0bd" stroke="#ba9c69" stroke-width="8" d="M167 243 L920 138 L1430 660 L500 810 L124 304Z"/><path d="M216 291 L516 763" stroke="#bca675" stroke-width="9" opacity=".5"/><g class="desk-motion-cover">${img('journal-no-pen.png',1536,1024,'clip-path="url(#motion-cover)"')}<path class="cover-lining" opacity="0" fill="#dccba5" stroke="#6d381a" stroke-width="16" d="M167 243 L920 138 L1430 660 L500 810 L124 304Z"/></g>`),'desk-motion-art');
+        // Rotate around the actual diagonal left spine. Project its lift toward
+        // the viewer while leaving both spine endpoints fixed on the desk.
+        const u=[753,-105],v=[333,567],det=u[0]*v[1]-u[1]*v[0];
+        const frames=Array.from({length:31},(_,i)=>{
+          const t=i/30,theta=t*145*Math.PI/180;
+          const q=[u[0]*Math.cos(theta),u[1]*Math.cos(theta)-560*Math.sin(theta)];
+          const a=(q[0]*v[1]-v[0]*u[1])/det,b=(q[1]*v[1]-v[1]*u[1])/det;
+          const c=(-q[0]*v[0]+v[0]*u[0])/det,d=(-q[1]*v[0]+v[1]*u[0])/det;
+          return {offset:t,transform:`matrix(${a},${b},${c},${d},${167-a*167-c*243},${243-b*167-d*243})`};
+        });
+        animate(e.querySelector('g'),frames,650);
+        animate(e.querySelector('.cover-lining'),[{opacity:0},{opacity:0,offset:.60},{opacity:1,offset:.64},{opacity:1}],650);
       } else if(panel==='notes'){
         const e=append(target,'','desk-motion-sheen');animate(e,[{opacity:0,transform:'translateX(-55%) skew(-18deg)'},{opacity:.7,offset:.4},{opacity:0,transform:'translateX(65%) skew(-18deg)'}],440);
       } else if(panel==='lamp'){
@@ -68,7 +79,14 @@ export function mountObjectMotion({open,roomRect,roomSnapshot}) {
         Object.assign(interior.style,{left:r.left+'px',top:r.top+'px',width:r.width+'px',height:r.height+'px'});
         const door=layer(r);door.classList.add('desk-motion-vault-door');
         door.style.transformOrigin='0 50%';
-        animate(door,[{transform:'perspective(650px) rotateY(0deg)'},{transform:'perspective(650px) rotateY(-68deg)'}],500);
+        door.style.clipPath='none';door.style.overflow='visible';
+        const front=document.createElement('span');front.className='vault-front';
+        for(const k of ['backgroundImage','backgroundSize','backgroundPosition'])front.style[k]=door.style[k];
+        door.style.backgroundImage='none';door.append(front);
+        const back=document.createElement('span');back.className='vault-back';back.innerHTML='<i></i><b></b>';door.append(back);
+        // Negative Y rotation brings the free right edge toward the viewer (+Z),
+        // then past the hinge to reveal the inner door, never into the cabinet.
+        animate(door,[{transform:'perspective(420px) rotateY(0deg)'},{transform:'perspective(420px) rotateY(-112deg)'}],650);
 
       }
       Promise.all(animations.map(a=>a.finished)).then(()=>{if(sequence!==token)return;cancel();navigate();}).catch(()=>{});
