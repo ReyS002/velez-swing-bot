@@ -7629,6 +7629,10 @@ function setActivePanel(panel, options = {}) {
     activeWorkflow = panelWorkflow(panel);
   }
   renderPanel();
+  // The panel body is reused between views. Reset both possible scrollers so a
+  // newly selected view never starts with its opening cards under the heading.
+  if (detailPanel) detailPanel.scrollTop = 0;
+  if (panelBody) panelBody.scrollTop = 0;
   if (options.openPanel !== false) {
     panelOpen = true;
   }
