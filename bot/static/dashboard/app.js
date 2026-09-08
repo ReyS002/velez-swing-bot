@@ -1,4 +1,4 @@
-import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.3.0";
+import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.4.0";
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
@@ -222,6 +222,7 @@ const panelCopy = {
   journal: ["Journal + broker ledger | V6.24", "Trade Journal"],
   calendar: ["Daily prep | V6.23", "Calendar"],
   safe: ["Approval inbox | V6.23", "Safe"],
+  vault: ["Connections & security", "Vault checks"],
   music: ["Apple Music | V6.23", "Music"],
   phone: ["Winston lifecycle line | V6.23", "Desk Phone"],
   bookshelf: ["Strategy library | V6.23", "Bookshelf"],
@@ -3652,10 +3653,24 @@ function renderCalendar() {
 }
 
 function renderSafe() {
+  return `<section class="tool-section"><div class="section-title">Approval inbox</div>${renderApprovalInbox()}</section>
+    <div class="actions"><button type="button" class="symbol-button" data-open-panel="vault">Open Vault checks</button></div>`;
+}
+
+function renderVault() {
   const broker = dashboardState.broker || {};
   const apple = appleMusicBridgeStatus();
   const winston = dashboardState.winston || {};
   return `
+    <section class="tool-section">
+      <div class="section-title">Vault checks</div>
+      <div class="health-grid">
+        ${healthComponentCard({ name: "Alpaca paper", ok: Boolean(broker.ok && broker.paper), status: broker.ok ? "connected" : "check", detail: "Account key remains server-side" })}
+        ${healthComponentCard({ name: "Webhook secret", ok: Boolean(dashboardState.guardrails?.auth_required), status: dashboardState.guardrails?.auth_required ? "armed" : "off", detail: "TradingView alerts require server auth" })}
+        ${healthComponentCard({ name: "Approval token", ok: Boolean(approvalToken), status: approvalToken ? "local" : "empty", detail: "Only stored in this browser" })}
+        ${healthComponentCard({ name: "Apple Music", ok: Boolean(apple.configured), status: apple.configured ? "signed" : "missing", detail: "Private key never reaches the browser" })}
+      </div>
+    </section>
     <div class="metric-grid">
       ${metric("Keys", "Redacted", "Stored outside the browser")}
       ${metric("Webhook", dashboardState.guardrails?.auth_required ? "Auth on" : "Auth off", "Secret never displayed")}
@@ -3670,19 +3685,7 @@ function renderSafe() {
       ${row("Winston brain", [winston.brain?.provider, winston.brain?.model].filter(Boolean).join(" | ") || "Checking")}
       ${row("Winston voice", [winston.voice?.provider, winston.voice?.voice].filter(Boolean).join(" | ") || "Checking")}
     </div>
-    <section class="tool-section">
-      <div class="section-title">Approval inbox</div>
-      ${renderApprovalInbox()}
-    </section>
-    <section class="tool-section">
-      <div class="section-title">Vault checks</div>
-      <div class="health-grid">
-        ${healthComponentCard({ name: "Alpaca paper", ok: Boolean(broker.ok && broker.paper), status: broker.ok ? "connected" : "check", detail: "Account key remains server-side" })}
-        ${healthComponentCard({ name: "Webhook secret", ok: Boolean(dashboardState.guardrails?.auth_required), status: dashboardState.guardrails?.auth_required ? "armed" : "off", detail: "TradingView alerts require server auth" })}
-        ${healthComponentCard({ name: "Approval token", ok: Boolean(approvalToken), status: approvalToken ? "local" : "empty", detail: "Only stored in this browser" })}
-        ${healthComponentCard({ name: "Apple Music", ok: Boolean(apple.configured), status: apple.configured ? "signed" : "missing", detail: "Private key never reaches the browser" })}
-      </div>
-    </section>
+
   `;
 }
 
@@ -5581,6 +5584,7 @@ function renderPanel() {
     journal: renderJournal,
     calendar: renderCalendar,
     safe: renderSafe,
+    vault: renderVault,
     music: renderMusic,
     phone: renderPhone,
     bookshelf: renderBookshelf,

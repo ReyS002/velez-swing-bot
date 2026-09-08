@@ -46,3 +46,9 @@ body.sovereign[data-room-theme="day"] { --desk-glass-alpha:.29; --desk-glass-car
 @supports not (backdrop-filter:blur(1px)){
  body.sovereign[data-room-theme]{--desk-glass-alpha:.94;--desk-glass-card-alpha:.9}
 }
+
+.desk-motion-vault-interior{position:fixed;z-index:23;pointer-events:none;background:linear-gradient(100deg,#050606,#201b14);border:2px solid #57442a;box-shadow:inset 5px 0 9px #000;border-radius:1px;clip-path:polygon(0 0,100% 7%,100% 100%,0 93%)}
+.desk-motion-vault-door{border-radius:1px;clip-path:polygon(0 0,100% 7%,100% 100%,0 93%);backface-visibility:hidden;box-shadow:3px 2px 5px #0009}
+@media(prefers-reduced-motion:reduce){.desk-motion-vault-interior{display:none!important}}
+
+.sovereign .photo-room > .room-art-patch{position:fixed;display:block;pointer-events:none;background-repeat:no-repeat;mask-image:linear-gradient(to right,transparent,#000 2px,#000 calc(100% - 2px),transparent),linear-gradient(to bottom,transparent,#000 2px,#000 calc(100% - 2px),transparent);mask-composite:intersect;}

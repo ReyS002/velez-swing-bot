@@ -1,10 +1,10 @@
 // Presentation only: animate navigation, then invoke the existing panel adapter.
 // This module never calls broker, voice, music, or approval endpoints.
 const ASSETS='/dashboard/assets/sovereign/';
-const PANELS=new Set(['phone','music','notes','mission','bookshelf','safe','lamp','journal']);
-const OBJECT={notes:'notes',mission:'mission',bookshelf:'bookshelf',safe:'safe',lamp:'lamp',phone:'phone',music:'music',journal:'journal'};
+const PANELS=new Set(['phone','music','notes','mission','bookshelf','vault','lamp','journal']);
+const OBJECT={notes:'notes',mission:'mission',bookshelf:'bookshelf',vault:'vault',lamp:'lamp',phone:'phone',music:'music',journal:'journal'};
 // One visible volume in each 1672 × 941 room plate. Some shelves use horizontal books.
-const BOOKS={media:[151,170,10,50],pacific:[384,200,10,51],tokyo:[333,185,10,59],manhattan:[345,205,64,11],dubai:[325,415,77,11]};
+const BOOKS={media:[151,170,10,50],pacific:[384,200,10,51],tokyo:[333,185,10,59],manhattan:[345,222,64,8],dubai:[344,454,10,42]};
 export function mountObjectMotion({open,roomRect,roomSnapshot}) {
   if(document.documentElement.dataset.objectMotionMounted)return;
   document.documentElement.dataset.objectMotionMounted='true';
@@ -30,7 +30,7 @@ export function mountObjectMotion({open,roomRect,roomSnapshot}) {
     const img=(file,w,h,attr='')=>`<image href="${ASSETS+file}" width="${w}" height="${h}" ${attr}/>`;
     const layer=(rect)=>{
       const e=append(document.body,'','desk-motion-slice');const room=roomRect();
-      Object.assign(e.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px',backgroundImage:getComputedStyle(document.querySelector('.photo-room')).backgroundImage,backgroundSize:`${room.width}px ${room.height}px`,backgroundPosition:`${room.left-rect.left}px ${room.top-rect.top}px`});return e;
+      Object.assign(e.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px',backgroundImage:panel==='vault'&&roomSnapshot().id!=='media'?`url("${ASSETS}objects-${document.body.dataset.roomAsset}?v=1.4.0")`:getComputedStyle(document.querySelector('.photo-room')).backgroundImage,backgroundSize:`${room.width}px ${room.height}px`,backgroundPosition:`${room.left-rect.left}px ${room.top-rect.top}px`});return e;
     };
     try {
       if(panel==='phone'){
@@ -60,11 +60,16 @@ export function mountObjectMotion({open,roomRect,roomSnapshot}) {
         const [x,y,w,h]=BOOKS[roomSnapshot().id],r=roomRect(),scale=r.width/1672;
         const e=layer({left:r.left+x*scale,top:r.top+y*scale,width:w*scale,height:h*scale});
         e.style.borderRadius='1px';animate(e,[{transform:'translate(0,0) scale(1)'},{transform:`translate(${-2*scale}px,${-3*scale}px) scale(1.035)`}],440);
-      } else if(panel==='safe'){
-        const r=target.getBoundingClientRect();const e=layer(r);e.style.transformOrigin='0 50%';e.style.border='1px solid #c4a36155';
-        const plaque=target.querySelector('.approval-plaque');if(plaque)e.append(plaque.cloneNode(true));
-        const latch=append(e,'','desk-motion-latch');animate(latch,[{transform:'rotate(0)'},{transform:'rotate(45deg)'}],200);
-        animate(e,[{transform:'perspective(650px) rotateY(0)'},{transform:'perspective(650px) rotateY(-12deg)'}],300,200);
+      } else if(panel==='vault'){
+        // Only the safe's front door moves. The dark interior replaces the
+        // closed door underneath; the shelf, casing and surrounding books stay fixed.
+        const r=target.getBoundingClientRect();
+        const interior=append(document.body,'','desk-motion-vault-interior');
+        Object.assign(interior.style,{left:r.left+'px',top:r.top+'px',width:r.width+'px',height:r.height+'px'});
+        const door=layer(r);door.classList.add('desk-motion-vault-door');
+        door.style.transformOrigin='0 50%';
+        animate(door,[{transform:'perspective(650px) rotateY(0deg)'},{transform:'perspective(650px) rotateY(-68deg)'}],500);
+
       }
       Promise.all(animations.map(a=>a.finished)).then(()=>{if(sequence!==token)return;cancel();navigate();}).catch(()=>{});
       if(!animations.length){cancel();navigate();}
