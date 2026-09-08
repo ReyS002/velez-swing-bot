@@ -3,6 +3,8 @@
 const ASSETS='/dashboard/assets/sovereign/';
 const PANELS=new Set(['phone','music','notes','mission','bookshelf','safe','lamp','journal']);
 const OBJECT={notes:'notes',mission:'mission',bookshelf:'bookshelf',safe:'safe',lamp:'lamp',phone:'phone',music:'music',journal:'journal'};
+// One visible volume in each 1672 × 941 room plate. Some shelves use horizontal books.
+const BOOKS={media:[151,170,10,50],pacific:[384,200,10,51],tokyo:[333,185,10,59],manhattan:[345,205,64,11],dubai:[325,415,77,11]};
 export function mountObjectMotion({open,roomRect,roomSnapshot}) {
   if(document.documentElement.dataset.objectMotionMounted)return;
   document.documentElement.dataset.objectMotionMounted='true';
@@ -55,10 +57,12 @@ export function mountObjectMotion({open,roomRect,roomSnapshot}) {
         const face=target.querySelector('.brief-face');if(face){const clone=face.cloneNode(true);e.append(clone);}
         animate(e,[{transform:'perspective(700px) rotateX(0)'},{transform:'perspective(700px) rotateX(-7deg) translateY(-2px)'}],380);
       } else if(panel==='bookshelf'){
-        const r=target.getBoundingClientRect();const e=layer({left:r.left+r.width*.38,top:r.top+r.height*.1,width:r.width*.19,height:r.height*.27});
-        e.style.borderRadius='2px';animate(e,[{transform:'translateY(0) scale(1)'},{transform:'translateY(-4px) scale(1.04) rotate(-1deg)'}],440);
+        const [x,y,w,h]=BOOKS[roomSnapshot().id],r=roomRect(),scale=r.width/1672;
+        const e=layer({left:r.left+x*scale,top:r.top+y*scale,width:w*scale,height:h*scale});
+        e.style.borderRadius='1px';animate(e,[{transform:'translate(0,0) scale(1)'},{transform:`translate(${-2*scale}px,${-3*scale}px) scale(1.035)`}],440);
       } else if(panel==='safe'){
         const r=target.getBoundingClientRect();const e=layer(r);e.style.transformOrigin='0 50%';e.style.border='1px solid #c4a36155';
+        const plaque=target.querySelector('.approval-plaque');if(plaque)e.append(plaque.cloneNode(true));
         const latch=append(e,'','desk-motion-latch');animate(latch,[{transform:'rotate(0)'},{transform:'rotate(45deg)'}],200);
         animate(e,[{transform:'perspective(650px) rotateY(0)'},{transform:'perspective(650px) rotateY(-12deg)'}],300,200);
       }

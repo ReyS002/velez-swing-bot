@@ -39,3 +39,10 @@ body.sovereign[data-room-theme="day"] { --desk-glass-alpha:.29; --desk-glass-car
 .journal-art::after { content:none!important; }
 .sovereign #panel-body .mood-card strong { white-space:normal; overflow-wrap:anywhere; min-width:0; }
 .sovereign #panel-body .mood-card > div { min-width:0; }
+
+@media (prefers-reduced-transparency:reduce),(prefers-contrast:more){
+ body.sovereign[data-room-theme]{--desk-glass-alpha:.96;--desk-glass-card-alpha:.9;--desk-glass-blur:0px}
+}
+@supports not (backdrop-filter:blur(1px)){
+ body.sovereign[data-room-theme]{--desk-glass-alpha:.94;--desk-glass-card-alpha:.9}
+}
