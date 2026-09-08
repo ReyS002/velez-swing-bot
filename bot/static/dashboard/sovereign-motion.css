@@ -19,7 +19,7 @@
 
 /* Approved panel legibility and transparency refinement. */
 body.sovereign { --desk-glass-alpha:.44; --desk-glass-card-alpha:.24; }
-body.sovereign[data-room-theme="day"] { --desk-glass-alpha:.29; --desk-glass-card-alpha:.28; }
+body.sovereign[data-room-theme="day"] { --desk-glass-alpha:.29; --desk-glass-card-alpha:.28; --desk-glass-ink:#000; --desk-glass-muted:#000; --desk-glass-accent:#000; }
 .sovereign #panel-body { grid-auto-rows:max-content; scrollbar-gutter:stable; overscroll-behavior:contain; }
 .sovereign #panel-body > * { min-width:0; }
 .sovereign #panel-body .decision-surface > * + * { margin-top:12px; }
