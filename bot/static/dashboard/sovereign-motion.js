@@ -1,0 +1,82 @@
+// Presentation only: animate navigation, then invoke the existing panel adapter.
+// This module never calls broker, voice, music, or approval endpoints.
+const ASSETS='/dashboard/assets/sovereign/';
+const PANELS=new Set(['phone','music','notes','mission','bookshelf','safe','lamp','journal']);
+const OBJECT={notes:'notes',mission:'mission',bookshelf:'bookshelf',safe:'safe',lamp:'lamp',phone:'phone',music:'music',journal:'journal'};
+export function mountObjectMotion({open,roomRect,roomSnapshot}) {
+  if(document.documentElement.dataset.objectMotionMounted)return;
+  document.documentElement.dataset.objectMotionMounted='true';
+  const reduced=matchMedia('(prefers-reduced-motion: reduce)');
+  let preference=true,pending=null,sequence=0;
+  try{preference=localStorage.getItem('sovereign-object-motion')!=='off';}catch{}
+  function enabled(){return preference&&!reduced.matches;}
+  function sync(){document.body.dataset.objectMotion=enabled()?'on':'off';const b=document.getElementById('object-motion-toggle');if(b){b.textContent='Object motion: '+(preference?'On':'Off')+(reduced.matches?' · reduced motion':'');b.setAttribute('aria-pressed',String(preference));}document.dispatchEvent(new CustomEvent('desk:motionchange'));}
+  function cancel(){sequence++;if(pending){pending.animations.forEach(a=>a.cancel());pending.cleanup.reverse().forEach(f=>f());pending=null;}document.body.removeAttribute('data-animating-object');}
+  function toggle(){cancel();preference=!preference;try{localStorage.setItem('sovereign-object-motion',preference?'on':'off');}catch{}sync();}
+  const button=document.createElement('button');button.id='object-motion-toggle';button.type='button';button.addEventListener('click',toggle);document.querySelector('.sovereign-tools-grid')?.append(button);sync();
+  reduced.addEventListener('change',()=>{const next=pending?.navigate;cancel();sync();next?.();});
+  function run(panel,source){
+    cancel();const target=document.querySelector(`[data-object-id="${OBJECT[panel]}"]`);
+    const navigate=()=>open(panel,source);
+    // Small-screen Tools navigation should remain immediate when its room object is hidden.
+    if(!enabled()||!target||!target.getClientRects().length||innerWidth<700){navigate();return;}
+    const token=sequence,animations=[],cleanup=[];pending={animations,cleanup,navigate};
+    document.body.dataset.animatingObject=panel;
+    const append=(parent,html,className)=>{const e=document.createElement('span');e.className=className;e.setAttribute('aria-hidden','true');e.innerHTML=html;parent.append(e);cleanup.push(()=>e.remove());return e;};
+    const animate=(e,frames,duration=420,delay=0)=>{const a=e.animate(frames,{duration,delay,easing:'cubic-bezier(.22,.75,.28,1)',fill:'both'});animations.push(a);return a;};
+    const svg=(box,body)=>`<svg viewBox="${box}" aria-hidden="true">${body}</svg>`;
+    const img=(file,w,h,attr='')=>`<image href="${ASSETS+file}" width="${w}" height="${h}" ${attr}/>`;
+    const layer=(rect)=>{
+      const e=append(document.body,'','desk-motion-slice');const room=roomRect();
+      Object.assign(e.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px',backgroundImage:getComputedStyle(document.querySelector('.photo-room')).backgroundImage,backgroundSize:`${room.width}px ${room.height}px`,backgroundPosition:`${room.left-rect.left}px ${room.top-rect.top}px`});return e;
+    };
+    try {
+      if(panel==='phone'){
+        const art=target.querySelector('.phone-art'),original=art.querySelector('svg');
+        const style=original.style.visibility;original.style.visibility='hidden';cleanup.push(()=>original.style.visibility=style);
+        const e=append(art,svg('80 145 1100 980',`<defs><clipPath id="motion-phone-base"><path d="M157 278 Q163 230 208 224 L809 222 Q853 225 865 275 L880 880 L1144 881 L1163 950 L1168 978 V1048 Q1168 1090 1109 1095 H149 Q88 1090 87 1048 V978 L111 881 L142 784Z"/></clipPath><clipPath id="motion-receiver"><path d="M878 210 Q885 160 929 155 L1032 153 Q1078 156 1087 199 L1116 800 Q1120 869 1069 884 L944 884 Q900 883 895 830Z"/></clipPath></defs>${img('phone-glass.png',1254,1254,'clip-path="url(#motion-phone-base)"')}<path d="M90 981 Q620 1010 1165 981 V1048 Q1165 1090 1110 1095 H149 Q90 1090 90 1048Z" fill="#171c1d" stroke="#9e8758" stroke-width="3"/><g class="desk-motion-handset">${img('phone-glass.png',1254,1254,'clip-path="url(#motion-receiver)"')}</g>`),'desk-motion-art');
+        animate(e.querySelector('g'),[{transform:'translate(0,0) rotate(0)'},{transform:'translate(-10px,-28px) rotate(-5deg)'}]);
+      } else if(panel==='music'){
+        const art=target.querySelector('.music-art');
+        const e=append(art,svg('58 46 910 1420',`<defs><clipPath id="motion-wheel"><circle cx="509" cy="925" r="190"/></clipPath></defs><g class="desk-motion-wheel">${img('pocket-player.png',1024,1536,'clip-path="url(#motion-wheel)"')}</g>`),'desk-motion-art');
+        animate(e.querySelector('g'),[{transform:'rotate(0)'},{transform:'rotate(18deg)'}],360);
+        animate(art.querySelector('.music-display'),[{filter:'brightness(1)'},{filter:'brightness(1.35)'}],360);
+      } else if(panel==='journal'){
+        const art=target.querySelector('.journal-art');
+        const e=append(art,svg('100 130 1350 768',`<defs><clipPath id="motion-cover"><path d="M167 243 L901 138 Q935 135 952 150 L1415 620 Q1448 661 1416 672 L518 810 Q487 818 477 798 L124 304Z"/></clipPath></defs><path fill="#ede0bd" stroke="#ba9c69" stroke-width="8" d="M167 243 L920 138 L1430 660 L500 810 L124 304Z"/><g class="desk-motion-cover">${img('journal.png',1536,1024,'clip-path="url(#motion-cover)"')}</g>`),'desk-motion-art');
+        animate(e.querySelector('g'),[{transform:'rotate3d(.82,-.12,0,0deg)'},{transform:'rotate3d(.82,-.12,0,-105deg)'}],480);
+      } else if(panel==='notes'){
+        const e=append(target,'','desk-motion-sheen');animate(e,[{opacity:0,transform:'translateX(-55%) skew(-18deg)'},{opacity:.7,offset:.4},{opacity:0,transform:'translateX(65%) skew(-18deg)'}],440);
+      } else if(panel==='lamp'){
+        const r=target.getBoundingClientRect();const e=append(document.body,'','desk-motion-light');Object.assign(e.style,{left:r.left+'px',top:(r.bottom-r.height*.08)+'px',width:r.width*1.05+'px',height:r.height*.23+'px'});
+        animate(e,[{opacity:0},{opacity:.6}],400);
+      } else if(panel==='mission'){
+        const r=target.getBoundingClientRect();const e=layer({left:r.left-r.width*.14,top:r.top-r.height*.13,width:r.width*1.28,height:r.height*1.26});
+        const face=target.querySelector('.brief-face');if(face){const clone=face.cloneNode(true);e.append(clone);}
+        animate(e,[{transform:'perspective(700px) rotateX(0)'},{transform:'perspective(700px) rotateX(-7deg) translateY(-2px)'}],380);
+      } else if(panel==='bookshelf'){
+        const r=target.getBoundingClientRect();const e=layer({left:r.left+r.width*.38,top:r.top+r.height*.1,width:r.width*.19,height:r.height*.27});
+        e.style.borderRadius='2px';animate(e,[{transform:'translateY(0) scale(1)'},{transform:'translateY(-4px) scale(1.04) rotate(-1deg)'}],440);
+      } else if(panel==='safe'){
+        const r=target.getBoundingClientRect();const e=layer(r);e.style.transformOrigin='0 50%';e.style.border='1px solid #c4a36155';
+        const latch=append(e,'','desk-motion-latch');animate(latch,[{transform:'rotate(0)'},{transform:'rotate(45deg)'}],200);
+        animate(e,[{transform:'perspective(650px) rotateY(0)'},{transform:'perspective(650px) rotateY(-12deg)'}],300,200);
+      }
+      Promise.all(animations.map(a=>a.finished)).then(()=>{if(sequence!==token)return;cancel();navigate();}).catch(()=>{});
+      if(!animations.length){cancel();navigate();}
+    }catch{cancel();navigate();}
+  }
+  window.addEventListener('click',event=>{
+    const source=event.target.closest('.room-hotspot[data-panel],.sovereign-dock [data-desk-action],#sovereign-tools [data-desk-action]');
+    const panel=source?.dataset.panel||source?.dataset.deskAction;
+    if(source&&PANELS.has(panel)){
+      event.preventDefault();event.stopImmediatePropagation();run(panel,source);
+    }else if(pending)cancel();
+  },true);
+  window.addEventListener('keydown',event=>{if(event.key==='Escape')cancel();},true);
+  for(const name of ['desk:roomchange','desk:layout'])document.addEventListener(name,cancel);
+  window.addEventListener('resize',cancel);
+  document.addEventListener('visibilitychange',()=>{if(document.hidden)cancel();});
+  // Read-only diagnostics used by the same browser checks on each edition.
+  window.__deskMotion={enabled,active:()=>document.body.dataset.animatingObject||null,room:roomSnapshot};
+}

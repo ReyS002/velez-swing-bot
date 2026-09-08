@@ -1,5 +1,6 @@
+import {mountObjectMotion} from "./sovereign-motion.js?v=1.3.0";
 // Shared Sovereign room shell. Keep byte-identical across bot editions.
-export const SOVEREIGN_VERSION = "1.1.1";
+export const SOVEREIGN_VERSION = "1.3.0";
 const ASSETS = "/dashboard/assets/sovereign/";
 const percent = ([x, y, w, h]) => ({ x: x / 100, y: y / 100, w: w / 100, h: h / 100 });
 export const ROOMS = {
@@ -131,5 +132,6 @@ export function mountSovereign(options) {
   window.addEventListener("resize",layout);
   syncRoomTheme(lighting[roomId]);layout();window.lucide?.createIcons();
   fetch("/api/desk/config",{cache:"no-store"}).then(response=>response.ok?response.json():{}).then(value=>{config={...config,...value};if(brand&&value.product)brand.textContent=value.product;document.dispatchEvent(new CustomEvent("desk:config",{detail:config}));}).catch(()=>{});
+  mountObjectMotion({open:openPanel,roomRect,roomSnapshot});
   window.__sovereign={version:SOVEREIGN_VERSION,rooms:ROOMS,room:roomSnapshot,selectRoom,regions:roomRegions,broadcastCorners,hotspots:roomHotspots,rect:roomRect,open:(id)=>openPanel(id),config:()=>config};
 }

@@ -1,5 +1,5 @@
 // One Broadcast player follows the room's own calibrated wall surface.
-import {broadcastCorners, roomSnapshot} from "./sovereign-room.js?v=1.1.1";
+import {broadcastCorners, roomSnapshot} from "./sovereign-room.js?v=1.3.0";
 import {createBriefView} from "./broadcast-brief.js?v=1.2.2";
 const $ = selector => document.querySelector(selector);
 const state = {enabled:false, expanded:false, playing:false, muted:false, volume:0.6, ducked:false, provider:"native", youtube:null, youtubeReady:false, lastFocus:null, config:{}};
@@ -47,12 +47,12 @@ function cancelSurfaceMotion() {
   surfaceMotion?.cancel();surfaceMotion=null;stage?.classList.remove("broadcast-moving");
 }
 function moveSurface(from) {
-  if(!from||!stage.getClientRects().length||!stage.animate||matchMedia("(prefers-reduced-motion: reduce)").matches)return;
+  if(document.body.dataset.objectMotion==="off"||!from||!stage.getClientRects().length||!stage.animate||matchMedia("(prefers-reduced-motion: reduce)").matches)return;
   const box=surfaceBox();
   const start=surfaceTransform(from.map(([x,y])=>[x-box.left,y-box.top]),box.width,box.height);
   const end=getComputedStyle(stage).transform;
   stage.classList.add("broadcast-moving");
-  const animation=stage.animate([{transform:start},{transform:end}],{duration:440,easing:"cubic-bezier(.22,.75,.2,1)",fill:"both"});
+  const animation=stage.animate([{transform:start},{transform:end}],{duration:500,easing:"cubic-bezier(.22,.75,.2,1)",fill:"both"});
   surfaceMotion=animation;
   animation.onfinish=()=>{if(surfaceMotion===animation)cancelSurfaceMotion();};
 }
@@ -239,6 +239,7 @@ async function init(){
   $("#broadcast-volume").addEventListener("input",event=>{state.volume=Number(event.target.value)/100;volume();saveSettings();});
   $("#broadcast-fullscreen").addEventListener("click",async()=>{expand();try{if(document.fullscreenElement)await document.exitFullscreen();else if(stage.requestFullscreen)await stage.requestFullscreen();else $("#broadcast-message").textContent="Expanded view is ready. Fullscreen is not supported in this browser.";}catch{$("#broadcast-message").textContent="Fullscreen was not available. Expanded view is ready.";}});
   document.addEventListener("desk:broadcast-open",expand);
+  document.addEventListener("desk:motionchange",()=>{if(document.body.dataset.objectMotion==="off")cancelSurfaceMotion();});
   document.addEventListener("desk:roomchange",positionStage);
   document.addEventListener("desk:layout",positionStage);
   document.addEventListener("desk:winston-speaking",event=>{if(event.detail?.source==="broadcast-brief")return;if(event.detail?.speaking&&state.provider==="brief")brief.pause();state.ducked=Boolean(event.detail?.speaking);volume();});

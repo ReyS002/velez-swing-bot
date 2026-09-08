@@ -1,0 +1,41 @@
+/* Each transient layer is removed before handing navigation to the existing panel. */
+.sovereign .prop-art > .desk-motion-art{position:absolute!important;display:block!important;inset:0;width:100%;height:100%;pointer-events:none;perspective:700px;z-index:1}
+.sovereign .desk-motion-art svg{display:block;width:100%;height:100%;overflow:visible}
+.sovereign .desk-motion-handset{transform-origin:1000px 850px}
+.sovereign .desk-motion-wheel{transform-origin:509px 925px}
+.sovereign .desk-motion-cover{transform-origin:167px 243px}
+.sovereign .phone-display,.sovereign .music-display{z-index:2}
+.desk-motion-slice{position:fixed;z-index:24;display:block;pointer-events:none;background-repeat:no-repeat;transform-origin:50% 95%;box-shadow:0 2px 5px #0003}
+.desk-motion-slice .brief-face{position:absolute;inset:10% 11%;height:80%}
+.sovereign .room-hotspot>.desk-motion-sheen{position:absolute;display:block;inset:5% 7%;opacity:0;pointer-events:none;background:linear-gradient(90deg,transparent,#ffe4a151,transparent);mix-blend-mode:soft-light;clip-path:ellipse(48% 45%);filter:blur(2px)}
+.desk-motion-light{position:fixed;z-index:24;border-radius:50%;pointer-events:none;background:radial-gradient(ellipse,#ffd78aad,transparent 70%);filter:blur(5px);mix-blend-mode:screen}
+.desk-motion-latch{position:absolute;display:block;left:5%;top:25%;height:50%;aspect-ratio:1;border:1px solid #d1b376;border-radius:50%;background:linear-gradient(90deg,#8c774b,#e5c992,#8c774b)}
+.desk-motion-latch:after{content:'';position:absolute;left:45%;top:5%;width:10%;height:90%;background:#463c2a}
+.sovereign[data-animating-object] .prop-caption{opacity:0!important}
+.sovereign[data-animating-object] #hover-tag{visibility:hidden}
+.sovereign[data-object-motion=off] .prop-art{transition:none!important;transform:none!important}
+.sovereign .journal-art:after{content:none!important}
+@media(prefers-reduced-motion:reduce){.desk-motion-slice,.desk-motion-art,.desk-motion-light,.desk-motion-sheen{display:none!important}}
+
+/* Approved panel legibility and transparency refinement. */
+body.sovereign { --desk-glass-alpha:.44; --desk-glass-card-alpha:.24; }
+body.sovereign[data-room-theme="day"] { --desk-glass-alpha:.29; --desk-glass-card-alpha:.28; }
+.sovereign #panel-body { grid-auto-rows:max-content; scrollbar-gutter:stable; overscroll-behavior:contain; }
+.sovereign #panel-body > * { min-width:0; }
+.sovereign #panel-body .decision-surface > * + * { margin-top:12px; }
+.sovereign #panel-body .section-title { line-height:1.5; }
+.sovereign #detail-panel .panel-heading > div { min-width:0; }
+.sovereign #panel-title { line-height:1.25; white-space:normal; overflow-wrap:break-word; }
+.sovereign #panel-body :is(.data-list,.tool-section) { padding:12px 14px; }
+.sovereign #panel-body .data-row { grid-template-columns:minmax(90px,.7fr) minmax(0,1.6fr); padding:12px 0; gap:16px; }
+.sovereign #panel-body :is(.row-value,.data-row > strong) { min-width:0; white-space:normal; overflow-wrap:anywhere; line-height:1.5; text-align:left; }
+.sovereign #panel-body :is(.row-label,.data-row > span:first-child) { min-width:0; white-space:normal; overflow-wrap:break-word; line-height:1.5; }
+.sovereign #panel-body :is(.metric,.decision,.health-component,.tool-section,.mood-card) { height:auto; min-width:0; }
+.sovereign #panel-body :is(.value,.sub,p,.decision-summary) { white-space:normal; overflow-wrap:anywhere; text-overflow:clip; -webkit-line-clamp:unset; line-height:1.45; }
+.sovereign #pro-console .pro-factor { grid-template-columns:minmax(0,1.15fr) minmax(25px,.8fr) minmax(58px,max-content); gap:10px; line-height:1.4; }
+.sovereign #pro-console .pro-factor :is(span,strong) { min-width:0; white-space:normal; overflow-wrap:break-word; }
+.sovereign #pro-console .pro-factor strong { font-size:inherit; }
+.sovereign #pro-console :is(.pro-readiness-card,.pro-risk-card,.pro-planner-card) { overflow:auto; }
+.journal-art::after { content:none!important; }
+.sovereign #panel-body .mood-card strong { white-space:normal; overflow-wrap:anywhere; min-width:0; }
+.sovereign #panel-body .mood-card > div { min-width:0; }
