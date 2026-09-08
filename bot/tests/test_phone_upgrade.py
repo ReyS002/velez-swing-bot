@@ -97,7 +97,14 @@ def test_room_regions_keep_realistic_objects_in_all_five_rooms():
         assert objects["music"][1] + objects["music"][3] < objects["keyboard"][1] + objects["keyboard"][3]
         assert objects["trackpad"][2] < objects["keyboard"][2]
         assert room["screen"][2] < 30
-        assert len(objects) == 10
+        assert set(objects) == {
+            "phone", "music", "journal", "keyboard", "trackpad", "lamp",
+            "mission", "notes", "safe", "bookshelf", "vault",
+        }
+        vx, vy, vw, vh = objects["vault"]
+        bx, by, bw, bh = objects["bookshelf"]
+        assert vy + vh < objects["safe"][1]
+        assert vx + vw <= bx or bx + bw <= vx or vy + vh <= by or by + bh <= vy
         for x, y, width, height in [*objects.values(), room["screen"], room["broadcast"]]:
             assert 0 <= x < 100 and 0 <= y < 100
             assert width > 0 and height > 0
