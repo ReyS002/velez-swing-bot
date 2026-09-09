@@ -1,6 +1,6 @@
-import {mountObjectMotion} from "./sovereign-motion.js?v=1.4.1";
+import {mountObjectMotion} from "./sovereign-motion.js?v=1.4.2";
 // Shared Sovereign room shell. Keep byte-identical across bot editions.
-export const SOVEREIGN_VERSION = "1.4.1";
+export const SOVEREIGN_VERSION = "1.4.2";
 const ASSETS = "/dashboard/assets/sovereign/";
 const percent = ([x, y, w, h]) => ({ x: x / 100, y: y / 100, w: w / 100, h: h / 100 });
 export const ROOMS = {
@@ -10,13 +10,21 @@ export const ROOMS = {
   manhattan: { name:"New York", modes:{night:"Night",day:"Day"}, defaultTheme:"night", images:{night:"manhattan-night-clean.png",day:"manhattan-day-clean.png"},screen:[34.35,41.65,27.4,19.85],broadcast:[4.05,22.1,12.85,24.8],objects:{phone:[13.8,63,10.9,17],music:[27.8,66.3,4.4,11],journal:[69.6,73.6,8.9,9.4],keyboard:[33.3,72.5,24,6.3],trackpad:[58.7,73.3,6.5,4.8],lamp:[7.5,47,15.4,23.5],mission:[70.2,54.35,6.7,11.8],notes:[80.7,55.8,9.2,13.8],vault:[19.3780,16.0468,4.8445,6.2699],safe:[79.7,91.5,10.5,3.7],bookshelf:[19.2,23,5.5,2.5]} },
   dubai: {name:"Dubai",modes:{day:"Day",night:"Night"},defaultTheme:"day",images:{day:"dubai-day-clean.png",night:"dubai-night-clean.png"},screen:[33.75,40.4,27.2,21.8],broadcast:[4.7,21.1,12.45,21.3],objects:{phone:[13.5,66.5,12,15.3],music:[27.3,66.6,4,10.7],journal:[71,75.1,9.6,9.5],keyboard:[32.3,72.2,24.8,6],trackpad:[57.5,73,7.2,4.5],lamp:[8,45.5,13.6,25.5],mission:[71,55.35,6.9,11.7],notes:[80.5,53.2,11,17.5],vault:[20.3947,56.4293,4.3660,4.7821],safe:[81.4,92,10.2,3.5],bookshelf:[19.5,47,5,6]}}
 };
-// Localized artwork regions in source pixels: cleared shelf, desk sculpture, safe.
+// Localized artwork regions in source pixels: cleared shelf, calendar/sculpture arrangement, safe.
 const ROOM_ART = {
- media:[[130,349,127,93],[1297,574,232,137]],
- pacific:[[306,260,113,94],[1338,531,216,150],[307,78,110,87]],
- tokyo:[[316,254,107,78],[1301,527,236,148],[316,337,108,74]],
- manhattan:[[316,332,110,84],[1307,526,220,140],[316,140,110,94]],
- dubai:[[320,350,112,83],[1330,526,205,141],[320,518,113,64]]
+ media:[[130,349,127,93],[1048,535,505,207]],
+ pacific:[[306,260,113,94],[1027,500,550,217],[307,78,110,87]],
+ tokyo:[[316,254,107,78],[1057,492,503,213],[316,337,108,74]],
+ manhattan:[[316,332,110,84],[1040,486,511,212],[316,140,110,94]],
+ dubai:[[320,350,112,83],[1030,496,529,206],[320,518,113,64]]
+};
+// Interior calendar faces and sculpture bounds, calibrated per lighting artwork.
+const SPACING_LAYOUT = {
+ media:{day:{mission:[1090,557,105,105],notes:[1257,582,230,123]},night:{mission:[1072,557,105,105],notes:[1257,583,230,122]}},
+ pacific:{day:{mission:[1080,525,110,105],notes:[1280,563,209,116]},night:{mission:[1053,525,110,105],notes:[1274,563,208,116]}},
+ tokyo:{day:{mission:[1084,517,108,108],notes:[1275,542,233,124]},night:{mission:[1086,517,102,108],notes:[1255,540,240,125]}},
+ manhattan:{day:{mission:[1101,513,111,107],notes:[1270,542,218,110]},night:{mission:[1066,512,108,107],notes:[1245,540,213,113]}},
+ dubai:{day:{mission:[1086,520,108,108],notes:[1288,552,199,109]},night:{mission:[1066,520,108,108],notes:[1261,552,215,110]}}
 };
 let visibleArtwork=null;
 function layoutRoomArtwork(){
@@ -25,7 +33,7 @@ function layoutRoomArtwork(){
  const regions=ROOM_ART[visibleArtwork.id];
  let patches=[...plate.querySelectorAll('.room-art-patch')];
  if(patches.length!==regions.length){patches.forEach(e=>e.remove());patches=regions.map(()=>{const e=document.createElement('span');e.className='room-art-patch';e.setAttribute('aria-hidden','true');plate.append(e);return e;});}
- regions.forEach(([x,y,w,h],i)=>{const e=patches[i];Object.assign(e.style,{left:(r.left+x*r.width/1672)+'px',top:(r.top+y*r.height/941)+'px',width:w*r.width/1672+'px',height:h*r.height/941+'px',backgroundImage:`url("${ASSETS}objects-${visibleArtwork.file}?v=1.4.1")`,backgroundSize:`${r.width}px ${r.height}px`,backgroundPosition:`${-x*r.width/1672}px ${-y*r.height/941}px`});});
+ regions.forEach(([x,y,w,h],i)=>{const e=patches[i];Object.assign(e.style,{left:(r.left+x*r.width/1672)+'px',top:(r.top+y*r.height/941)+'px',width:w*r.width/1672+'px',height:h*r.height/941+'px',backgroundImage:`url("${ASSETS}${i===1?"spacing":"objects"}-${visibleArtwork.file}?v=1.4.2")`,backgroundSize:`${r.width}px ${r.height}px`,backgroundPosition:`${-x*r.width/1672}px ${-y*r.height/941}px`});});
 }
 // Clockwise wall-plane corners in the original 1672 × 941 room artwork.
 // Executive faces the viewer; the scenic-room walls recede toward the window.
@@ -59,7 +67,14 @@ export function roomRect() {
   return {left:(window.innerWidth-width)/2,top:(window.innerHeight-height)/2,width,height};
 }
 export function roomRegions() { const r=ROOMS[roomId]; return {screen:percent(r.screen),broadcast:percent(r.broadcast),phone:percent(r.objects.phone)}; }
-export function roomHotspots() {return Object.entries(ROOMS[roomId].objects).map(([id,rect])=>({id,panel:OBJECTS[id][0],label:OBJECTS[id][1],icon:OBJECTS[id][2],...percent(rect)}));}
+export function roomHotspots() {
+ const placed=SPACING_LAYOUT[roomId][lighting[roomId]||ROOMS[roomId].defaultTheme];
+ return Object.entries(ROOMS[roomId].objects).map(([id,rect])=>{
+  let bounds=percent(rect);
+  if(placed[id]){const [x,y,w,h]=placed[id];bounds={x:x/1672,y:y/941,w:w/1672,h:h/941};}
+  return {id,panel:OBJECTS[id][0],label:OBJECTS[id][1],icon:OBJECTS[id][2],...bounds};
+ });
+}
 export function objectMarkup(definition) {
   const id=definition.id;
   if(id==="phone") return `<span class="prop-art phone-art"><svg viewBox="80 145 1100 980" aria-hidden="true"><defs><clipPath id="phone-silhouette"><path d="M86 978 L98 930 L111 881 L133 801 L142 784 L157 278 Q163 230 208 224 L809 222 Q853 225 865 275 L878 210 Q885 160 929 155 L1032 153 Q1078 156 1087 199 L1116 800 L1144 881 L1163 950 L1168 978 L1168 1048 Q1168 1073 1139 1090 Q1128 1103 1109 1108 L149 1108 Q128 1102 116 1088 Q88 1069 87 1048 Z"/></clipPath></defs><image href="${ASSETS}phone-glass.png" width="1254" height="1254" clip-path="url(#phone-silhouette)"/></svg><span class="phone-display"><small>WINSTON</small><strong>Start call</strong><span>Brief · Research</span></span></span><span class="prop-caption">Winston</span>`;
@@ -75,6 +90,10 @@ function layout() {
   const rect=roomRect();document.documentElement.style.setProperty("--room-scale",String(rect.width/1672));
   const screen=$("#screen-terminal");if(screen&&!expandedChart)applyBounds(screen,roomRegions().screen);
   adapter?.position?.();
+  for(const region of roomHotspots().filter(r=>r.id==='mission'||r.id==='notes')){
+    const target=document.querySelector(`[data-object-id="${region.id}"]`);
+    if(target)applyBounds(target,region);
+  }
   layoutRoomArtwork();
   document.dispatchEvent(new CustomEvent("desk:layout",{detail:roomSnapshot()}));
 }
@@ -84,11 +103,11 @@ export function syncRoomTheme(theme) {
   document.body.dataset.environment=roomId;
   document.body.dataset.roomTheme=lighting[roomId];
   document.body.dataset.glassTreatment=lighting[roomId]==="day"?"champagne":"smoked";
-  const url=ASSETS+ROOMS[roomId].images[lighting[roomId]]+"?v=1.4.1";
+  const url=ASSETS+ROOMS[roomId].images[lighting[roomId]]+"?v=1.4.2";
   const plate=$(".photo-room");
   if(plate){const token=++preloadToken,id=roomId,file=ROOMS[id].images[lighting[id]];
     const load=src=>new Promise((resolve,reject)=>{const image=new Image();image.onload=resolve;image.onerror=reject;image.src=src;});
-    Promise.all([load(url),load(ASSETS+'objects-'+file+'?v=1.4.1')]).then(()=>{if(token!==preloadToken)return;plate.style.backgroundImage=`url("${url}")`;visibleArtwork={id,file};layoutRoomArtwork();document.body.dataset.roomAsset=file;}).catch(()=>announce("This room image could not load. Try switching rooms again."));
+    Promise.all([load(url),load(ASSETS+'objects-'+file+'?v=1.4.2'),load(ASSETS+'spacing-'+file+'?v=1.4.2')]).then(()=>{if(token!==preloadToken)return;plate.style.backgroundImage=`url("${url}")`;visibleArtwork={id,file};layoutRoomArtwork();document.body.dataset.roomAsset=file;layout();}).catch(()=>announce("This room image could not load. Try switching rooms again."));
   }
   const picker=$("#sovereign-room-select");if(picker)picker.value=roomId;
   const toggle=$("#theme-toggle");if(toggle){toggle.innerHTML=`<span>${ROOMS[roomId].modes[lighting[roomId]]}</span><i data-lucide="sun-moon"></i>`;toggle.setAttribute("aria-label",`Lighting: ${ROOMS[roomId].modes[lighting[roomId]]}. Switch to ${ROOMS[roomId].modes[lighting[roomId]==="day"?"night":"day"]}`);}
