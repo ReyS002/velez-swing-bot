@@ -1,6 +1,7 @@
-import {mountObjectMotion} from "./sovereign-motion.js?v=1.4.2";
+import {statueOutline} from "./sovereign-statue.js?v=1.4.3";
+import {mountObjectMotion} from "./sovereign-motion.js?v=1.4.3";
 // Shared Sovereign room shell. Keep byte-identical across bot editions.
-export const SOVEREIGN_VERSION = "1.4.2";
+export const SOVEREIGN_VERSION = "1.4.3";
 const ASSETS = "/dashboard/assets/sovereign/";
 const percent = ([x, y, w, h]) => ({ x: x / 100, y: y / 100, w: w / 100, h: h / 100 });
 export const ROOMS = {
@@ -33,7 +34,7 @@ function layoutRoomArtwork(){
  const regions=ROOM_ART[visibleArtwork.id];
  let patches=[...plate.querySelectorAll('.room-art-patch')];
  if(patches.length!==regions.length){patches.forEach(e=>e.remove());patches=regions.map(()=>{const e=document.createElement('span');e.className='room-art-patch';e.setAttribute('aria-hidden','true');plate.append(e);return e;});}
- regions.forEach(([x,y,w,h],i)=>{const e=patches[i];Object.assign(e.style,{left:(r.left+x*r.width/1672)+'px',top:(r.top+y*r.height/941)+'px',width:w*r.width/1672+'px',height:h*r.height/941+'px',backgroundImage:`url("${ASSETS}${i===1?"spacing":"objects"}-${visibleArtwork.file}?v=1.4.2")`,backgroundSize:`${r.width}px ${r.height}px`,backgroundPosition:`${-x*r.width/1672}px ${-y*r.height/941}px`});});
+ regions.forEach(([x,y,w,h],i)=>{const e=patches[i];Object.assign(e.style,{left:(r.left+x*r.width/1672)+'px',top:(r.top+y*r.height/941)+'px',width:w*r.width/1672+'px',height:h*r.height/941+'px',backgroundImage:`url("${ASSETS}${i===1?"spacing":"objects"}-${visibleArtwork.file}?v=1.4.3")`,backgroundSize:`${r.width}px ${r.height}px`,backgroundPosition:`${-x*r.width/1672}px ${-y*r.height/941}px`});});
 }
 // Clockwise wall-plane corners in the original 1672 × 941 room artwork.
 // Executive faces the viewer; the scenic-room walls recede toward the window.
@@ -77,6 +78,7 @@ export function roomHotspots() {
 }
 export function objectMarkup(definition) {
   const id=definition.id;
+  if(id==="notes")return statueOutline(roomId,lighting[roomId]||ROOMS[roomId].defaultTheme,definition.w*1672,definition.h*941);
   if(id==="phone") return `<span class="prop-art phone-art"><svg viewBox="80 145 1100 980" aria-hidden="true"><defs><clipPath id="phone-silhouette"><path d="M86 978 L98 930 L111 881 L133 801 L142 784 L157 278 Q163 230 208 224 L809 222 Q853 225 865 275 L878 210 Q885 160 929 155 L1032 153 Q1078 156 1087 199 L1116 800 L1144 881 L1163 950 L1168 978 L1168 1048 Q1168 1073 1139 1090 Q1128 1103 1109 1108 L149 1108 Q128 1102 116 1088 Q88 1069 87 1048 Z"/></clipPath></defs><image href="${ASSETS}phone-glass.png" width="1254" height="1254" clip-path="url(#phone-silhouette)"/></svg><span class="phone-display"><small>WINSTON</small><strong>Start call</strong><span>Brief · Research</span></span></span><span class="prop-caption">Winston</span>`;
   if(id==="music") return `<span class="prop-art music-art"><svg viewBox="58 46 910 1420" aria-hidden="true"><defs><clipPath id="player-silhouette"><path d="M160 129 Q162 49 235 50 L795 50 Q865 51 866 125 L884 1148 Q926 1160 939 1205 L963 1310 L963 1394 Q963 1447 900 1457 L119 1457 Q61 1447 61 1395 L61 1310 L84 1213 Q95 1171 139 1154 Z"/></clipPath></defs><image href="${ASSETS}pocket-player.png" width="1024" height="1536" clip-path="url(#player-silhouette)"/></svg><span class="music-display"><small>APPLE MUSIC</small><span class="prop-now-playing">Your music</span></span></span><span class="prop-caption">Music</span>`;
   if(id==="journal") return `<span class="prop-art journal-art"><svg viewBox="100 130 1350 768" aria-hidden="true"><defs><clipPath id="journal-silhouette"><path d="M167 243 L901 138 Q935 135 952 150 L1415 620 Q1448 661 1416 672 L1438 720 Q1448 743 1419 752 L518 890 Q487 898 477 878 L124 374 Q84 300 137 260 Z"/></clipPath></defs><image href="${ASSETS}journal-no-pen.png" width="1536" height="1024" clip-path="url(#journal-silhouette)"/></svg></span><span class="desk-pen" aria-hidden="true"><svg viewBox="910 200 410 430"><defs><clipPath id="desk-pen-cut"><path d="M922 224 Q937 203 959 211 L1089 347 Q1110 348 1120 374 L1302 581 Q1317 605 1294 621 Q1278 631 1258 610 L1073 400 Q1054 394 1053 378 L925 255 Q913 242 922 224Z"/></clipPath></defs><image href="${ASSETS}journal.png" width="1536" height="1024" clip-path="url(#desk-pen-cut)"/></svg></span><span class="prop-caption">Journal</span>`;
@@ -92,7 +94,13 @@ function layout() {
   adapter?.position?.();
   for(const region of roomHotspots().filter(r=>r.id==='mission'||r.id==='notes')){
     const target=document.querySelector(`[data-object-id="${region.id}"]`);
-    if(target)applyBounds(target,region);
+    if(target){
+      applyBounds(target,region);
+      if(region.id==='notes'){
+        const artwork=roomId+'/'+lighting[roomId];
+        if(target.dataset.outlineArt!==artwork){target.innerHTML=objectMarkup(region);target.dataset.outlineArt=artwork;}
+      }
+    }
   }
   layoutRoomArtwork();
   document.dispatchEvent(new CustomEvent("desk:layout",{detail:roomSnapshot()}));
@@ -103,11 +111,11 @@ export function syncRoomTheme(theme) {
   document.body.dataset.environment=roomId;
   document.body.dataset.roomTheme=lighting[roomId];
   document.body.dataset.glassTreatment=lighting[roomId]==="day"?"champagne":"smoked";
-  const url=ASSETS+ROOMS[roomId].images[lighting[roomId]]+"?v=1.4.2";
+  const url=ASSETS+ROOMS[roomId].images[lighting[roomId]]+"?v=1.4.3";
   const plate=$(".photo-room");
   if(plate){const token=++preloadToken,id=roomId,file=ROOMS[id].images[lighting[id]];
     const load=src=>new Promise((resolve,reject)=>{const image=new Image();image.onload=resolve;image.onerror=reject;image.src=src;});
-    Promise.all([load(url),load(ASSETS+'objects-'+file+'?v=1.4.2'),load(ASSETS+'spacing-'+file+'?v=1.4.2')]).then(()=>{if(token!==preloadToken)return;plate.style.backgroundImage=`url("${url}")`;visibleArtwork={id,file};layoutRoomArtwork();document.body.dataset.roomAsset=file;layout();}).catch(()=>announce("This room image could not load. Try switching rooms again."));
+    Promise.all([load(url),load(ASSETS+'objects-'+file+'?v=1.4.3'),load(ASSETS+'spacing-'+file+'?v=1.4.3')]).then(()=>{if(token!==preloadToken)return;plate.style.backgroundImage=`url("${url}")`;visibleArtwork={id,file};layoutRoomArtwork();document.body.dataset.roomAsset=file;layout();}).catch(()=>announce("This room image could not load. Try switching rooms again."));
   }
   const picker=$("#sovereign-room-select");if(picker)picker.value=roomId;
   const toggle=$("#theme-toggle");if(toggle){toggle.innerHTML=`<span>${ROOMS[roomId].modes[lighting[roomId]]}</span><i data-lucide="sun-moon"></i>`;toggle.setAttribute("aria-label",`Lighting: ${ROOMS[roomId].modes[lighting[roomId]]}. Switch to ${ROOMS[roomId].modes[lighting[roomId]==="day"?"night":"day"]}`);}

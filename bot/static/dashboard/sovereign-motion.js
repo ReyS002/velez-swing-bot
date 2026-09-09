@@ -30,7 +30,7 @@ export function mountObjectMotion({open,roomRect,roomSnapshot}) {
     const img=(file,w,h,attr='')=>`<image href="${ASSETS+file}" width="${w}" height="${h}" ${attr}/>`;
     const layer=(rect)=>{
       const e=append(document.body,'','desk-motion-slice');const room=roomRect();
-      Object.assign(e.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px',backgroundImage:panel==='mission'?`url("${ASSETS}spacing-${document.body.dataset.roomAsset}?v=1.4.2")`:panel==='vault'&&roomSnapshot().id!=='media'?`url("${ASSETS}objects-${document.body.dataset.roomAsset}?v=1.4.2")`:getComputedStyle(document.querySelector('.photo-room')).backgroundImage,backgroundSize:`${room.width}px ${room.height}px`,backgroundPosition:`${room.left-rect.left}px ${room.top-rect.top}px`});return e;
+      Object.assign(e.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px',backgroundImage:panel==='mission'?`url("${ASSETS}spacing-${document.body.dataset.roomAsset}?v=1.4.3")`:panel==='vault'&&roomSnapshot().id!=='media'?`url("${ASSETS}objects-${document.body.dataset.roomAsset}?v=1.4.3")`:getComputedStyle(document.querySelector('.photo-room')).backgroundImage,backgroundSize:`${room.width}px ${room.height}px`,backgroundPosition:`${room.left-rect.left}px ${room.top-rect.top}px`});return e;
     };
     try {
       if(panel==='phone'){
@@ -59,7 +59,8 @@ export function mountObjectMotion({open,roomRect,roomSnapshot}) {
         animate(e.querySelector('g'),frames,650);
         animate(e.querySelector('.cover-lining'),[{opacity:0},{opacity:0,offset:.60},{opacity:1,offset:.64},{opacity:1}],650);
       } else if(panel==='notes'){
-        const e=append(target,'','desk-motion-sheen');animate(e,[{opacity:0,transform:'translateX(-55%) skew(-18deg)'},{opacity:.7,offset:.4},{opacity:0,transform:'translateX(65%) skew(-18deg)'}],440);
+        const outline=target.querySelector('.statue-outline');
+        if(outline){const pulse=animate(outline,[{opacity:Number(getComputedStyle(outline).opacity)},{opacity:.95,offset:.42},{opacity:.55,offset:.70},{opacity:0}],560);pulse.effect.updateTiming({easing:'ease-in-out'});}
       } else if(panel==='lamp'){
         const r=target.getBoundingClientRect();const e=append(document.body,'','desk-motion-light');Object.assign(e.style,{left:r.left+'px',top:(r.bottom-r.height*.08)+'px',width:r.width*1.05+'px',height:r.height*.23+'px'});
         animate(e,[{opacity:0},{opacity:.6}],400);
