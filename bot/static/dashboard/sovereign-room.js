@@ -147,7 +147,7 @@ function handleAction(event){const target=event.target.closest("[data-desk-actio
 export function updateSovereignChrome({panel,open,state,music,winston}={}) {
   if(!adapter)return;
   $$(".sovereign-dock [data-desk-action]").forEach(button=>button.setAttribute("aria-pressed",String(open&&(button.dataset.deskAction===panel||(button.dataset.deskAction==="journal"&&panel==="notes")))));
-  const tabs=$("#sovereign-panel-tabs");const group=["safe","vault"].includes(panel)?[["safe","Approvals"],["vault","Vault checks"]]:panel==="tv"?[["expand-chart","Open full chart"]]:["mission","calendar","clock","window"].includes(panel)?[["mission","Mission"],["calendar","Calendar"],["clock","Sessions"],["window","Conditions"],["laptop","Watchlist"]]:["journal","notes"].includes(panel)?[["journal","Trades"],["notes","Report & notes"]]:[];
+  const tabs=$("#sovereign-panel-tabs");const group=panel==="vault"?[["vault","Vault checks"]]:panel==="tv"?[["expand-chart","Open full chart"]]:["mission","calendar","clock","window"].includes(panel)?[["mission","Mission"],["calendar","Calendar"],["clock","Sessions"],["window","Conditions"],["laptop","Watchlist"]]:["journal","notes"].includes(panel)?[["journal","Trades"],["notes","Report & notes"]]:[];
   if(tabs&&tabs.dataset.group!==group.map(x=>x[0]).join()){tabs.dataset.group=group.map(x=>x[0]).join();tabs.innerHTML=group.map(([id,label])=>`<button type="button" data-desk-action="${id}">${label}</button>`).join("");}
   tabs?.querySelectorAll("button").forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.deskAction===panel)));
   const title=$("#panel-title");if(title&&open&&PANEL_LABELS[panel])title.textContent=PANEL_LABELS[panel];

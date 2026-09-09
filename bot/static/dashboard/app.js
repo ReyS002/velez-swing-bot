@@ -1,4 +1,4 @@
-import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.4.3";
+import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.4.4";
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
@@ -3653,8 +3653,7 @@ function renderCalendar() {
 }
 
 function renderSafe() {
-  return `<section class="tool-section"><div class="section-title">Approval inbox</div>${renderApprovalInbox()}</section>
-    <div class="actions"><button type="button" class="symbol-button" data-open-panel="vault">Open Vault checks</button></div>`;
+  return `<section class="tool-section"><div class="section-title">Approval inbox</div>${renderApprovalInbox()}</section>`;
 }
 
 function renderVault() {

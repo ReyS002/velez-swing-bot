@@ -79,3 +79,40 @@ body.sovereign[data-room-theme="day"] { --desk-glass-alpha:.29; --desk-glass-car
 .sovereign[data-object-motion="on"] [data-object-id="notes"]:is(:hover,:focus-visible){outline:none!important;box-shadow:none!important;}
 .sovereign.panel-open .statue-outline,.sovereign[data-object-motion="off"] .statue-outline{opacity:0!important;transition:none!important;}
 @media(prefers-reduced-motion:reduce){.sovereign .statue-outline{opacity:0!important;transition:none!important;}}
+
+/* Readable scene-aware glass navigation and a standalone brand seal. */
+body.sovereign{--nav-glass:rgba(10,18,23,.20);--nav-ink:#fff8eb;--nav-line:rgba(237,213,171,.3);--nav-chip:rgba(8,16,21,.09);--nav-active:rgba(240,222,183,.84);--nav-active-ink:#1b211f;--nav-good:#a8f1cc;--nav-warn:#ffe0a0;--nav-bad:#ffc0b4;}
+body.sovereign[data-room-theme="day"]{--nav-glass:rgba(255,242,215,.24);--nav-ink:#211b13;--nav-line:rgba(83,59,26,.28);--nav-chip:rgba(255,247,227,.10);--nav-active:rgba(52,40,23,.83);--nav-active-ink:#fff6e6;--nav-good:#124d35;--nav-warn:#63400b;--nav-bad:#8c2720;}
+.sovereign .status-strip,.sovereign .sovereign-dock{background:var(--nav-glass)!important;border-color:var(--nav-line)!important;backdrop-filter:blur(6px) saturate(110%);-webkit-backdrop-filter:blur(6px) saturate(110%);box-shadow:0 5px 20px #0002,inset 0 1px 0 #ffffff21;}
+.sovereign .status-strip :is(.status-pill,.mode-switcher,.theme-toggle,.sovereign-room-picker){background:var(--nav-chip)!important;color:var(--nav-ink)!important;border-color:var(--nav-line)!important;font-weight:600;}
+.sovereign .status-strip :is(select,option){color:var(--nav-ink)!important;}
+.sovereign .status-strip select{background:transparent!important;color-scheme:dark;}
+.sovereign[data-room-theme="day"] .status-strip select{color-scheme:light;}
+.sovereign .status-strip option{background:#172126!important;color:#fff8eb!important;}
+.sovereign[data-room-theme="day"] .status-strip option{background:#f4e7cf!important;color:#211b13!important;}
+.sovereign .status-strip .status-pill.good{color:var(--nav-good)!important;}
+.sovereign .status-strip .status-pill.warn{color:var(--nav-warn)!important;}
+.sovereign .status-strip .status-pill.bad{color:var(--nav-bad)!important;}
+.sovereign .sovereign-dock button{color:var(--nav-ink);font-weight:550;}
+.sovereign .sovereign-dock button:hover{background:var(--nav-chip);color:var(--nav-ink);}
+.sovereign .sovereign-dock button:is([aria-pressed="true"],[aria-expanded="true"]){background:var(--nav-active);color:var(--nav-active-ink);}
+.sovereign .brand-lockup{padding:0!important;border:0!important;background:none!important;box-shadow:none!important;backdrop-filter:none;min-width:0;}
+.sovereign .brand-mark{width:60px;height:60px;min-width:60px;filter:drop-shadow(0 3px 5px #0005);}
+.sovereign .brand-lockup > div{position:absolute!important;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;}
+@media(max-width:760px){.sovereign .brand-mark{width:48px;height:48px;min-width:48px;}}
+@media(prefers-reduced-transparency:reduce),(prefers-contrast:more){body.sovereign{--nav-glass:rgba(10,18,23,.96);}body.sovereign[data-room-theme="day"]{--nav-glass:rgba(255,242,215,.96);}}
+@supports not (backdrop-filter:blur(1px)){body.sovereign{--nav-glass:rgba(10,18,23,.94);}body.sovereign[data-room-theme="day"]{--nav-glass:rgba(255,242,215,.94);}}
+
+/* Centered navigation: centered controls and a compact full logo lockup. */
+.sovereign .status-strip{position:fixed;left:50%;top:16px;transform:translateX(-50%);width:max-content;max-width:calc(100vw - 48px);justify-content:center;}
+.sovereign .brand-mark{width:180px;height:90px;min-width:180px;border-radius:0;background:none;}
+.sovereign .brand-mark img{width:100%;height:100%;object-fit:contain;border-radius:0;}
+@media(max-width:1100px){
+ .sovereign .brand-mark{width:130px;height:65px;min-width:130px;}
+ .sovereign .status-strip{top:88px;}
+}
+@media(max-width:760px){
+ .sovereign .status-strip{top:82px;max-width:calc(100vw - 24px);}
+}
+
+.sovereign .brand-mark{background:transparent!important;border:0!important;box-shadow:none!important;}
