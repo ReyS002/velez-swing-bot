@@ -1,5 +1,5 @@
 // One Broadcast player follows the room's own calibrated wall surface.
-import {broadcastCorners, roomSnapshot} from "./sovereign-room.js?v=1.4.3";
+import {broadcastCorners, roomSnapshot} from "./sovereign-room.js?v=1.4.4";
 import {createBriefView} from "./broadcast-brief.js?v=1.2.2";
 const $ = selector => document.querySelector(selector);
 const state = {enabled:false, expanded:false, playing:false, muted:false, volume:0.6, ducked:false, provider:"native", youtube:null, youtubeReady:false, lastFocus:null, config:{}};
