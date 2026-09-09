@@ -1,7 +1,7 @@
 import {statueOutline} from "./sovereign-statue.js?v=1.4.3";
-import {mountObjectMotion} from "./sovereign-motion.js?v=1.4.3";
+import {mountObjectMotion} from "./sovereign-motion.js?v=1.5.0";
 // Shared Sovereign room shell. Keep byte-identical across bot editions.
-export const SOVEREIGN_VERSION = "1.4.3";
+export const SOVEREIGN_VERSION = "1.5.0";
 const ASSETS = "/dashboard/assets/sovereign/";
 const percent = ([x, y, w, h]) => ({ x: x / 100, y: y / 100, w: w / 100, h: h / 100 });
 export const ROOMS = {
@@ -139,6 +139,7 @@ function handleAction(event){const target=event.target.closest("[data-desk-actio
   if(action==="close-tools")return closeTools();
   if(action==="desk"){closeTools(false);adapter.close();if(expandedChart)expandChart(false);return;}
   if(action==="broadcast"){closeTools(false);adapter.close();document.dispatchEvent(new CustomEvent("desk:broadcast-open"));return;}
+  if(action==="channels"){closeTools(false);document.dispatchEvent(new CustomEvent("desk:broadcast-channels-manager"));return;}
   if(action==="expand-chart"){lastFocus=target;return expandChart(true);}
   if(action==="close-chart")return expandChart(false);
   if(action==="pro-console"){closeTools(false);adapter.openProConsole?.();return;}
@@ -167,7 +168,7 @@ export function mountSovereign(options) {
   roomControl.querySelector("select").addEventListener("change",e=>selectRoom(e.target.value));
   if(!$("#account-toggle")){const account=document.createElement("button");account.type="button";account.id="account-toggle";account.className="theme-toggle";account.dataset.deskAction="account";account.innerHTML='<i data-lucide="user-round"></i><span>Account</span>';statusStrip?.append(account);}
   const nav=document.createElement("nav");nav.className="sovereign-dock";nav.setAttribute("aria-label","Desk navigation");nav.innerHTML=[["desk","Desk","armchair"],["laptop","Command","terminal"],["mentor","Mentor","sparkles"],["journal","Journal","book-open"],["broadcast","Broadcast","radio"],["tools","Tools","grid-2x2"]].map(([id,label,icon])=>`<button type="button" data-desk-action="${id}"${id==="tools"?' aria-expanded="false" aria-controls="sovereign-tools"':''}><i data-lucide="${icon}"></i><span>${label}</span></button>`).join("");$("#app-shell").append(nav);
-  const tools=document.createElement("section");tools.id="sovereign-tools";tools.className="sovereign-tools";tools.hidden=true;tools.setAttribute("role","dialog");tools.setAttribute("aria-modal","true");tools.setAttribute("aria-labelledby","sovereign-tools-title");tools.innerHTML=`<header><div><small>YOUR WORKSPACE</small><h2 id="sovereign-tools-title">Tools</h2></div><button type="button" data-desk-action="close-tools" aria-label="Close tools">×</button></header><div class="sovereign-tools-grid">${Object.entries(PANEL_LABELS).map(([id,label])=>`<button type="button" data-desk-action="${id}">${label}<span>↗</span></button>`).join("")}${options.openProConsole?'<button type="button" data-desk-action="pro-console">Pro Console<span>↗</span></button>':''}</div>`;$("#app-shell").append(tools);
+  const tools=document.createElement("section");tools.id="sovereign-tools";tools.className="sovereign-tools";tools.hidden=true;tools.setAttribute("role","dialog");tools.setAttribute("aria-modal","true");tools.setAttribute("aria-labelledby","sovereign-tools-title");tools.innerHTML=`<header><div><small>YOUR WORKSPACE</small><h2 id="sovereign-tools-title">Tools</h2></div><button type="button" data-desk-action="close-tools" aria-label="Close tools">×</button></header><div class="sovereign-tools-grid">${Object.entries(PANEL_LABELS).map(([id,label])=>`<button type="button" data-desk-action="${id}">${label}<span>↗</span></button>`).join("")}<button type="button" data-desk-action="channels">Channel Manager<span>↗</span></button>${options.openProConsole?'<button type="button" data-desk-action="pro-console">Pro Console<span>↗</span></button>':''}</div>`;$("#app-shell").append(tools);
   const tabs=document.createElement("nav");tabs.id="sovereign-panel-tabs";tabs.setAttribute("aria-label","Related workspace views");$("#panel-body")?.before(tabs);
   const expand=document.createElement("button");expand.type="button";expand.className="sovereign-chart-expand";expand.dataset.deskAction="expand-chart";expand.setAttribute("aria-label","Expand trading chart");expand.innerHTML='<i data-lucide="maximize-2"></i>';
   expand.addEventListener("click",event=>event.stopPropagation());$("#screen-terminal")?.append(expand);

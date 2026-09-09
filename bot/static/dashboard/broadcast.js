@@ -1,5 +1,5 @@
 // One Broadcast player follows the room's own calibrated wall surface.
-import {broadcastCorners, roomSnapshot} from "./sovereign-room.js?v=1.4.4";
+import {broadcastCorners, roomSnapshot} from "./sovereign-room.js?v=1.5.0";
 import {createBriefView} from "./broadcast-brief.js?v=1.2.2";
 const $ = selector => document.querySelector(selector);
 const state = {enabled:false, expanded:false, playing:false, muted:false, volume:0.6, ducked:false, provider:"native", youtube:null, youtubeReady:false, lastFocus:null, config:{}};
@@ -15,9 +15,229 @@ const tickerLinks = {
 };
 let stage, video, marketTimer, youtubePromise, surfaceMotion, brief;
 let selected=null, selectionVersion=0, storageKey="", playerRevealed=false;
+let serverChannels=[],managerKey="",managerDialog=null,managerReturnFocus=null;
+let managerState={custom:[],overrides:{},order:[],disabled:[]};
+const MANAGER_LIMIT=14;
 function saveSettings(){try{localStorage.setItem(storageKey,JSON.stringify({channel:selected?.id,muted:state.muted,volume:state.volume}));}catch{}}
 const escape = value => {const node=document.createElement("span");node.textContent=String(value??"");return node.innerHTML;};
 const time = seconds => {const n=Math.max(0,Math.floor(Number(seconds)||0));return String(Math.floor(n/60)).padStart(2,"0")+":"+String(n%60).padStart(2,"0");};
+const clone = value => JSON.parse(JSON.stringify(value));
+const validVideoId = value => /^[A-Za-z0-9_-]{11}$/.test(String(value||""));
+const validPlaylistId = value => /^[A-Za-z0-9_-]{10,80}$/.test(String(value||""));
+function validChannelUrl(value){
+  try{const url=new URL(String(value||""));return url.protocol==="https:"&&["youtube.com","www.youtube.com"].includes(url.hostname)&&!url.username&&!url.password;}
+  catch{return false;}
+}
+function cleanManagerState(value){
+  const input=value&&typeof value==="object"?value:{};
+  return {
+    custom:Array.isArray(input.custom)?input.custom.filter(item=>item&&typeof item==="object").slice(0,MANAGER_LIMIT):[],
+    overrides:input.overrides&&typeof input.overrides==="object"&&!Array.isArray(input.overrides)?input.overrides:{},
+    order:Array.isArray(input.order)?input.order.map(String).slice(0,MANAGER_LIMIT):[],
+    disabled:Array.isArray(input.disabled)?input.disabled.map(String).slice(0,MANAGER_LIMIT):[],
+  };
+}
+function readManager(){
+  try{return cleanManagerState(JSON.parse(localStorage.getItem(managerKey)||"{}"));}
+  catch{return cleanManagerState({});}
+}
+function writeManager(){
+  managerState=cleanManagerState(managerState);
+  try{localStorage.setItem(managerKey,JSON.stringify(managerState));}catch{}
+}
+function managedCatalog(){
+  const disabled=new Set(managerState.disabled);
+  const defaults=serverChannels.map(channel=>({...clone(channel),...(managerState.overrides[channel.id]||{}),managed_default:true}));
+  const custom=managerState.custom.map(channel=>({...clone(channel),managed_custom:true}));
+  const all=[...defaults,...custom].filter((channel,index,rows)=>channel?.id&&rows.findIndex(item=>item.id===channel.id)===index);
+  const rank=new Map(managerState.order.map((id,index)=>[id,index]));
+  all.sort((left,right)=>(rank.get(left.id)??999)-(rank.get(right.id)??999));
+  return all.map(channel=>({...channel,enabled:!disabled.has(channel.id)}));
+}
+function channelType(channel){
+  if(channel.kind==="brief")return "Private brief";
+  if(channel.youtube_playlist_id)return "YouTube playlist";
+  if(channel.youtube_video_id)return channel.kind==="live"?"YouTube live video":"YouTube video";
+  if(channel.kind==="coming-soon")return "Coming soon";
+  return "Official channel link";
+}
+function managerStatus(message,error=false){
+  const target=managerDialog?.querySelector("[data-channel-status]");
+  if(target){target.textContent=message||"";target.dataset.error=String(error);}
+}
+function renderManager(){
+  if(!managerDialog)return;
+  const channels=managedCatalog();
+  const list=managerDialog.querySelector("[data-channel-list]");
+  list.innerHTML=channels.map((channel,index)=>{
+    const fixed=channel.id==="winston";
+    const source=channel.managed_custom?"Personal":"Desk default";
+    return '<article class="channel-manager-row'+(channel.enabled?"":" is-disabled")+'" data-channel-id="'+channel.id+'">'+
+      '<div><small>'+escape(channel.category||"My Channels")+' · '+source+'</small><strong>'+escape(channel.label)+'</strong><span>'+escape(channelType(channel))+'</span></div>'+
+      '<div class="channel-manager-actions">'+
+      '<button type="button" data-channel-action="up" aria-label="Move '+escape(channel.label)+' up" '+(index===0?"disabled":"")+'>↑</button>'+
+      '<button type="button" data-channel-action="down" aria-label="Move '+escape(channel.label)+' down" '+(index===channels.length-1?"disabled":"")+'>↓</button>'+
+      (fixed?'':('<button type="button" data-channel-action="toggle">'+(channel.enabled?"Disable":"Enable")+'</button>'))+
+      (fixed?'':('<button type="button" data-channel-action="edit">Edit</button>'))+
+      (channel.managed_custom?'<button type="button" data-channel-action="remove">Remove</button>':'')+
+      '</div></article>';
+  }).join("");
+  managerDialog.querySelector("[data-channel-count]").textContent=channels.length+" of "+MANAGER_LIMIT+" channels";
+}
+function resetManagerForm(){
+  const form=managerDialog?.querySelector("[data-channel-form]");
+  if(!form)return;
+  form.reset();form.elements.channel_id.value="";form.elements.kind.value="live";form.elements.category.value="My Channels";
+  managerDialog.querySelector("[data-channel-form-title]").textContent="Add a channel";
+  managerDialog.querySelector("[data-channel-save]").textContent="Add channel";
+  managerStatus("");
+}
+function editManagerChannel(channel){
+  const form=managerDialog?.querySelector("[data-channel-form]");
+  if(!form||!channel||channel.id==="winston")return;
+  form.elements.channel_id.value=channel.id;
+  form.elements.label.value=channel.label||"";
+  form.elements.category.value=channel.category||"My Channels";
+  form.elements.kind.value=["live","replay","external","coming-soon"].includes(channel.kind)?channel.kind:"external";
+  form.elements.video_id.value=channel.youtube_video_id||"";
+  form.elements.playlist_id.value=channel.youtube_playlist_id||"";
+  form.elements.channel_url.value=channel.youtube_channel_url||"";
+  managerDialog.querySelector("[data-channel-form-title]").textContent="Edit "+channel.label;
+  managerDialog.querySelector("[data-channel-save]").textContent="Save changes";
+  form.elements.label.focus();
+}
+function managerFormChannel(form){
+  const label=String(form.elements.label.value||"").trim();
+  const category=String(form.elements.category.value||"My Channels").trim();
+  const kind=String(form.elements.kind.value||"external");
+  const video=String(form.elements.video_id.value||"").trim();
+  const playlist=String(form.elements.playlist_id.value||"").trim();
+  const url=String(form.elements.channel_url.value||"").trim();
+  if(!label)return {error:"Add a channel name."};
+  if(video&&!validVideoId(video))return {error:"A YouTube video ID is exactly 11 letters, numbers, dashes, or underscores."};
+  if(playlist&&!validPlaylistId(playlist))return {error:"That playlist ID does not look complete."};
+  if(url&&!validChannelUrl(url))return {error:"Use a full public YouTube channel URL beginning with https://."};
+  if(["live","replay"].includes(kind)&&!video&&!playlist)return {error:"Live and replay entries need a video ID or playlist ID."};
+  if(kind==="external"&&!url)return {error:"An official-channel entry needs its YouTube channel URL."};
+  const channel={label:label.slice(0,48),category:(category||"My Channels").slice(0,32),kind};
+  if(video)channel.youtube_video_id=video;
+  if(playlist)channel.youtube_playlist_id=playlist;
+  if(url)channel.youtube_channel_url=url;
+  return {channel};
+}
+function slugChannel(label){
+  const base=String(label||"channel").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,25)||"channel";
+  let id="custom-"+base,suffix=2;const known=new Set(managedCatalog().map(channel=>channel.id));
+  while(known.has(id))id="custom-"+base+"-"+suffix++;
+  return id;
+}
+async function applyManager(preferredId){
+  writeManager();
+  state.config.channels=managedCatalog();
+  await rebuildChannelPicker(preferredId);
+  renderManager();
+}
+function reorderManager(id,direction){
+  const ids=managedCatalog().map(channel=>channel.id),index=ids.indexOf(id),next=index+direction;
+  if(index<0||next<0||next>=ids.length)return;
+  [ids[index],ids[next]]=[ids[next],ids[index]];managerState.order=ids;applyManager(selected?.id);
+}
+function closeManager(){
+  if(!managerDialog||managerDialog.hidden)return;
+  managerDialog.hidden=true;document.body.classList.remove("channel-manager-open");managerReturnFocus?.focus({preventScroll:true});
+}
+function ensureManager(){
+  if(managerDialog)return managerDialog;
+  managerDialog=document.createElement("section");
+  managerDialog.id="broadcast-channel-manager";managerDialog.className="broadcast-channel-manager";managerDialog.hidden=true;
+  managerDialog.setAttribute("role","dialog");managerDialog.setAttribute("aria-modal","true");managerDialog.setAttribute("aria-labelledby","channel-manager-title");
+  managerDialog.innerHTML='<header><div><small>BROADCAST SETTINGS</small><h2 id="channel-manager-title">Channel Manager</h2><p>Choose what appears on this browser&#39;s desk TV.</p></div><button type="button" data-channel-close aria-label="Close Channel Manager">×</button></header>'+
+    '<div class="channel-manager-explainer"><strong>How YouTube works here</strong><p>A video ID plays one exact public video. A playlist ID plays a list that can receive new videos later. Viewers stream public content directly from YouTube in their own browser and do not use your YouTube account.</p></div>'+
+    '<div class="channel-manager-layout"><section><div class="channel-manager-list-head"><strong>Your lineup</strong><span data-channel-count></span></div><div class="channel-manager-list" data-channel-list></div><button class="channel-manager-reset" type="button" data-channel-action="reset">Restore desk defaults</button></section>'+
+    '<form class="channel-manager-form" data-channel-form><input type="hidden" name="channel_id"><h3 data-channel-form-title>Add a channel</h3>'+
+    '<label>Channel name<input name="label" maxlength="48" required placeholder="Example: ECB Press Conference"></label>'+
+    '<label>Category<input name="category" maxlength="32" value="My Channels" placeholder="Central Banks"></label>'+
+    '<label>Playback type<select name="kind"><option value="live">Live video</option><option value="replay">Replay or playlist</option><option value="external">Official channel link</option><option value="coming-soon">Coming soon</option></select></label>'+
+    '<label>Video ID <small>One exact video · 11 characters</small><input name="video_id" autocomplete="off" placeholder="QB5BNdBFujE"></label>'+
+    '<label>Playlist ID <small>A list you can update on YouTube</small><input name="playlist_id" autocomplete="off" placeholder="PL..."></label>'+
+    '<label>YouTube channel URL<input name="channel_url" type="url" autocomplete="off" placeholder="https://www.youtube.com/@channel"></label>'+
+    '<p class="channel-manager-status" data-channel-status role="status"></p><div class="channel-manager-form-actions"><button type="button" data-channel-action="cancel">Clear</button><button type="submit" data-channel-save>Add channel</button></div></form></div>';
+  document.body.append(managerDialog);
+  document.addEventListener("keydown",event=>{
+    if(managerDialog?.hidden||event.key!=="Escape")return;
+    event.preventDefault();event.stopImmediatePropagation();closeManager();
+  },true);
+  managerDialog.querySelector("[data-channel-close]").addEventListener("click",closeManager);
+  managerDialog.querySelector("[data-channel-form]").addEventListener("submit",event=>{
+    event.preventDefault();
+    const form=event.currentTarget,id=String(form.elements.channel_id.value||"");
+    const result=managerFormChannel(form);
+    if(result.error){managerStatus(result.error,true);return;}
+    const existing=managedCatalog().find(channel=>channel.id===id);
+    if(id&&existing?.managed_default)managerState.overrides[id]=result.channel;
+    else if(id){
+      const index=managerState.custom.findIndex(channel=>channel.id===id);
+      if(index>=0)managerState.custom[index]={id,...result.channel};
+    }else{
+      if(managedCatalog().length>=MANAGER_LIMIT){managerStatus("Remove a personal channel before adding another.",true);return;}
+      const channelId=slugChannel(result.channel.label);
+      managerState.custom.push({id:channelId,...result.channel});
+      managerState.order=managedCatalog().map(channel=>channel.id);
+    }
+    applyManager(id||managerState.custom.at(-1)?.id);resetManagerForm();
+  });
+  managerDialog.addEventListener("click",event=>{
+    const button=event.target.closest("[data-channel-action]");if(!button)return;
+    const id=button.closest("[data-channel-id]")?.dataset.channelId,action=button.dataset.channelAction;
+    if(action==="cancel")return resetManagerForm();
+    if(action==="reset"){if(confirm("Restore the default channel lineup for this browser?")){managerState=cleanManagerState({});applyManager(serverChannels[0]?.id);resetManagerForm();}return;}
+    const channel=managedCatalog().find(item=>item.id===id);if(!channel)return;
+    if(action==="edit")return editManagerChannel(channel);
+    if(action==="up")return reorderManager(id,-1);
+    if(action==="down")return reorderManager(id,1);
+    if(action==="toggle"){
+      const disabled=new Set(managerState.disabled);if(disabled.has(id))disabled.delete(id);else disabled.add(id);managerState.disabled=[...disabled];applyManager(selected?.id);return;
+    }
+    if(action==="remove"){
+      managerState.custom=managerState.custom.filter(item=>item.id!==id);managerState.order=managerState.order.filter(item=>item!==id);managerState.disabled=managerState.disabled.filter(item=>item!==id);applyManager(selected?.id);resetManagerForm();
+    }
+  });
+  managerDialog.addEventListener("keydown",event=>{
+    if(event.key==="Escape"){event.preventDefault();event.stopImmediatePropagation();closeManager();return;}
+    if(event.key!=="Tab")return;
+    const focusable=[...managerDialog.querySelectorAll("button,input,select")].filter(element=>!element.disabled&&element.getClientRects().length);
+    const first=focusable[0],last=focusable.at(-1);
+    if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
+    else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+  });
+  return managerDialog;
+}
+function openManager(){
+  managerReturnFocus=document.activeElement;const dialog=ensureManager();renderManager();resetManagerForm();
+  dialog.hidden=false;document.body.classList.add("channel-manager-open");dialog.querySelector("[data-channel-close]").focus({preventScroll:true});
+}
+function rebuildChannelPicker(preferredId){
+  const select=$("#broadcast-select");if(!select)return Promise.resolve();
+  const channels=state.config.channels.filter(channel=>channel.enabled!==false);
+  select.innerHTML="";
+  const groups=new Map();
+  for(const channel of channels){
+    const category=channel.category||"Other";if(!groups.has(category))groups.set(category,[]);groups.get(category).push(channel);
+  }
+  for(const [category,items] of groups){
+    const group=document.createElement("optgroup");group.label=category;
+    for(const channel of items){
+      const option=document.createElement("option");option.value=channel.id;
+      option.textContent=channel.label+(channel.kind==="coming-soon"?" · Coming soon":channel.kind==="replay"?" · Replay":channel.kind==="external"?" · Visit":"");
+      group.append(option);
+    }
+    select.append(group);
+  }
+  const target=channels.find(channel=>channel.id===preferredId)||channels[0];
+  if(!target){select.disabled=true;return Promise.resolve();}
+  select.disabled=false;select.value=target.id;
+  return selectChannel(target.id);
+}
 
 // Project the entire live player onto four wall corners, including its hit targets.
 // CSS matrix3d is column-major; the last row supplies perspective division.
@@ -239,6 +459,7 @@ async function init(){
   $("#broadcast-volume").addEventListener("input",event=>{state.volume=Number(event.target.value)/100;volume();saveSettings();});
   $("#broadcast-fullscreen").addEventListener("click",async()=>{expand();try{if(document.fullscreenElement)await document.exitFullscreen();else if(stage.requestFullscreen)await stage.requestFullscreen();else $("#broadcast-message").textContent="Expanded view is ready. Fullscreen is not supported in this browser.";}catch{$("#broadcast-message").textContent="Fullscreen was not available. Expanded view is ready.";}});
   document.addEventListener("desk:broadcast-open",expand);
+  document.addEventListener("desk:broadcast-channels-manager",openManager);
   document.addEventListener("desk:motionchange",()=>{if(document.body.dataset.objectMotion==="off")cancelSurfaceMotion();});
   document.addEventListener("desk:roomchange",positionStage);
   document.addEventListener("desk:layout",positionStage);
@@ -258,15 +479,18 @@ async function init(){
   // Legacy preview config remains supported for older fixtures and installations.
   if(!state.config.channels?.length)state.config.channels=[{id:"legacy",label:"Broadcast",kind:"replay",youtube_video_id:state.config.youtube_video_id,video_url:state.config.video_url||"/dashboard/assets/broadcast/broadcast-preview.mp4",youtube_channel_url:state.config.youtube_channel_url}];
   storageKey=`desk-broadcast:v2:${state.config.storage_scope||"workspace"}`;
+  managerKey=`desk-broadcast-manager:v1:${state.config.storage_scope||"workspace"}`;
+  serverChannels=clone(state.config.channels);
+  managerState=readManager();
+  state.config.channels=managedCatalog();
   let saved={};try{saved=JSON.parse(localStorage.getItem(storageKey)||"{}");}catch{}
   if(typeof saved.muted==="boolean")state.muted=saved.muted;
   if(Number.isFinite(saved.volume))state.volume=Math.max(0,Math.min(1,saved.volume));
   $("#broadcast-volume").value=String(state.volume*100);
-  for(const channel of state.config.channels){const option=document.createElement("option");option.value=channel.id;option.textContent=channel.label+(channel.kind==="coming-soon"?" · Coming soon":channel.kind==="replay"?" · Replay":"");$("#broadcast-select").append(option);}
-  await selectChannel(state.config.channels.some(c=>c.id===saved.channel)?saved.channel:state.config.default_channel||state.config.channels[0].id);
+  await rebuildChannelPicker(state.config.channels.some(c=>c.id===saved.channel&&c.enabled!==false)?saved.channel:state.config.default_channel||state.config.channels.find(c=>c.enabled!==false)?.id);
   if(!state.enabled)$("#broadcast-message").textContent="Broadcast is disabled for this workspace.";
   volume();scheduleMarket();
-  window.__broadcastDebug={state:()=>({enabled:state.enabled,expanded:state.expanded,playing:state.playing,time:state.provider==="brief"?brief?.time():state.provider==="youtube"?state.youtube?.getCurrentTime?.():video.currentTime,provider:state.provider,preview:state.config.preview,channel:selected?.id,muted:state.muted,volume:state.volume,environment:roomSnapshot().id}),expand,minimize,play,pause,position:positionStage};
+  window.__broadcastDebug={state:()=>({enabled:state.enabled,expanded:state.expanded,playing:state.playing,time:state.provider==="brief"?brief?.time():state.provider==="youtube"?state.youtube?.getCurrentTime?.():video.currentTime,provider:state.provider,preview:state.config.preview,channel:selected?.id,muted:state.muted,volume:state.volume,environment:roomSnapshot().id,channels:managedCatalog()}),expand,minimize,play,pause,position:positionStage,openManager};
   window.__broadcastReady=true;
 }
 init();

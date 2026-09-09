@@ -9,7 +9,7 @@ export function mountObjectMotion({open,roomRect,roomSnapshot}) {
   if(document.documentElement.dataset.objectMotionMounted)return;
   document.documentElement.dataset.objectMotionMounted='true';
   const reduced=matchMedia('(prefers-reduced-motion: reduce)');
-  let preference=true,pending=null,sequence=0;
+  let preference=true,pending=null,sequence=0,lastNavigationAt=0;
   try{preference=localStorage.getItem('sovereign-object-motion')!=='off';}catch{}
   function enabled(){return preference&&!reduced.matches;}
   function sync(){document.body.dataset.objectMotion=enabled()?'on':'off';const b=document.getElementById('object-motion-toggle');if(b){b.textContent='Object motion: '+(preference?'On':'Off')+(reduced.matches?' · reduced motion':'');b.setAttribute('aria-pressed',String(preference));}document.dispatchEvent(new CustomEvent('desk:motionchange'));}
@@ -18,8 +18,12 @@ export function mountObjectMotion({open,roomRect,roomSnapshot}) {
   const button=document.createElement('button');button.id='object-motion-toggle';button.type='button';button.addEventListener('click',toggle);document.querySelector('.sovereign-tools-grid')?.append(button);sync();
   reduced.addEventListener('change',()=>{const next=pending?.navigate;cancel();sync();next?.();});
   function run(panel,source){
+    const now=performance.now(),rapid=Boolean(pending)||(lastNavigationAt>0&&now-lastNavigationAt<750);lastNavigationAt=now;
     cancel();const target=document.querySelector(`[data-object-id="${OBJECT[panel]}"]`);
     const navigate=()=>open(panel,source);
+    // Preserve the first-click object motion, but let a second quick selection
+    // win immediately so fast navigation never feels stuck behind an animation.
+    if(rapid){navigate();return;}
     // Small-screen Tools navigation should remain immediate when its room object is hidden.
     if(!enabled()||!target||!target.getClientRects().length||innerWidth<700){navigate();return;}
     const token=sequence,animations=[],cleanup=[];pending={animations,cleanup,navigate};

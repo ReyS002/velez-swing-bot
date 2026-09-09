@@ -9,9 +9,9 @@
     <link rel="stylesheet" href="/dashboard/assets/styles.css?v=6.40.4" />
     <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
     <link rel="stylesheet" href="/dashboard/assets/sovereign.css?v=1.1.1" />
-  <link rel="stylesheet" href="/dashboard/assets/broadcast.css?v=sovereign-1.2.0" />
+    <link rel="stylesheet" href="/dashboard/assets/broadcast.css?v=sovereign-1.5.0" />
     <link rel="stylesheet" href="/dashboard/assets/sovereign-glass.css?v=1.1.0" />
-    <link rel="stylesheet" href="/dashboard/assets/sovereign-motion.css?v=1.4.4">
+    <link rel="stylesheet" href="/dashboard/assets/sovereign-motion.css?v=1.5.0">
 </head>
   <body class="room-clear">
     <div id="desk-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -58,9 +58,9 @@
             </select>
             <small id="trading-mode-status">Sync</small>
           </label>
-          <span class="status-pill" id="execution-pill">Execution</span>
-          <span class="status-pill" id="broker-pill">Broker</span>
-          <span class="status-pill" id="positions-pill">Positions</span>
+          <button class="status-pill" id="execution-pill" type="button" data-desk-action="lamp" title="Open Risk & Bull Matrix">Execution</button>
+          <button class="status-pill" id="broker-pill" type="button" data-desk-action="vault" title="Open broker connection details">Broker</button>
+          <button class="status-pill" id="positions-pill" type="button" data-desk-action="laptop" title="Open positions and command center">Positions</button>
           <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch to day room" aria-pressed="false">
             <i data-lucide="sun"></i>
             <span>Day</span>
@@ -428,7 +428,7 @@
       <div class="hover-tag" id="hover-tag" hidden></div>
     </main>
 
-    <script type="module" src="/dashboard/assets/app.js?v=sovereign-1.4.4"></script>
-  <script type="module" src="/dashboard/assets/broadcast.js?v=sovereign-1.4.4"></script>
+    <script type="module" src="/dashboard/assets/app.js?v=sovereign-1.5.0"></script>
+    <script type="module" src="/dashboard/assets/broadcast.js?v=sovereign-1.5.0"></script>
   </body>
 </html>

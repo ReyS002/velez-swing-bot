@@ -452,3 +452,44 @@ test("mobile day Command glass",async({page})=>{
  await expect(page.locator("#detail-panel")).toHaveCSS("opacity","1");
  await capture(page,"mobile-command-day-glass.png",errors);
 });
+
+test("Channel Manager persists an editable browser lineup",async({page})=>{
+ await openDashboard(page,desktop);
+ await page.waitForFunction(()=>window.__broadcastReady===true);
+ await page.locator('.sovereign-dock [data-desk-action="tools"]').click();
+ await page.locator('#sovereign-tools [data-desk-action="channels"]').click();
+ const manager=page.locator("#broadcast-channel-manager");
+ await expect(manager).toBeVisible();
+ await expect(manager).toContainText("Viewers stream public content directly from YouTube in their own browser");
+ await manager.locator('[name="label"]').fill("Macro Minute");
+ await manager.locator('[name="category"]').fill("Global Macro");
+ await manager.locator('[name="kind"]').selectOption("replay");
+ await manager.locator('[name="video_id"]').fill("dQw4w9WgXcQ");
+ await manager.locator('[name="channel_url"]').fill("https://www.youtube.com/@official");
+ await manager.locator("form").press("Enter");
+ const row=manager.locator('[data-channel-id="custom-macro-minute"]');
+ await expect(row).toBeVisible();
+ await expect(page.locator('#broadcast-select option[value="custom-macro-minute"]')).toHaveCount(1);
+ await row.getByRole("button",{name:"Disable"}).click();
+ await expect(page.locator('#broadcast-select option[value="custom-macro-minute"]')).toHaveCount(0);
+ await row.getByRole("button",{name:"Enable"}).click();
+ await expect(page.locator('#broadcast-select option[value="custom-macro-minute"]')).toHaveCount(1);
+ await page.keyboard.press("Escape");
+ await expect(manager).toBeHidden();
+});
+
+test("status shortcuts and rapid switching reach their final workspace",async({page})=>{
+ await openDashboard(page,desktop);
+ await page.locator("#execution-pill").click();
+ await expect(page.locator("#panel-title")).toHaveText("Risk & Bull Matrix");
+ await page.locator("#broker-pill").click();
+ await expect(page.locator("#panel-title")).toHaveText("Vault checks");
+ await page.locator("#positions-pill").click();
+ await expect(page.locator("#panel-title")).toHaveText("Command");
+ await page.locator("#panel-close").click();
+ await page.emulateMedia({reducedMotion:"no-preference"});
+ await page.locator("#execution-pill").click();
+ await page.locator("#positions-pill").click();
+ await expect(page.locator("#panel-title")).toHaveText("Command");
+ await expect(page.locator("body")).not.toHaveAttribute("data-animating-object");
+});
