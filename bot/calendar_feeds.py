@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 from .earnings_cache import EarningsCalendarCache
+from .shared_bls_feed import SharedBlsFeed
 
 
 MONTHS = {
@@ -437,6 +438,32 @@ class CalendarFeedService:
             source["reason"] = "missing_url"
             return [], source
 
+        shared_bls = SharedBlsFeed.from_environment(request_fn=requests.get, timeout=self.timeout) if name == "BLS" else None
+        if shared_bls is not None:
+            payload = shared_bls.load(start, end, url)
+            source.update(
+                {
+                    "url": payload.get("url") or url,
+                    "urls": payload.get("urls") or [url],
+                    "shared": True,
+                    "cache_status": payload.get("cache_status"),
+                    "fallback": bool(payload.get("fallback")),
+                    "stale": bool(payload.get("stale")),
+                    "fetched_at": payload.get("fetched_at", ""),
+                    "attempts": payload.get("attempts", 0),
+                }
+            )
+            if not payload.get("ok"):
+                source["reason"] = payload.get("reason") or "shared_feed_unavailable"
+                return [], source
+            if payload.get("kind") == "html":
+                items = self._parse_bls_html(str(payload.get("text") or ""), source["urls"], start, end)
+            else:
+                items = self._parse_ics(str(payload.get("text") or ""), name, source["url"], start, end)
+            source["ok"] = True
+            source["count"] = len(items)
+            return items, source
+
         try:
             response = requests.get(url, timeout=self.timeout, headers={"User-Agent": "TradingBullDesk/1.0"})
             if response.status_code >= 400:
@@ -568,6 +595,39 @@ class CalendarFeedService:
                 }
             )
         return self._dedupe_events(events, ("date", "title", "source"))
+
+    def _parse_bls_html(self, html: str, urls: List[str], start: date, end: date) -> List[dict]:
+        row_pattern = re.compile(
+            rf"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s+"
+            rf"(?P<date>(?:{MONTH_PATTERN})\s+\d{{1,2}},\s+20\d{{2}})\s+"
+            rf"(?:(?P<time>\d{{1,2}}:\d{{2}}\s*(?:AM|PM))\s+)?(?P<title>.+)$",
+            re.IGNORECASE,
+        )
+        events: List[dict] = []
+        source_url = urls[0] if urls else "https://www.bls.gov/schedule/"
+        for line in self._html_lines(html):
+            match = row_pattern.search(line)
+            if not match:
+                continue
+            event_date = self._parse_date(match.group("date"), start.year)
+            if not event_date or event_date < start or event_date > end:
+                continue
+            title = self._clean_title(match.group("title"))
+            if not title:
+                continue
+            event_time = str(match.group("time") or "").upper().replace(".", "")
+            events.append(
+                {
+                    "date": event_date.isoformat(),
+                    "time": event_time,
+                    "title": title,
+                    "source": "BLS",
+                    "category": self._category(title),
+                    "importance": self._importance(title),
+                    "url": source_url,
+                }
+            )
+        return self._dedupe_events(events, ("date", "time", "title", "source"))
 
     def _parse_release_html(
         self,
