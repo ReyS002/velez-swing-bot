@@ -11376,13 +11376,13 @@ def create_app(config: dict):
     async def dashboard() -> FileResponse:
         if not dashboard_index.exists():
             raise HTTPException(status_code=404, detail="dashboard assets are missing")
-        return FileResponse(dashboard_index)
+        return FileResponse(dashboard_index, headers={"Cache-Control": "no-store"})
 
     @app.get("/dashboard/", include_in_schema=False)
     async def dashboard_slash() -> FileResponse:
         if not dashboard_index.exists():
             raise HTTPException(status_code=404, detail="dashboard assets are missing")
-        return FileResponse(dashboard_index)
+        return FileResponse(dashboard_index, headers={"Cache-Control": "no-store"})
 
     @app.get("/health/live")
     async def health_live() -> dict:

@@ -63,6 +63,7 @@ def test_v623_phone_art_and_winston_voice_lock_are_wired():
     js = (STATIC / "app.js").read_text(encoding="utf-8")
     room_js = (STATIC / "sovereign-room.js").read_text(encoding="utf-8")
     sovereign_css = (STATIC / "sovereign.css").read_text(encoding="utf-8")
+    server = (STATIC.parents[1] / "webhook_server.py").read_text(encoding="utf-8")
 
     assert '<body class="room-clear sovereign">' in html
     assert "winston-conference-phone.png" not in html
@@ -73,6 +74,7 @@ def test_v623_phone_art_and_winston_voice_lock_are_wired():
     assert 'export const SOVEREIGN_VERSION = "1.5.1";' in room_js
     assert "body.sovereign:not([data-room-asset]) .photo-room" in sovereign_css
     assert "opacity .18s ease" in sovereign_css
+    assert server.count('FileResponse(dashboard_index, headers={"Cache-Control": "no-store"})') == 2
     assert "v623-room-night.png" in css
     assert "v623-room-day.png" in css
     assert 'const WINSTON_REQUIRED_VOICE = "winston";' in js
