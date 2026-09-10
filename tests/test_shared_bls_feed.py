@@ -37,6 +37,7 @@ def test_shared_bls_cache_is_downloaded_once_and_reused(monkeypatch, tmp_path):
     calls = []
 
     def fake_get(url, timeout=None, headers=None):
+        assert headers["User-Agent"] == "TradingBullDesk/1.0 (+https://bullpilot.app)"
         calls.append(url)
         return Response(
             "BEGIN:VCALENDAR\n"

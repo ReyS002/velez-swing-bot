@@ -96,7 +96,10 @@ class SharedBlsFeed:
 
         failures: list[str] = []
         request_headers = {
-            "User-Agent": "TradingBullDesk/1.0",
+            "User-Agent": os.getenv(
+                "BLS_HTTP_USER_AGENT",
+                "TradingBullDesk/1.0 (+https://bullpilot.app)",
+            ).strip(),
             "Accept": "text/calendar,text/html;q=0.9,*/*;q=0.8",
         }
         if cached and cached.get("kind") == "ics":
