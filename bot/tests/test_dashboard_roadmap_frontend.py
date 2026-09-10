@@ -76,7 +76,7 @@ def test_dashboard_v644_preserves_tradingview_and_mobile_workflow_hooks():
     assert "function drawChart" not in script
     assert "desk_canvas_fallback" not in script
     assert 'source: "tradingview_symbol_link"' in script
-    assert '<body class="room-clear">' in html
+    assert '<body class="room-clear sovereign">' in html
     assert "let roomClear = true;" in script
     assert 'document.body.classList.toggle("room-clear", roomClear)' in script
     assert 'closePanel({ clearRoom: false })' in script

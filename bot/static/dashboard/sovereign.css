@@ -1,10 +1,12 @@
 /* Sovereign shared presentation; the underlying edition keeps its handlers. */
 :root { --sovereign-ink:#101516; --sovereign-panel:rgba(16,22,23,.96); --sovereign-gold:#d5b67e; --sovereign-line:rgba(213,182,126,.25); --sovereign-muted:#b5bdbb; --sovereign-ease:cubic-bezier(.2,.8,.2,1); --room-scale:1; }
 body.sovereign { background:#080c0d; color:#f2eee5; font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif; }
-.sovereign .photo-room { position:fixed;inset:0;background-size:contain!important;background-position:center!important;background-repeat:no-repeat!important;filter:none!important;transform:none!important;transition:opacity .32s ease; }
+.sovereign .photo-room { position:fixed;inset:0;background-size:contain!important;background-position:center!important;background-repeat:no-repeat!important;filter:none!important;transform:none!important;transition:opacity .18s ease; }
+body.sovereign:not([data-room-asset]) .photo-room { opacity:0; }
+body.sovereign:not([data-room-asset]) :is(#room-hotspots,#screen-terminal,.status-strip,#broadcast-stage,.sovereign-dock) { opacity:0!important;visibility:hidden!important;pointer-events:none!important; }
 .sovereign #app-shell::before,.sovereign #app-shell::after,.sovereign .photo-room::before,.sovereign .photo-room::after { display:none!important; }
 .sovereign #app-shell > :not(.photo-room):not(#room-hotspots):not(#screen-terminal):not(.topbar):not(#detail-panel):not(#hover-tag):not(#winston-audio-player):not(#broadcast-stage):not(#broadcast-scrim):not(.sovereign-dock):not(#sovereign-tools):not(#sovereign-chart-close):not(#sovereign-announcer):not(#pro-console) { display:none!important; }
-.sovereign #desk-phone-object,.sovereign #chart-screen,.sovereign .workflow-nav,.sovereign .environment-picker { display:none!important; }
+.sovereign #chart-screen,.sovereign .workflow-nav,.sovereign .environment-picker { display:none!important; }
 .sovereign .topbar { position:fixed;inset:16px 24px auto;display:flex!important;align-items:flex-start;justify-content:space-between;gap:20px;z-index:35;pointer-events:none;background:none!important;border:0!important;box-shadow:none!important;padding:0!important;transform:none!important;opacity:1!important; }
 .sovereign .brand-lockup { display:flex;align-items:center;gap:10px;padding:10px 16px;background:rgba(9,16,18,.72);backdrop-filter:blur(18px);border:1px solid var(--sovereign-line);border-radius:30px;pointer-events:auto; }
 .sovereign .brand-lockup h1 {font-size:15px;line-height:1.1;font-weight:550;letter-spacing:.04em;margin:0;color:#f4efe5;}

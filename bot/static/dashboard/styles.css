@@ -100,38 +100,6 @@ body[data-room-theme="day"] .photo-room::after {
     linear-gradient(90deg, rgba(255, 255, 255, 0.02), transparent 24%, transparent 78%, rgba(0, 0, 0, 0.03));
 }
 
-.desk-phone-object {
-  position: fixed;
-  z-index: 3;
-  display: block;
-  object-fit: contain;
-  pointer-events: none;
-  user-select: none;
-  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.36));
-  transform: perspective(900px) rotateX(24deg) rotateZ(2deg) translateY(2px);
-  transform-origin: 50% 88%;
-  transition:
-    filter 180ms ease,
-    transform 180ms ease;
-}
-
-body[data-room-theme="day"] .desk-phone-object {
-  filter: drop-shadow(0 1px 1px rgba(47, 34, 23, 0.24));
-}
-
-.phone-active .desk-phone-object {
-  filter:
-    drop-shadow(0 1px 1px rgba(0, 0, 0, 0.36))
-    drop-shadow(0 0 8px rgba(147, 200, 255, 0.28));
-  transform: perspective(900px) rotateX(24deg) rotateZ(2deg) translateY(2px) scale(1.01);
-}
-
-body[data-room-theme="day"].phone-active .desk-phone-object {
-  filter:
-    drop-shadow(0 1px 1px rgba(47, 34, 23, 0.22))
-    drop-shadow(0 0 7px rgba(52, 125, 176, 0.2));
-}
-
 .screen-terminal {
   position: fixed;
   z-index: 2;
@@ -3381,7 +3349,6 @@ body.pro-console-open {
     background: linear-gradient(180deg, rgba(5, 8, 10, 0.05), rgba(5, 8, 10, 0.16) 52%, rgba(5, 8, 10, 0.28) 100%);
   }
 
-  .desk-phone-object,
   .screen-terminal,
   .room-hotspots,
   .room-shortcut-bar,

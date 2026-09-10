@@ -61,8 +61,18 @@ def test_v623_phone_art_and_winston_voice_lock_are_wired():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     css = (STATIC / "styles.css").read_text(encoding="utf-8")
     js = (STATIC / "app.js").read_text(encoding="utf-8")
+    room_js = (STATIC / "sovereign-room.js").read_text(encoding="utf-8")
+    sovereign_css = (STATIC / "sovereign.css").read_text(encoding="utf-8")
 
-    assert "winston-conference-phone.png?v=6.23.5" in html
+    assert '<body class="room-clear sovereign">' in html
+    assert "winston-conference-phone.png" not in html
+    assert 'id="desk-phone-object"' not in html
+    assert "deskPhoneObject" not in js
+    assert "phoneObjectRegion" not in js
+    assert "phone-glass.png" in room_js
+    assert 'export const SOVEREIGN_VERSION = "1.5.1";' in room_js
+    assert "body.sovereign:not([data-room-asset]) .photo-room" in sovereign_css
+    assert "opacity .18s ease" in sovereign_css
     assert "v623-room-night.png" in css
     assert "v623-room-day.png" in css
     assert 'const WINSTON_REQUIRED_VOICE = "winston";' in js
@@ -116,7 +126,9 @@ def test_room_regions_keep_realistic_objects_in_all_five_rooms():
     assert "sovereignObjectMarkup(definition)" in js
 
 
-def test_conference_phone_asset_has_alpha_channel():
-    payload = (STATIC / "winston-conference-phone.png").read_bytes()
+def test_current_phone_asset_is_valid_truecolor_png():
+    payload = (STATIC / "sovereign" / "phone-glass.png").read_bytes()
     assert payload[:8] == b"\x89PNG\r\n\x1a\n"
-    assert payload[25] == 6  # PNG truecolor with alpha.
+    assert payload[25] == 2  # PNG truecolor; the SVG applies the silhouette clip.
+    room_js = (STATIC / "sovereign-room.js").read_text(encoding="utf-8")
+    assert 'clipPath id="phone-silhouette"' in room_js

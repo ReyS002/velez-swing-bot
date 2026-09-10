@@ -1,4 +1,4 @@
-import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.5.0";
+import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.5.1";
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
@@ -6,7 +6,6 @@ const PHOTO_WIDTH = 1672;
 const PHOTO_HEIGHT = 941;
 
 const roomHotspots = $("#room-hotspots");
-const deskPhoneObject = $("#desk-phone-object");
 const winstonAudioPlayer = $("#winston-audio-player");
 const screenTerminal = $("#screen-terminal");
 const tradingViewScreen = $("#tradingview-screen");
@@ -234,7 +233,6 @@ const panelCopy = {
 };
 
 const screenRegion = { x: 0.348, y: 0.413, w: 0.296, h: 0.233 };
-const phoneObjectRegion = { x: 0.08, y: 0.645, w: 0.26, h: 0.23 };
 const hotspotDefinitions = getSovereignHotspots();
 
 function fallbackState() {
@@ -7783,7 +7781,6 @@ function positionRoomElements() {
     const region = hotspotDefinitions.find((item) => item.id === hotspot.dataset.objectId);
     if (region) applyRegion(hotspot, region, rect);
   });
-  if (deskPhoneObject) deskPhoneObject.hidden = true;
   const expanded = document.body.classList.contains("sovereign-chart-expanded");
   if (!expanded) applyRegion(screenTerminal, sovereignRegions().screen, rect);
   screenTerminal.hidden = window.innerWidth < 720 && !expanded;
