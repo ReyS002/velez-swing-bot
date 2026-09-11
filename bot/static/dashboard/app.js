@@ -1,4 +1,4 @@
-import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.6.0";
+import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.6.2";
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
@@ -5143,7 +5143,6 @@ async function approvePendingOrder(id, phrase) {
     if (!response.ok || !data.ok) throw new Error(data.reason || `approval failed (${response.status})`);
     winstonState.status = "connected";
     winstonState.message = "Submitted through user-controlled workflow";
-    document.dispatchEvent(new CustomEvent("desk:approval-submitted"));
     winstonTranscript("winston", `${approvalLine(data.pending || {})}: Submitted through user-controlled workflow.`);
     speakWinston(`${data.pending?.symbol || "The staged order"} has been submitted to Alpaca paper.`);
     await refreshState();

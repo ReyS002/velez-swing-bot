@@ -4,16 +4,15 @@ const CITIES = [
   ["Tokyo", "Asia/Tokyo"], ["Dubai", "Asia/Dubai"],
 ];
 const LAYOUTS = {
-  media: {dial:[59,81,6,4.8],clock:[44,69.5,12,4.3],tray:[84,78,8,5.5],accent:[12.1,19.3,3,7.5],window:null},
-  pacific:{dial:[59,80,6,4.8],clock:[46,64,12,4.5],tray:[84,78,8,5.5],accent:[18.6,19.5,5.5,8],window:"polygon(30% 18%,100% 0,100% 62%,31% 53%)"},
-  tokyo:{dial:[57,80,6,4.8],clock:[43,63,12,4.5],tray:[84,76,8,5.5],accent:[19.1,21,5.5,6],window:"polygon(27% 20%,100% 0,100% 56%,27% 49%)"},
-  manhattan:{dial:[59,80,6,4.8],clock:[45,63,12,4.5],tray:[84,77,8,5.5],accent:[19.1,27,5.5,7.5],window:"polygon(35% 16%,100% 0,100% 63%,35% 53%)"},
-  dubai:{dial:[60,80,6,4.8],clock:[46,64,12,4.5],tray:[84,77,8,5.5],accent:[19.5,9,5.5,8],window:"polygon(35% 18%,100% 0,100% 62%,35% 53%)"},
+  media: {dial:[90.5,90.7,5,4.5],clock:[69.5,22,4,18],accent:[12.1,19.3,3,7.5],window:null},
+  pacific:{dial:[92,94.3,4.5,4],clock:[5,15.2,11,4.5],accent:[18.6,19.5,5.5,8],window:"polygon(30% 18%,100% 0,100% 62%,31% 53%)"},
+  tokyo:{dial:[92,91.8,4.4,4.2],clock:[7,11.5,10.2,4.5],accent:null,window:"polygon(27% 20%,100% 0,100% 56%,27% 49%)"},
+  manhattan:{dial:[91,91.5,4.8,4.2],clock:[4.6,15.4,11.8,4.5],accent:[19.1,27,5.5,7.5],window:"polygon(35% 16%,100% 0,100% 63%,35% 53%)"},
+  dubai:{dial:[92,91.5,3.8,4],clock:[5,14.5,11.7,4.5],accent:[19.5,9,5.5,8],window:"polygon(35% 18%,100% 0,100% 62%,35% 53%)"},
 };
 const ACCENTS = {
   media:[0,70,345,490,"Brass architectural miniature"],
   pacific:[370,255,470,300,"Koa keepsake box and lava stone"],
-  tokyo:[880,215,420,320,"Mount Fuji glass paperweight"],
   manhattan:[1360,150,370,400,"Exchange bell"],
   dubai:[1770,65,400,490,"Brass astrolabe"],
 };
@@ -38,11 +37,10 @@ export function mountRoomEnhancements({roomRect,roomSnapshot,open,metrics,refres
     <div class="desk-projection" aria-hidden="true"></div><div class="desk-shelf-light" aria-hidden="true"></div>
     <button type="button" class="desk-instrument desk-risk-dial" aria-label="Daily loss buffer unavailable. Open Risk & Bull Matrix"><svg viewBox="0 0 130 85" aria-hidden="true"><defs><linearGradient id="dial-brass"><stop stop-color="#57412a"/><stop offset=".35" stop-color="#e5c48c"/><stop offset=".7" stop-color="#8d6c3e"/><stop offset="1" stop-color="#34281b"/></linearGradient></defs><ellipse cx="65" cy="44" rx="63" ry="38" fill="url(#dial-brass)"/><ellipse cx="65" cy="42" rx="58" ry="33" fill="#141c1b" stroke="#080b0b" stroke-width="3"/><path d="M23 48 A44 29 0 0 1 107 48" fill="none" stroke="#b9a176" stroke-width="1.5"/><path d="M23 48L29 46 M28 31L34 34 M44 18L47 25 M65 13V21 M86 18L83 25 M102 31L96 34 M107 48L101 46" stroke="#b9a176"/><g class="desk-risk-needle"><path d="M65 49L27 36L64 44Z" fill="#dcc494"/><circle cx="65" cy="47" r="4" fill="#b59766"/></g><text x="65" y="65" text-anchor="middle" fill="#dbc79f" font-size="7" letter-spacing="1">DAILY BUFFER</text><text class="desk-risk-value" x="65" y="38" text-anchor="middle" fill="#fff2d6" font-size="12">—</text></svg><span class="instrument-tooltip"></span></button>
     <div class="desk-instrument desk-session-clock" role="group" aria-label="World clocks; select a city for market sessions">${CITIES.map(([name],i)=>`<button type="button" data-city="${i}" aria-label="${name} time and market sessions"><span class="clock-face"><i class="clock-hour"></i><i class="clock-minute"></i><b></b></span><span class="clock-city">${name}</span></button>`).join("")}</div>
-    <button type="button" class="desk-instrument desk-document-tray" aria-label="Open approvals"><span class="tray-leather"></span><span class="tray-paper"><small>PROPOSAL</small><strong></strong><i></i><i></i></span><span class="tray-label">APPROVALS</span><span class="instrument-tooltip"></span><span class="tray-stamp" aria-hidden="true">SUBMITTED</span></button>
     <div class="desk-regional-accent" role="img"></div>`;
   document.body.append(root);
-  const q=s=>root.querySelector(s), dial=q(".desk-risk-dial"),tray=q(".desk-document-tray");
-  let state={}, previousIds=null, previousRiskLevel=null, motion=readSetting("sovereign-ambience","on"), rain=readSetting("sovereign-rain","off");
+  const q=s=>root.querySelector(s), dial=q(".desk-risk-dial");
+  let state={}, previousRiskLevel=null, motion=readSetting("sovereign-ambience","on"), rain=readSetting("sovereign-rain","off");
   const reduced=matchMedia("(prefers-reduced-motion: reduce)");
   let timer=null, transient=[];
   function canMove(){return !reduced.matches&&!document.hidden&&document.body.dataset.objectMotion!=="off";}
@@ -52,10 +50,15 @@ export function mountRoomEnhancements({roomRect,roomSnapshot,open,metrics,refres
     const scene=roomSnapshot(), p=LAYOUTS[scene.id],r=roomRect();
     root.dataset.ready=String(assetsReady?.()!==false);
     root.dataset.room=scene.id;root.dataset.theme=scene.theme;
-    place(dial,p.dial);place(q(".desk-session-clock"),p.clock);place(tray,p.tray);place(q(".desk-regional-accent"),p.accent);
-    const [x,y,w,h,label]=ACCENTS[scene.id];
-    q(".desk-regional-accent").innerHTML=`<svg viewBox="${x} ${y} ${w} ${h}" aria-hidden="true"><image width="2172" height="724" href="/dashboard/assets/sovereign/regional-accents-v1.png"/></svg>`;
-    q(".desk-regional-accent").setAttribute("aria-label",label);
+    place(dial,p.dial);place(q(".desk-session-clock"),p.clock);
+    const accent=q(".desk-regional-accent");
+    accent.hidden=!p.accent;
+    if(p.accent){
+      place(accent,p.accent);
+      const [x,y,w,h,label]=ACCENTS[scene.id];
+      accent.innerHTML=`<svg viewBox="${x} ${y} ${w} ${h}" aria-hidden="true"><image width="2172" height="724" href="/dashboard/assets/sovereign/regional-accents-v1.png"/></svg>`;
+      accent.setAttribute("aria-label",label);
+    }else{accent.replaceChildren();accent.removeAttribute("aria-label");}
     Object.assign(q(".desk-weather").style,{left:r.left+"px",top:r.top+"px",width:r.width+"px",height:r.height+"px",clipPath:p.window||"inset(100%)"});
     Object.assign(q(".desk-projection").style,{left:"36vw",top:innerHeight-85+"px",width:"28vw",height:"28px"});
     root.style.setProperty("--instrument-scale",String(r.width/1672));
@@ -78,17 +81,10 @@ export function mountRoomEnhancements({roomRect,roomSnapshot,open,metrics,refres
     q(".desk-risk-value").textContent=risk.available?Math.round(risk.percent)+"%":"—";
     q(".desk-risk-needle").style.transform=`rotate(${risk.available?risk.percent*1.4:0}deg)`;
     q(".desk-risk-needle").style.opacity=risk.available?"1":"0";
-    const items=Array.isArray(next.pending_approvals)?next.pending_approvals:null,ids=items?.map(v=>String(v.id));
-    if(previousIds&&ids?.some(id=>!previousIds.includes(id)))animate(q(".tray-paper"),[{transform:"translateY(-10px)",opacity:0},{transform:"translateY(0)",opacity:1}],{duration:380,easing:"ease-out"});
-    previousIds=ids;tray.dataset.empty=String(!items?.length);
-    const label=items?`${items.length} pending ${items.length===1?"proposal":"proposals"}. Open approvals.`:"Approvals unavailable. Open approvals to check.";
-    tray.title=label;tray.setAttribute("aria-label",label);q(".desk-document-tray .instrument-tooltip").textContent=label;
-    q(".tray-paper strong").textContent=items?.length?String(items[0].symbol||"Review")+ (items.length>1?` +${items.length-1}`:""):"";
+
   }
   dial.addEventListener("click",()=>open("lamp",dial));
   q(".desk-session-clock").addEventListener("click",e=>{const b=e.target.closest("[data-city]");if(b){document.body.dataset.sessionCity=b.dataset.city;open("clock",b);}});
-  tray.addEventListener("click",()=>{animate(q(".tray-paper"),[{transform:"translateY(0)"},{transform:"translateY(-5px)"},{transform:"translateY(0)"}],{duration:260});open("safe",tray);});
-  document.addEventListener("desk:approval-submitted",()=>animate(q(".tray-stamp"),[{opacity:0,transform:"scale(1.2)"},{opacity:1,transform:"scale(1)",offset:.25},{opacity:1,offset:.8},{opacity:0}],{duration:1100}));
   function shelf(e){const target=e.target.closest?.('[data-object-id="vault"],[data-object-id="bookshelf"],.desk-regional-accent');if(!target||!canMove())return;const r=target.getBoundingClientRect(),light=q(".desk-shelf-light");Object.assign(light.style,{left:r.left-12+"px",top:r.top-8+"px",width:r.width+24+"px",height:r.height+16+"px"});light.classList.add("lit");}
   document.addEventListener("pointerover",shelf);document.addEventListener("focusin",shelf);
   for(const event of ["pointerout","focusout"])document.addEventListener(event,()=>q(".desk-shelf-light").classList.remove("lit"));
