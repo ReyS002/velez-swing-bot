@@ -1,4 +1,4 @@
-import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.5.1";
+import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.6.0";
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
@@ -3717,11 +3717,15 @@ function renderBookshelf() {
 }
 
 function renderClock() {
+  const cities = [["New York", "America/New_York"], ["London", "Europe/London"], ["Tokyo", "Asia/Tokyo"], ["Dubai", "Asia/Dubai"]];
+  const [city, zone] = cities[Number(document.body.dataset.sessionCity) || 0] || cities[0];
+  const localTime = new Intl.DateTimeFormat("en-US", {timeZone: zone, dateStyle: "medium", timeStyle: "short"}).format(new Date());
   const clock = marketClock();
   const calendar = currentCalendarState();
   const upcoming = (calendar.sessions || []).filter((item) => item.date >= clock.date).slice(0, 5);
   const countdown = eventCountdownState();
   return `
+    <section class="tool-section"><div class="section-title">${city} local clock</div><p>${localTime} · ${zone}</p><p class="muted">The session calendar and economic events below follow the connected US market feed. Local time does not confirm that an exchange is open.</p></section>
     <div class="metric-grid">
       ${metric("Now", clock.now, "America/New_York")}
       ${metric("Session", clock.phase, clock.session)}
@@ -5139,6 +5143,7 @@ async function approvePendingOrder(id, phrase) {
     if (!response.ok || !data.ok) throw new Error(data.reason || `approval failed (${response.status})`);
     winstonState.status = "connected";
     winstonState.message = "Submitted through user-controlled workflow";
+    document.dispatchEvent(new CustomEvent("desk:approval-submitted"));
     winstonTranscript("winston", `${approvalLine(data.pending || {})}: Submitted through user-controlled workflow.`);
     speakWinston(`${data.pending?.symbol || "The staged order"} has been submitted to Alpaca paper.`);
     await refreshState();
@@ -7967,7 +7972,7 @@ function init() {
     clickObject: (panel) => setActivePanel(panel),
     summonJarvis: () => setActivePanel("phone"),
   };
-  mountSovereign({ product: "Velez Swing", open: setActivePanel, close: closePanel, buildHotspots, position: positionRoomElements, setTheme: applyRoomTheme, state: () => dashboardState, openProConsole });
+  mountSovereign({ product: "Velez Swing", open: setActivePanel, close: closePanel, buildHotspots, position: positionRoomElements, setTheme: applyRoomTheme, state: () => dashboardState, metrics: () => ({ risk: currentRiskState() }), refreshMetrics: refreshRiskStatus, openProConsole });
   window.__deskReady = true;
   window.__deskVersion = APP_BUILD;
 

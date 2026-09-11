@@ -1,7 +1,8 @@
+import {mountRoomEnhancements} from "./sovereign-enhancements.js?v=1.6.0";
 import {statueOutline} from "./sovereign-statue.js?v=1.4.3";
 import {mountObjectMotion} from "./sovereign-motion.js?v=1.5.0";
 // Shared Sovereign room shell. Keep byte-identical across bot editions.
-export const SOVEREIGN_VERSION = "1.5.1";
+export const SOVEREIGN_VERSION = "1.6.0";
 const ASSETS = "/dashboard/assets/sovereign/";
 const percent = ([x, y, w, h]) => ({ x: x / 100, y: y / 100, w: w / 100, h: h / 100 });
 export const ROOMS = {
@@ -56,6 +57,7 @@ const savedRoom = localStorage.getItem("bull-pilot-environment");
 let roomId = ROOMS[savedRoom] ? savedRoom : "media";
 let lighting = read("sovereign-room-lighting", {});
 if (!lighting[roomId]) lighting[roomId] = savedRoom && localStorage.getItem("velez-room-theme") || ROOMS[roomId].defaultTheme;
+let enhancements = null;
 let adapter = null, lastFocus = null, expandedChart = false;
 let config = { product: "Trading Bull Desk", broker_provider: "", account_mode: "workspace" };
 let preloadToken = 0;
@@ -153,6 +155,7 @@ export function updateSovereignChrome({panel,open,state,music,winston}={}) {
   tabs?.querySelectorAll("button").forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.deskAction===panel)));
   const title=$("#panel-title");if(title&&open&&PANEL_LABELS[panel])title.textContent=PANEL_LABELS[panel];
   const status=state||adapter.state();
+  enhancements?.update(status);
   const count=status?.pending_approvals?.length;const badge=$(".approval-count");if(badge)badge.textContent=count>0?String(count):"";
   const now=$(".prop-now-playing");if(now)now.textContent=music?.nowPlaying?.title||"Your music";
   document.body.classList.toggle("sovereign-speaking",Boolean(winston?.speaking));
@@ -183,5 +186,6 @@ export function mountSovereign(options) {
   syncRoomTheme(lighting[roomId]);layout();window.lucide?.createIcons();
   fetch("/api/desk/config",{cache:"no-store"}).then(response=>response.ok?response.json():{}).then(value=>{config={...config,...value};if(brand&&value.product)brand.textContent=value.product;document.dispatchEvent(new CustomEvent("desk:config",{detail:config}));}).catch(()=>{});
   mountObjectMotion({open:openPanel,roomRect,roomSnapshot});
+  enhancements=mountRoomEnhancements({open:openPanel,roomRect,roomSnapshot,metrics:options.metrics,refreshMetrics:options.refreshMetrics,assetsReady:()=>document.body.dataset.roomAsset===ROOMS[roomId].images[lighting[roomId]]});
   window.__sovereign={version:SOVEREIGN_VERSION,rooms:ROOMS,room:roomSnapshot,selectRoom,regions:roomRegions,broadcastCorners,hotspots:roomHotspots,rect:roomRect,open:(id)=>openPanel(id),config:()=>config};
 }
