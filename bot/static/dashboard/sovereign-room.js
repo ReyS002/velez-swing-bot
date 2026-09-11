@@ -1,8 +1,8 @@
-import {mountRoomEnhancements} from "./sovereign-enhancements.js?v=1.7.0";
+import {mountRoomEnhancements} from "./sovereign-enhancements.js?v=1.7.1";
 import {statueOutline} from "./sovereign-statue.js?v=1.4.3";
-import {mountObjectMotion} from "./sovereign-motion.js?v=1.7.0";
+import {mountObjectMotion} from "./sovereign-motion.js?v=1.7.1";
 // Shared Sovereign room shell. Keep byte-identical across bot editions.
-export const SOVEREIGN_VERSION = "1.7.0";
+export const SOVEREIGN_VERSION = "1.7.1";
 const ASSETS = "/dashboard/assets/sovereign/";
 const percent = ([x, y, w, h]) => ({ x: x / 100, y: y / 100, w: w / 100, h: h / 100 });
 export const ROOMS = {

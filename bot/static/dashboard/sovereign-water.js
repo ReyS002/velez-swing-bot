@@ -8,7 +8,7 @@ export function mountWater(root, roomSnapshot) {
   const random=(a,b)=>a+Math.random()*(b-a);
   const streaks=Array.from({length:135},()=>({x:random(0,1672),y:random(-941,941),speed:random(160,480),length:random(3,13),alpha:random(.035,.13)}));
   const beads=Array.from({length:72},()=>({x:random(470,1640),y:random(110,520),r:random(1.4,3.8),speed:0,wait:random(0,16),trail:0}));
-  const plate=new Image();let filename='',raf=0,last=0,elapsed=0;
+  const plate=new Image();let filename='',raf=0,last=0,elapsed=0,signature='';
   function resetBead(b){b.x=random(470,1640);b.y=random(100,190);b.r=random(1.4,3);b.wait=random(3,16);b.speed=0;b.trail=0;}
   function drop(b,dt){
     b.wait-=dt;b.r=Math.min(4.7,b.r+dt*.028);
@@ -36,6 +36,10 @@ export function mountWater(root, roomSnapshot) {
     raf=requestAnimationFrame(draw);
   }
   function sync(){
+    // Body classes are touched by the chart loop even when their values are unchanged.
+    // Never reset the animation clock for an unrelated or identical mutation.
+    const identity=[document.hidden,reduced.matches,innerWidth>760,root.dataset.ambience,root.dataset.paused,root.dataset.ready,root.dataset.room,root.dataset.theme,root.dataset.rain,document.body.classList.contains('pro-console-open'),document.body.classList.contains('sovereign-chart-expanded'),document.body.dataset.roomAsset,Math.min(devicePixelRatio||1,2)].join('|');
+    if(identity===signature)return;signature=identity;
     if(raf)cancelAnimationFrame(raf);raf=0;
     const file=document.body.dataset.roomAsset;if(file&&file!==filename&&file!=='unavailable'){filename=file;plate.src='/dashboard/assets/sovereign/'+file;}
     const ratio=Math.min(devicePixelRatio||1,2),w=Math.round(1672*ratio),h=Math.round(941*ratio);
