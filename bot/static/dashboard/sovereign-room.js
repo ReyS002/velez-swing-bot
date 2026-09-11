@@ -1,8 +1,8 @@
-import {mountRoomEnhancements} from "./sovereign-enhancements.js?v=1.8.0";
+import {mountRoomEnhancements} from "./sovereign-enhancements.js?v=1.8.1";
 import {statueOutline} from "./sovereign-statue.js?v=1.4.3";
-import {mountObjectMotion} from "./sovereign-motion.js?v=1.8.0";
+import {mountObjectMotion} from "./sovereign-motion.js?v=1.8.1";
 // Shared Sovereign room shell. Keep byte-identical across bot editions.
-export const SOVEREIGN_VERSION = "1.8.0";
+export const SOVEREIGN_VERSION = "1.8.1";
 const ASSETS = "/dashboard/assets/sovereign/";
 const percent = ([x, y, w, h]) => ({ x: x / 100, y: y / 100, w: w / 100, h: h / 100 });
 export const ROOMS = {
@@ -17,7 +17,7 @@ const ROOM_ART = {
  media:[[130,349,127,93],[1048,535,505,207]],
  pacific:[[306,260,113,94],[1027,500,550,217],[307,78,110,87]],
  tokyo:[[316,254,107,78],[1057,492,503,213],[316,337,108,74]],
- manhattan:[[316,332,110,84],[1040,486,511,212],[318,343,94,82,318,135]],
+ manhattan:[[316,332,110,84],[1040,486,511,212],[318,341,94,82,318,135]],
  dubai:[[320,350,112,83],[1030,496,529,206],[320,518,113,64]]
 };
 // Interior calendar faces and sculpture bounds, calibrated per lighting artwork.
@@ -35,7 +35,7 @@ function layoutRoomArtwork(){
  const regions=ROOM_ART[visibleArtwork.id];
  let patches=[...plate.querySelectorAll('.room-art-patch')];
  if(patches.length!==regions.length){patches.forEach(e=>e.remove());patches=regions.map(()=>{const e=document.createElement('span');e.className='room-art-patch';e.setAttribute('aria-hidden','true');plate.append(e);return e;});}
- regions.forEach(([x,y,w,h,sx=x,sy=y],i)=>{const e=patches[i];e.style.clipPath=visibleArtwork.id==="manhattan"&&i===2?"polygon(2% 4%,96% 23%,96% 96%,2% 85%)":"none";Object.assign(e.style,{left:(r.left+x*r.width/1672)+'px',top:(r.top+y*r.height/941)+'px',width:w*r.width/1672+'px',height:h*r.height/941+'px',backgroundImage:`url("${ASSETS}${i===1?"spacing":"objects"}-${visibleArtwork.file}?v=1.4.3")`,backgroundSize:`${r.width}px ${r.height}px`,backgroundPosition:`${-sx*r.width/1672}px ${-sy*r.height/941}px`});});
+ regions.forEach(([x,y,w,h,sx=x,sy=y],i)=>{const e=patches[i];e.style.transformOrigin="0 0";e.style.transform=visibleArtwork.id==="manhattan"&&i===2?"skewY(-7.4deg)":"none";e.style.clipPath=visibleArtwork.id==="manhattan"&&i===2?"polygon(2% 4%,96% 23%,96% 96%,2% 85%)":"none";Object.assign(e.style,{left:(r.left+x*r.width/1672)+'px',top:(r.top+y*r.height/941)+'px',width:w*r.width/1672+'px',height:h*r.height/941+'px',backgroundImage:`url("${ASSETS}${i===1?"spacing":"objects"}-${visibleArtwork.file}?v=1.4.3")`,backgroundSize:`${r.width}px ${r.height}px`,backgroundPosition:`${-sx*r.width/1672}px ${-sy*r.height/941}px`});});
 }
 // Clockwise wall-plane corners in the original 1672 × 941 room artwork.
 // Executive faces the viewer; the scenic-room walls recede toward the window.

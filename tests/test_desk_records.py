@@ -1,13 +1,19 @@
 import importlib.util
 import json
 import sqlite3
+import sys
+import types
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("desk_records", ROOT / "bot" / "desk_records.py")
+package_name = "_desk_test_" + ROOT.name.replace("-", "_")
+package = types.ModuleType(package_name)
+package.__path__ = [str(ROOT / "bot")]
+sys.modules[package_name] = package
+spec = importlib.util.spec_from_file_location(package_name + ".desk_records", ROOT / "bot" / "desk_records.py")
 records = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(records)
 NOW = datetime(2026, 9, 11, tzinfo=timezone.utc)
@@ -115,8 +121,7 @@ def test_routes_and_peer_scope(journal, monkeypatch):
             cards = response.json()["cards"]
             assert len(cards) == expected and cards[0]["bot_id"] == bot_id
             if bot_id == "velez":
-                assert cards[1]["ok"] is True and cards[2]["ok"] is False
+                assert cards[1]["ok"] is False and cards[2]["ok"] is False
             assert client.get("/api/desk/research?offset=-1").status_code == 422
             assert client.get("/api/desk/performance?days=0").status_code == 422
             assert client.get("/api/desk/research?q=missing").json()["total"] == 0
-

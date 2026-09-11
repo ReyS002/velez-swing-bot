@@ -14,6 +14,7 @@ from pathlib import Path
 from fastapi import Query
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
+from .desk_fill_performance import FillPerformance, period_view
 
 
 @contextmanager
@@ -150,8 +151,16 @@ def swarm_performance(path, days=30, now=None):
 
 
 def install_desk_records(app, engine, bot_id, label):
+    collector = FillPerformance(engine, bot_id, label)
+    app.state.desk_records = collector
     def performance(days):
-        cards = [journal_performance(engine.journal.path, bot_id, label, days)]
+        own = collector.view(days)
+        if own is None:
+            own = ({"ok": False, "pending": not collector.last_error, "bot_id": bot_id, "label": label,
+                    "note": ("Broker fill history is temporarily unavailable. Check the broker connection and retry shortly."
+                             if collector.last_error else "Reconciling this bot's broker fills. This view will update shortly.")}
+                   if collector.supported else journal_performance(engine.journal.path, bot_id, label, days))
+        cards = [own]
         if bot_id == "velez":
             for key, peer_id, peer_label, reader in [
                 ("DESK_SWING_JOURNAL", "swing", "Swing Bot", journal_performance),
@@ -161,7 +170,13 @@ def install_desk_records(app, engine, bot_id, label):
                 if not path:
                     continue
                 try:
-                    card = reader(path, peer_id, peer_label, days) if reader is journal_performance else reader(path, days)
+                    if peer_id == "swing":
+                        snapshot = json.loads((Path(path).parent / "desk-performance.json").read_text())
+                        if snapshot.get("bot_id") != "swing":
+                            raise ValueError("Unexpected performance source")
+                        card = period_view(snapshot, days)
+                    else:
+                        card = reader(path, days)
                 except (OSError, ValueError, sqlite3.Error, KeyError):
                     card = {"ok": False, "bot_id": peer_id, "label": peer_label,
                             "note": "This performance source is temporarily unavailable."}

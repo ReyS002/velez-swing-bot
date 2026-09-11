@@ -11,7 +11,10 @@ export function createDeskRecords({active, redraw, escapeHtml: escape}) {
       if(!response.ok)throw new Error('Records could not be loaded. Please retry.');
       const data=await response.json();
       if(ticket!==request)return;
-      if(panel==='research')research=data;else performance=data;
+      if(panel==='research')research=data;else {
+        performance=data;
+        if(data.cards?.some(card=>card.pending))setTimeout(()=>{if(active()==='performance'&&request===ticket)load('performance');},4000);
+      }
     } catch(e) {if(ticket===request)error=e.message;}
     finally {if(ticket===request){pending=false;if(active()===panel)redraw();}}
   }
@@ -36,6 +39,10 @@ export function createDeskRecords({active, redraw, escapeHtml: escape}) {
       <p class="decision-meta">${escape(card.source)} · ${escape(when(card.as_of))}${card.stale?' · Update overdue':''}</p>
       <div class="metric-grid"><div class="metric"><span>Realized P&amp;L</span><strong>${money(card.realized_pnl)}</strong></div><div class="metric"><span>Win rate</span><strong>${card.win_rate_pct==null?'—':card.win_rate_pct.toFixed(1)+'%'}</strong></div><div class="metric"><span>Closed trades</span><strong>${card.closed_trades}</strong></div></div>
       <p>${escape(card.note)}</p>
+      ${card.history_complete===false?'<p role="alert">Broker history is incomplete. P&amp;L is withheld until reconciliation finishes.</p>':''}
+      ${card.refresh_failed?'<p role="status">The latest broker refresh failed. The last successful result remains visible with its timestamp.</p>':''}
+      ${card.unresolved_count?`<p class="decision-meta">${card.unresolved_count} filled entries are open, partially closed, or missing a linked exit; excluded from closed-trade statistics.</p>`:''}
+      ${card.journal_orders_not_in_broker_history?`<p class="decision-meta">${card.journal_orders_not_in_broker_history} historical submissions are not present in the connected broker's retrieved history.</p>`:''}
       ${!card.priced_trades?'<p>No attributed closes with recorded P&amp;L in this period yet. Unavailable values are shown as —.</p>':''}
       ${card.missing_pnl?`<p>${card.missing_pnl} close(s) still lack P&amp;L. The amount and win rate above cover only ${card.priced_trades} priced trades.</p>`:''}
       ${card.unlinked_closes_excluded?`<p class="decision-meta">${card.unlinked_closes_excluded} unlinked account close observations excluded.</p>`:''}

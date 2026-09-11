@@ -11305,11 +11305,13 @@ def create_app(config: dict):
         engine.start_scanner()
         engine.start_operations_worker()
         engine.calendar.earnings_cache.start()
+        app.state.desk_records.start()
         try:
             yield
         finally:
             engine.stop_operations_worker()
             engine.calendar.earnings_cache.stop()
+            app.state.desk_records.stop()
             engine.stop_scanner_worker()
 
     app = FastAPI(title="Trading Bull Desk Webhook", version="0.1.0", lifespan=lifespan)
