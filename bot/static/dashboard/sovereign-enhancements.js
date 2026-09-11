@@ -4,7 +4,7 @@ const CITIES = [
   ["Tokyo", "Asia/Tokyo"], ["Dubai", "Asia/Dubai"],
 ];
 const LAYOUTS = {
-  media: {clock:[85.8,37.3,5.5,3.1],accent:[12.1,19.3,3,7.5],window:null},
+  media: {clock:null,accent:null,window:null},
   pacific:{clock:null,accent:null,window:"polygon(30% 18%,100% 0,100% 62%,31% 53%)"},
   tokyo:{clock:null,accent:null,window:"polygon(27% 20%,100% 0,100% 56%,27% 49%)"},
   manhattan:{clock:null,accent:null,window:"polygon(35% 16%,100% 0,100% 63%,35% 53%)"},
@@ -21,13 +21,16 @@ function saveSetting(key,value){try{localStorage.setItem(key,value);}catch{/* st
 export function mountRoomEnhancements({roomRect,roomSnapshot,open,assetsReady}) {
   if(document.querySelector("#desk-enhancements"))return;
   const root=document.createElement("div");root.id="desk-enhancements";root.className="desk-enhancements";
-  root.innerHTML=`<div class="desk-weather" aria-hidden="true"><div class="desk-clouds"></div><svg class="desk-aircraft" viewBox="0 0 24 14"><path fill="currentColor" d="M23 7L13 5 7 0H5L8 5 3 6 0 3V5L2 7 0 9V11L3 8 8 9 5 14H7L13 9Z"/></svg><div class="desk-rain"></div><div class="desk-city-glints"></div></div>
+  root.innerHTML=`<div class="desk-weather" aria-hidden="true"><div class="desk-clouds"></div><svg class="desk-aircraft" viewBox="0 0 100 30"><defs><linearGradient id="aircraft-metal" x2="0" y2="1"><stop stop-color="#e0e6e9"/><stop offset=".45" stop-color="#aab7bf"/><stop offset="1" stop-color="#43505a"/></linearGradient></defs><path fill="url(#aircraft-metal)" d="M3 18L12 17 6 3 12 4 25 16 65 15 80 14Q92 14 98 19Q100 22 87 23L28 23 17 25 8 24Z"/><path fill="#647580" d="M41 19L26 29 36 29 63 20ZM39 16L31 8 38 8 59 17Z"/><path fill="#283c49" d="M82 16L88 17 91 19H82Z"/><path stroke="#344754" stroke-width="1.4" stroke-dasharray="2 2" d="M30 18H76"/><ellipse cx="48" cy="24" rx="6" ry="2" fill="#64717a"/><circle cx="47" cy="21" r=".7" fill="#edcebb"/></svg><div class="desk-rain"></div><div class="desk-rain-beads"></div><div class="desk-city-glints"></div></div>
     <div class="desk-projection" aria-hidden="true"></div><div class="desk-shelf-light" aria-hidden="true"></div>
     <div class="desk-instrument desk-session-clock" role="group" aria-label="World clocks; select a city for market sessions">${CITIES.map(([name],i)=>`<button type="button" data-city="${i}" aria-label="${name} time and market sessions"><span class="clock-face"><i class="clock-hour"></i><i class="clock-minute"></i><b></b></span><span class="clock-city">${name}</span></button>`).join("")}</div>
     <div class="desk-regional-accent" role="img"></div>`;
   document.body.append(root);
   const q=s=>root.querySelector(s);
   let motion=readSetting("sovereign-ambience","on"), rain=readSetting("sovereign-rain","off");
+  // A fresh arrangement per page load; the saved Off setting always wins.
+  const beads=q(".desk-rain-beads");
+  for(let i=0;i<44;i++){const bead=document.createElement("i");const size=1.5+Math.random()*3.5;bead.style.cssText=`left:${30+Math.random()*69}%;top:${9+Math.random()*46}%;width:${size}px;height:${size*(1.1+Math.random()*.5)}px;--bead-delay:${-Math.random()*34}s;--bead-duration:${24+Math.random()*28}s`;beads.append(bead);}
   const reduced=matchMedia("(prefers-reduced-motion: reduce)");
   let timer=null;
   function canMove(){return !reduced.matches&&!document.hidden&&document.body.dataset.objectMotion!=="off";}

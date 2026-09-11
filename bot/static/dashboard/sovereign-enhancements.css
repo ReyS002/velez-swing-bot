@@ -20,7 +20,7 @@
 .desk-regional-accent{pointer-events:auto;filter:drop-shadow(0 1px 1px #0005)}
 .desk-weather{pointer-events:none;overflow:hidden;z-index:-1;isolation:isolate}
 .desk-clouds{position:absolute;left:28%;top:5%;width:85%;height:19%;background:radial-gradient(ellipse at 30% 65%,#f5ede623,transparent 35%),radial-gradient(ellipse at 72% 45%,#f0efe81c,transparent 38%);filter:blur(12px);animation:desk-cloud-drift 160s ease-in-out infinite alternate}
-.desk-aircraft{position:absolute;left:32%;top:27%;width:10px;height:6px;color:#dcd9cb;opacity:0;animation:desk-flight 130s linear infinite}
+.desk-aircraft{position:absolute;left:32%;top:27%;width:24px;height:7.2px;color:#dcd9cb;opacity:0;animation:desk-flight 130s linear infinite}
 .desk-rain{position:absolute;inset:0;background:repeating-linear-gradient(104deg,transparent 0 60px,#dce6ef1b 61px,transparent 62px 153px);opacity:0;animation:desk-rain-fall 3s linear infinite}
 .desk-enhancements[data-rain=on] .desk-rain{opacity:.45}
 .desk-city-glints{position:absolute;left:36%;top:43%;width:1px;height:1px;background:#ffe5b0;box-shadow:115px 18px #ffd692,241px 8px #ffe6b9,330px 24px #fff1c0,495px -7px #ffc37a,610px 27px #ffeccc;animation:desk-city-light 27s ease-in-out infinite;opacity:.1}
@@ -42,7 +42,7 @@
 /* A tiny contact shadow stays at the base; no translation or floating handset. */
 .sovereign[data-object-motion=on] .room-hotspot[data-object-id=journal]:is(:hover,:focus-visible) .journal-art{filter:drop-shadow(0 2px 1px #0006);transform:none}
 @keyframes desk-cloud-drift{from{transform:translateX(-3%)}to{transform:translateX(4%)}}
-@keyframes desk-flight{0%,64%{opacity:0;transform:translate(0,0) scaleX(1.7)}66%{opacity:.5}92%{opacity:.5}95%,100%{opacity:0;transform:translate(780px,-38px) scaleX(1.7)}}
+@keyframes desk-flight{0%,64%{opacity:0;transform:translate(0,0) scale(1)}66%{opacity:.5}92%{opacity:.5}95%,100%{opacity:0;transform:translate(780px,-38px) scale(1)}}
 @keyframes desk-rain-fall{from{transform:translate(0,-35px)}to{transform:translate(-8px,35px)}}
 @keyframes desk-city-light{0%,100%{opacity:.08}40%{opacity:.3}65%{opacity:.14}}
 @media(prefers-reduced-motion:reduce){.desk-enhancements *{animation:none!important;transition:none!important}.desk-weather,.desk-shelf-light{display:none!important}}
@@ -54,3 +54,12 @@
 .desk-regional-accent[hidden]{display:none!important}
 
 .desk-session-clock[hidden]{display:none!important}
+
+/* Thin cloud veils stay above Fuji and within the window masks. */
+.desk-enhancements[data-room=tokyo] .desk-clouds{left:29%;top:16%;width:68%;height:17%;filter:blur(8px);background:radial-gradient(ellipse at 18% 50%,#ebedf23d,transparent 30%),radial-gradient(ellipse at 52% 38%,#e3e8f035,transparent 37%),radial-gradient(ellipse at 81% 67%,#eaf0f02b,transparent 30%)}
+.desk-enhancements[data-room=tokyo][data-theme=day] .desk-clouds{opacity:.9}
+.desk-enhancements[data-room=tokyo][data-theme=night] .desk-clouds{opacity:.45}
+.desk-rain-beads{position:absolute;inset:0;display:none;pointer-events:none}
+.desk-enhancements[data-rain=on] .desk-rain-beads{display:block}
+.desk-rain-beads i{position:absolute;border-radius:45% 48% 52% 46%;background:radial-gradient(ellipse at 30% 20%,#ffffff85,transparent 40%),radial-gradient(ellipse at 60% 80%,#adc2ce30,#152a351a 65%);box-shadow:inset -.4px -.7px .6px #d7e9f075,.5px .8px .7px #07162355;animation:desk-bead-slide var(--bead-duration) ease-in infinite;animation-delay:var(--bead-delay)}
+@keyframes desk-bead-slide{0%,70%{transform:translateY(0);opacity:.65}95%{opacity:.45}100%{transform:translateY(35px);opacity:0}}

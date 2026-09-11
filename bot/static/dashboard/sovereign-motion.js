@@ -34,7 +34,7 @@ export function mountObjectMotion({open,roomRect,roomSnapshot}) {
     const img=(file,w,h,attr='')=>`<image href="${ASSETS+file}" width="${w}" height="${h}" ${attr}/>`;
     const layer=(rect)=>{
       const e=append(document.body,'','desk-motion-slice');const room=roomRect();
-      Object.assign(e.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px',backgroundImage:panel==='mission'?`url("${ASSETS}spacing-${document.body.dataset.roomAsset}?v=1.4.3")`:panel==='vault'&&roomSnapshot().id!=='media'?`url("${ASSETS}objects-${document.body.dataset.roomAsset}?v=1.4.3")`:getComputedStyle(document.querySelector('.photo-room')).backgroundImage,backgroundSize:`${room.width}px ${room.height}px`,backgroundPosition:`${room.left-rect.left}px ${room.top-rect.top}px`});return e;
+      Object.assign(e.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px',backgroundImage:panel==='mission'?`url("${ASSETS}spacing-${document.body.dataset.roomAsset}?v=1.4.3")`:panel==='vault'&&roomSnapshot().id!=='media'?`url("${ASSETS}objects-${document.body.dataset.roomAsset}?v=1.4.3")`:getComputedStyle(document.querySelector('.photo-room')).backgroundImage,backgroundSize:`${room.width}px ${room.height}px`,backgroundPosition:`${room.left-rect.left}px ${room.top-rect.top+(panel==='vault'&&roomSnapshot().id==='manhattan'?186*room.height/941:0)}px`});return e;
     };
     try {
       if(panel==='phone'){
