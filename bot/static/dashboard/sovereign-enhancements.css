@@ -34,7 +34,7 @@
 .desk-city-glints{position:absolute;left:36%;top:43%;width:1px;height:1px;background:#ffe5b0;box-shadow:115px 18px #ffd692,241px 8px #ffe6b9,330px 24px #fff1c0,495px -7px #ffc37a,610px 27px #ffeccc;animation:desk-city-light 27s ease-in-out infinite;opacity:.1}
 .desk-enhancements[data-theme=day] .desk-city-glints,.desk-enhancements[data-room=pacific] .desk-city-glints{display:none}
 .desk-shelf-light{background:radial-gradient(ellipse at 50% 0,#ffe0a466,transparent 75%);mix-blend-mode:screen;opacity:0;transition:opacity 240ms ease;pointer-events:none}.desk-shelf-light.lit{opacity:.3}
-.desk-projection{background:repeating-linear-gradient(90deg,transparent 0 25px,#c7dcd61c 26px 27px),repeating-linear-gradient(0deg,transparent 0 11px,#c7dcd61c 12px 13px);mask-image:radial-gradient(ellipse,#0008,transparent 70%);transform:perspective(400px) rotateX(55deg);opacity:0;transition:opacity 250ms ease;pointer-events:none}
+.desk-projection{background:radial-gradient(ellipse,#b6ded95c,transparent 70%),repeating-linear-gradient(90deg,transparent 0 25px,#c7dcd655 26px 27px),repeating-linear-gradient(0deg,transparent 0 11px,#c7dcd655 12px 13px);mask-image:radial-gradient(ellipse,#000c,transparent 75%);transform:perspective(400px) rotateX(55deg);opacity:0;transition:opacity 250ms ease;pointer-events:none}
 .sovereign-chart-expanded .desk-projection{opacity:.7}
 .sovereign-chart-expanded .desk-enhancements{z-index:66}.sovereign-chart-expanded .desk-enhancements :is(.desk-instrument,.desk-regional-accent,.desk-weather){visibility:hidden}
 .sovereign:not([data-room-asset]) .desk-enhancements,.sovereign[data-room-asset=unavailable] .desk-enhancements{visibility:hidden}
