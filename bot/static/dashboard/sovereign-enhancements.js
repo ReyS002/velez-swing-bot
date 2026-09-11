@@ -5,10 +5,10 @@ const CITIES = [
 ];
 const LAYOUTS = {
   media: {clock:[85.8,37.3,5.5,3.1],accent:[12.1,19.3,3,7.5],window:null},
-  pacific:{clock:[19,6.5,5.5,2.8],accent:[18.6,19.5,5.5,8],window:"polygon(30% 18%,100% 0,100% 62%,31% 53%)"},
-  tokyo:{clock:[19.55,28.1,5.3,6.5],accent:null,window:"polygon(27% 20%,100% 0,100% 56%,27% 49%)"},
-  manhattan:{clock:[19.55,7.5,5,6.5],accent:[19.1,27,5.5,7.5],window:"polygon(35% 16%,100% 0,100% 63%,35% 53%)"},
-  dubai:{clock:[20,38.6,5.4,6.5],accent:[19.5,9,5.5,8],window:"polygon(35% 18%,100% 0,100% 62%,35% 53%)"},
+  pacific:{clock:null,accent:null,window:"polygon(30% 18%,100% 0,100% 62%,31% 53%)"},
+  tokyo:{clock:null,accent:null,window:"polygon(27% 20%,100% 0,100% 56%,27% 49%)"},
+  manhattan:{clock:null,accent:null,window:"polygon(35% 16%,100% 0,100% 63%,35% 53%)"},
+  dubai:{clock:null,accent:null,window:"polygon(35% 18%,100% 0,100% 62%,35% 53%)"},
 };
 const ACCENTS = {
   media:[0,70,345,490,"Brass architectural miniature"],
@@ -36,7 +36,7 @@ export function mountRoomEnhancements({roomRect,roomSnapshot,open,assetsReady}) 
     const scene=roomSnapshot(), p=LAYOUTS[scene.id],r=roomRect();
     root.dataset.ready=String(assetsReady?.()!==false);
     root.dataset.room=scene.id;root.dataset.theme=scene.theme;
-    place(q(".desk-session-clock"),p.clock);
+    const clock=q(".desk-session-clock");clock.hidden=!p.clock;if(p.clock)place(clock,p.clock);
     const accent=q(".desk-regional-accent");
     accent.hidden=!p.accent;
     if(p.accent){

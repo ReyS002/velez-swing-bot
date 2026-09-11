@@ -52,3 +52,5 @@
 .desk-enhancements[data-room=manhattan] .desk-session-clock{transform:skewY(3deg)}
 .desk-enhancements[data-room=dubai] .desk-session-clock{transform:skewY(7deg)}
 .desk-regional-accent[hidden]{display:none!important}
+
+.desk-session-clock[hidden]{display:none!important}
