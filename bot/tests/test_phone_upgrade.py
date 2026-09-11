@@ -71,7 +71,7 @@ def test_v623_phone_art_and_winston_voice_lock_are_wired():
     assert "deskPhoneObject" not in js
     assert "phoneObjectRegion" not in js
     assert "phone-glass.png" in room_js
-    assert 'export const SOVEREIGN_VERSION = "1.6.5";' in room_js
+    assert 'export const SOVEREIGN_VERSION = "1.7.0";' in room_js
     assert "body.sovereign:not([data-room-asset]) .photo-room" in sovereign_css
     assert "opacity .18s ease" in sovereign_css
     assert server.count('FileResponse(dashboard_index, headers={"Cache-Control": "no-store"})') == 2
@@ -111,11 +111,11 @@ def test_room_regions_keep_realistic_objects_in_all_five_rooms():
         assert room["screen"][2] < 30
         assert set(objects) == {
             "phone", "music", "journal", "keyboard", "trackpad", "lamp",
-            "mission", "notes", "safe", "bookshelf", "vault",
+            "mission", "notes", "bookshelf", "vault",
         }
         vx, vy, vw, vh = objects["vault"]
         bx, by, bw, bh = objects["bookshelf"]
-        assert vy + vh < objects["safe"][1]
+        assert vy + vh < objects["journal"][1]
         assert vx + vw <= bx or bx + bw <= vx or vy + vh <= by or by + bh <= vy
         for x, y, width, height in [*objects.values(), room["screen"], room["broadcast"]]:
             assert 0 <= x < 100 and 0 <= y < 100

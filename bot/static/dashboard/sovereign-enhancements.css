@@ -63,3 +63,6 @@
 .desk-enhancements[data-rain=on] .desk-rain-beads{display:block}
 .desk-rain-beads i{position:absolute;border-radius:45% 48% 52% 46%;background:radial-gradient(ellipse at 30% 20%,#ffffff85,transparent 40%),radial-gradient(ellipse at 60% 80%,#adc2ce30,#152a351a 65%);box-shadow:inset -.4px -.7px .6px #d7e9f075,.5px .8px .7px #07162355;animation:desk-bead-slide var(--bead-duration) ease-in infinite;animation-delay:var(--bead-delay)}
 @keyframes desk-bead-slide{0%,70%{transform:translateY(0);opacity:.65}95%{opacity:.45}100%{transform:translateY(35px);opacity:0}}
+
+.desk-rain,.desk-rain-beads{display:none!important}
+.desk-water{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}

@@ -1,3 +1,4 @@
+import {mountWater} from "./sovereign-water.js?v=1.7.0";
 /* Room instruments consume existing snapshots. They never submit orders or fetch broker data. */
 const CITIES = [
   ["New York", "America/New_York"], ["London", "Europe/London"],
@@ -28,9 +29,6 @@ export function mountRoomEnhancements({roomRect,roomSnapshot,open,assetsReady}) 
   document.body.append(root);
   const q=s=>root.querySelector(s);
   let motion=readSetting("sovereign-ambience","on"), rain=readSetting("sovereign-rain","off");
-  // A fresh arrangement per page load; the saved Off setting always wins.
-  const beads=q(".desk-rain-beads");
-  for(let i=0;i<44;i++){const bead=document.createElement("i");const size=1.5+Math.random()*3.5;bead.style.cssText=`left:${30+Math.random()*69}%;top:${9+Math.random()*46}%;width:${size}px;height:${size*(1.1+Math.random()*.5)}px;--bead-delay:${-Math.random()*34}s;--bead-duration:${24+Math.random()*28}s`;beads.append(bead);}
   const reduced=matchMedia("(prefers-reduced-motion: reduce)");
   let timer=null;
   function canMove(){return !reduced.matches&&!document.hidden&&document.body.dataset.objectMotion!=="off";}
@@ -66,6 +64,6 @@ export function mountRoomEnhancements({roomRect,roomSnapshot,open,assetsReady}) 
   for(const [key,label] of [["ambience","Outdoor ambience"],["rain","Window rain"]]){const b=document.createElement("button");b.type="button";b.id=`desk-${key}-toggle`;const refresh=()=>{const on=(key==="ambience"?motion:rain)==="on";b.textContent=`${label}: ${on?"On":"Off"}`;b.setAttribute("aria-pressed",String(on));};b.addEventListener("click",()=>{if(key==="ambience"){motion=motion==="on"?"off":"on";saveSetting("sovereign-ambience",motion);}else{rain=rain==="on"?"off":"on";saveSetting("sovereign-rain",rain);}refresh();setMotion();});refresh();grid?.append(b);}
   document.addEventListener("desk:layout",layout);document.addEventListener("desk:roomchange",layout);
   document.addEventListener("desk:motionchange",setMotion);document.addEventListener("visibilitychange",()=>{setMotion();});reduced.addEventListener("change",setMotion);
-  layout();setMotion();
+  layout();setMotion();mountWater(root,roomSnapshot);
   return {layout};
 }
