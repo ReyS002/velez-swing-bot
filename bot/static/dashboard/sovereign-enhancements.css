@@ -66,3 +66,19 @@
 
 .desk-rain,.desk-rain-beads{display:none!important}
 .desk-water{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.desk-records{min-width:0}
+.desk-records h3,.desk-records p,.desk-records summary,.saved-research-text{overflow-wrap:anywhere;white-space:normal}
+.records-controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:12px 0}
+.records-controls input{flex:1 1 180px;min-width:0;padding:10px}
+.records-controls button,.records-controls select{padding:9px 12px}
+.saved-research-text{white-space:pre-wrap;line-height:1.65;margin-top:16px}
+.desk-records summary{cursor:pointer;padding:12px 0}
+.desk-records summary .decision-meta{display:block;margin-top:6px}
+.desk-records .metric-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.desk-records .metric{display:flex;flex-direction:column;gap:8px;min-width:0}
+.desk-records .metric strong{font-size:clamp(20px,2vw,28px);overflow-wrap:anywhere}
+.records-table{overflow-x:auto}
+.records-table table{width:100%;border-collapse:collapse}
+.records-table th,.records-table td{text-align:left;padding:10px 8px;border-bottom:1px solid #9d8d7440;white-space:normal;overflow-wrap:anywhere}
+.records-table small{display:block}
+@media(max-width:520px){.desk-records .metric-grid{grid-template-columns:1fr}}

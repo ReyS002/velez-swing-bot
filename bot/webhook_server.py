@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .desk_records import install_desk_records
 
 import hashlib
 import io
@@ -11313,6 +11314,7 @@ def create_app(config: dict):
 
     app = FastAPI(title="Trading Bull Desk Webhook", version="0.1.0", lifespan=lifespan)
     app.state.engine = engine
+    install_desk_records(app, engine, "swing", "Swing Bot")
     app.state.apple_music = AppleMusicTokenService()
     app.state.broadcast_market = BroadcastMarketService(engine.broker)
     app.state.desk_brief = DeskBriefService(engine.daily_brief_payload, app.state.broadcast_market.payload, engine.winston, product="Velez Swing", provider=lambda: desk_broker_provider(engine.broker))

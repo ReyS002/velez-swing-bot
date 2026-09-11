@@ -71,7 +71,7 @@ def test_v623_phone_art_and_winston_voice_lock_are_wired():
     assert "deskPhoneObject" not in js
     assert "phoneObjectRegion" not in js
     assert "phone-glass.png" in room_js
-    assert 'export const SOVEREIGN_VERSION = "1.7.1";' in room_js
+    assert 'export const SOVEREIGN_VERSION = "1.8.0";' in room_js
     assert "body.sovereign:not([data-room-asset]) .photo-room" in sovereign_css
     assert "opacity .18s ease" in sovereign_css
     assert server.count('FileResponse(dashboard_index, headers={"Cache-Control": "no-store"})') == 2

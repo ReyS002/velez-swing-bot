@@ -1,4 +1,4 @@
-import {mountWater} from "./sovereign-water.js?v=1.7.1";
+import {mountWater} from "./sovereign-water.js?v=1.8.0";
 /* Room instruments consume existing snapshots. They never submit orders or fetch broker data. */
 const CITIES = [
   ["New York", "America/New_York"], ["London", "Europe/London"],

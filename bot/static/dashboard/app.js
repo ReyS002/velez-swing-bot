@@ -1,5 +1,7 @@
-import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.7.1";
+import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.8.0";
 const $ = (selector) => document.querySelector(selector);
+import { createDeskRecords } from "./desk-records.js?v=1.8.0";
+const deskRecords = createDeskRecords({active:()=>activePanel,redraw:()=>renderPanel(),escapeHtml});
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
 const PHOTO_WIDTH = 1672;
@@ -213,6 +215,8 @@ const winstonState = {
 };
 
 const panelCopy = {
+  research: ["Winston's saved research", "Saved research"],
+  performance: ["Bot-attributed results", "Performance"],
   account: ["Workspace access", "Account & access"],
   tv: ["TradingView | V6.23", "Trading Screen"],
   mission: ["Daily mission | V6.23", "Mission Card"],
@@ -5593,10 +5597,13 @@ function renderPanel() {
     window: renderWindow,
     lamp: renderLamp,
     drawer: renderDrawer,
+    research: deskRecords.renderResearch,
+    performance: deskRecords.renderPerformance,
     notes: renderNotes,
   };
 
   panelBody.innerHTML = (renderers[activePanel] || renderTradingScreen)();
+  deskRecords.bind(panelBody);
   $("#winston-call-toggle")?.addEventListener("click", () => {
     unlockWinstonAudio();
     if (winstonState.callActive) endWinstonCall();
@@ -7630,6 +7637,7 @@ function setActivePanel(panel, options = {}) {
   if (!panelCopy[panel]) return;
   roomClear = false;
   activePanel = panel;
+  if (["research","performance"].includes(panel)) deskRecords.load(panel);
   if (options.syncWorkflow !== false) {
     activeWorkflow = panelWorkflow(panel);
   }
