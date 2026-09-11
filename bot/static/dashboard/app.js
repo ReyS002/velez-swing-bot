@@ -1,4 +1,4 @@
-import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.6.2";
+import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.6.3";
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
@@ -7971,7 +7971,7 @@ function init() {
     clickObject: (panel) => setActivePanel(panel),
     summonJarvis: () => setActivePanel("phone"),
   };
-  mountSovereign({ product: "Velez Swing", open: setActivePanel, close: closePanel, buildHotspots, position: positionRoomElements, setTheme: applyRoomTheme, state: () => dashboardState, metrics: () => ({ risk: currentRiskState() }), refreshMetrics: refreshRiskStatus, openProConsole });
+  mountSovereign({ product: "Velez Swing", open: setActivePanel, close: closePanel, buildHotspots, position: positionRoomElements, setTheme: applyRoomTheme, state: () => dashboardState, openProConsole });
   window.__deskReady = true;
   window.__deskVersion = APP_BUILD;
 

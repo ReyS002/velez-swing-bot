@@ -1,14 +1,14 @@
-import {mountRoomEnhancements} from "./sovereign-enhancements.js?v=1.6.2";
+import {mountRoomEnhancements} from "./sovereign-enhancements.js?v=1.6.3";
 import {statueOutline} from "./sovereign-statue.js?v=1.4.3";
 import {mountObjectMotion} from "./sovereign-motion.js?v=1.5.0";
 // Shared Sovereign room shell. Keep byte-identical across bot editions.
-export const SOVEREIGN_VERSION = "1.6.2";
+export const SOVEREIGN_VERSION = "1.6.3";
 const ASSETS = "/dashboard/assets/sovereign/";
 const percent = ([x, y, w, h]) => ({ x: x / 100, y: y / 100, w: w / 100, h: h / 100 });
 export const ROOMS = {
   media: { name: "Executive", modes: { night: "Cinema", day: "Focus" }, defaultTheme: "night", images: { night: "executive-cinema-clean.png", day: "executive-focus-clean.png" }, screen: [37.25,45.55,25.1,18.1], broadcast: [31.699,15.409,36.603,27.843], objects: { phone:[19.6,65.8,9.7,15.8],music:[32.5,66.8,4.6,11.7],journal:[68.8,76.4,10.8,8.7],keyboard:[38.5,74.6,19.2,6],trackpad:[58.6,75.6,5.9,4.8],lamp:[12,48,15,25],mission:[69.65,59.3,6.45,10.6],notes:[78.5,61,12,14],vault:[85.9,48.9,3.05,7.3],safe:[75.8,90.5,14,4.5],bookshelf:[8,16,3.3,9] } },
-  pacific: { name: "Hawaii", modes: { night: "Sunset", day: "Day" }, defaultTheme: "night", images: { night: "hawaii-sunset-clean.png", day: "hawaii-day-clean.png" }, screen: [33.7,40.65,27.2,20.65], broadcast: [4.8,21.6,11.6,25.5], objects: {phone:[13.5,67.5,11.6,17],music:[27,66.8,4.6,10.7],journal:[69.5,77,10.1,10.1],keyboard:[32.5,71.5,25,6.5],trackpad:[58.4,72.9,5.9,4.9],lamp:[7,47,16.5,24.5],mission:[70.7,55.9,7,11.5],notes:[81.5,55,11.5,17],vault:[19.1388,10.2019,4.3660,5.8448],safe:[80,94,11.5,4.4],bookshelf:[22,20,2.5,7]} },
-  tokyo: { name: "Tokyo", modes: { day: "Clear Day", night: "Blue Hour" }, defaultTheme: "day", images: { day: "tokyo-day-clean.png", night: "tokyo-night-clean.png" }, screen:[36.55,41.6,25.4,19.8], broadcast:[6.7,18.5,10.35,27.6], objects:{phone:[12,66,13.9,17.7],music:[31,65.5,5.4,12.5],journal:[66.9,74.1,10.6,10.4],keyboard:[36.8,72.6,19.5,5.8],trackpad:[57.3,74.1,6.7,4.6],lamp:[8.5,39,19.5,27.5],mission:[69.8,54.8,6.15,12.1],notes:[79.7,56.5,10.5,13.4],vault:[19.7368,37.4070,4.6053,4.9947],safe:[81.5,92,10,3.5],bookshelf:[19,18,2.8,8]} },
+  pacific: { name: "Hawaii", modes: { night: "Sunset", day: "Day" }, defaultTheme: "night", images: { night: "hawaii-sunset-clean.png", day: "hawaii-day-clean.png" }, screen: [33.7,40.65,27.2,20.65], broadcast: [4.8,21.6,11.6,25.5], objects: {phone:[13.5,67.5,11.6,17],music:[27,66.8,4.6,10.7],journal:[69.5,77,10.1,10.1],keyboard:[32.5,71.5,25,6.5],trackpad:[58.4,72.9,5.9,4.9],lamp:[7,47,16.5,24.5],mission:[70.7,55.9,7,11.5],notes:[81.5,55,11.5,17],vault:[19.1388,10.2019,4.3660,5.8448],safe:[80,94,17,4.4],bookshelf:[22,20,2.5,7]} },
+  tokyo: { name: "Tokyo", modes: { day: "Clear Day", night: "Blue Hour" }, defaultTheme: "day", images: { day: "tokyo-day-clean.png", night: "tokyo-night-clean.png" }, screen:[36.55,41.6,25.4,19.8], broadcast:[6.7,18.5,10.35,27.6], objects:{phone:[12,66,13.9,17.7],music:[31,65.5,5.4,12.5],journal:[66.9,74.1,10.6,10.4],keyboard:[36.8,72.6,19.5,5.8],trackpad:[57.3,74.1,6.7,4.6],lamp:[8.5,39,19.5,27.5],mission:[69.8,54.8,6.15,12.1],notes:[79.7,56.5,10.5,13.4],vault:[19.7368,37.4070,4.6053,4.9947],safe:[81.5,92,13.7,3.5],bookshelf:[19,18,2.8,8]} },
   manhattan: { name:"New York", modes:{night:"Night",day:"Day"}, defaultTheme:"night", images:{night:"manhattan-night-clean.png",day:"manhattan-day-clean.png"},screen:[34.35,41.65,27.4,19.85],broadcast:[4.05,22.1,12.85,24.8],objects:{phone:[13.8,63,10.9,17],music:[27.8,66.3,4.4,11],journal:[69.6,73.6,8.9,9.4],keyboard:[33.3,72.5,24,6.3],trackpad:[58.7,73.3,6.5,4.8],lamp:[7.5,47,15.4,23.5],mission:[70.2,54.35,6.7,11.8],notes:[80.7,55.8,9.2,13.8],vault:[19.3780,16.0468,4.8445,6.2699],safe:[79.7,91.5,10.5,3.7],bookshelf:[19.2,23,5.5,2.5]} },
   dubai: {name:"Dubai",modes:{day:"Day",night:"Night"},defaultTheme:"day",images:{day:"dubai-day-clean.png",night:"dubai-night-clean.png"},screen:[33.75,40.4,27.2,21.8],broadcast:[4.7,21.1,12.45,21.3],objects:{phone:[13.5,66.5,12,15.3],music:[27.3,66.6,4,10.7],journal:[71,75.1,9.6,9.5],keyboard:[32.3,72.2,24.8,6],trackpad:[57.5,73,7.2,4.5],lamp:[8,45.5,13.6,25.5],mission:[71,55.35,6.9,11.7],notes:[80.5,53.2,11,17.5],vault:[20.3947,56.4293,4.3660,4.7821],safe:[81.4,92,10.2,3.5],bookshelf:[19.5,47,5,6]}}
 };
@@ -57,7 +57,6 @@ const savedRoom = localStorage.getItem("bull-pilot-environment");
 let roomId = ROOMS[savedRoom] ? savedRoom : "media";
 let lighting = read("sovereign-room-lighting", {});
 if (!lighting[roomId]) lighting[roomId] = savedRoom && localStorage.getItem("velez-room-theme") || ROOMS[roomId].defaultTheme;
-let enhancements = null;
 let adapter = null, lastFocus = null, expandedChart = false;
 let config = { product: "Trading Bull Desk", broker_provider: "", account_mode: "workspace" };
 let preloadToken = 0;
@@ -155,7 +154,6 @@ export function updateSovereignChrome({panel,open,state,music,winston}={}) {
   tabs?.querySelectorAll("button").forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.deskAction===panel)));
   const title=$("#panel-title");if(title&&open&&PANEL_LABELS[panel])title.textContent=PANEL_LABELS[panel];
   const status=state||adapter.state();
-  enhancements?.update(status);
   const count=status?.pending_approvals?.length;const badge=$(".approval-count");if(badge)badge.textContent=count>0?String(count):"";
   const now=$(".prop-now-playing");if(now)now.textContent=music?.nowPlaying?.title||"Your music";
   document.body.classList.toggle("sovereign-speaking",Boolean(winston?.speaking));
@@ -186,6 +184,6 @@ export function mountSovereign(options) {
   syncRoomTheme(lighting[roomId]);layout();window.lucide?.createIcons();
   fetch("/api/desk/config",{cache:"no-store"}).then(response=>response.ok?response.json():{}).then(value=>{config={...config,...value};if(brand&&value.product)brand.textContent=value.product;document.dispatchEvent(new CustomEvent("desk:config",{detail:config}));}).catch(()=>{});
   mountObjectMotion({open:openPanel,roomRect,roomSnapshot});
-  enhancements=mountRoomEnhancements({open:openPanel,roomRect,roomSnapshot,metrics:options.metrics,refreshMetrics:options.refreshMetrics,assetsReady:()=>document.body.dataset.roomAsset===ROOMS[roomId].images[lighting[roomId]]});
+  mountRoomEnhancements({open:openPanel,roomRect,roomSnapshot,assetsReady:()=>document.body.dataset.roomAsset===ROOMS[roomId].images[lighting[roomId]]});
   window.__sovereign={version:SOVEREIGN_VERSION,rooms:ROOMS,room:roomSnapshot,selectRoom,regions:roomRegions,broadcastCorners,hotspots:roomHotspots,rect:roomRect,open:(id)=>openPanel(id),config:()=>config};
 }
