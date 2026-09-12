@@ -1,4 +1,4 @@
-import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.8.1";
+import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.9.0";
 const $ = (selector) => document.querySelector(selector);
 import { createDeskRecords } from "./desk-records.js?v=1.8.1";
 const deskRecords = createDeskRecords({active:()=>activePanel,redraw:()=>renderPanel(),escapeHtml});
