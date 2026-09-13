@@ -2,8 +2,9 @@ import {mountRoomEnhancements} from "./sovereign-enhancements.js?v=1.8.1";
 import {statueOutline} from "./sovereign-statue.js?v=1.4.3";
 import {mountObjectMotion} from "./sovereign-motion.js?v=1.8.1";
 import {layoutStone,stoneFile} from "./sovereign-stone.js?v=1.9.0";
+import {mountRoomGuide} from "./sovereign-guide.js?v=1.10.0";
 // Shared Sovereign room shell. Keep byte-identical across bot editions.
-export const SOVEREIGN_VERSION = "1.9.0";
+export const SOVEREIGN_VERSION = "1.10.0";
 const ASSETS = "/dashboard/assets/sovereign/";
 const percent = ([x, y, w, h]) => ({ x: x / 100, y: y / 100, w: w / 100, h: h / 100 });
 export const ROOMS = {
@@ -190,6 +191,7 @@ export function mountSovereign(options) {
   syncRoomTheme(lighting[roomId]);layout();window.lucide?.createIcons();
   fetch("/api/desk/config",{cache:"no-store"}).then(response=>response.ok?response.json():{}).then(value=>{config={...config,...value};if(brand&&value.product)brand.textContent=value.product;document.dispatchEvent(new CustomEvent("desk:config",{detail:config}));}).catch(()=>{});
   mountObjectMotion({open:openPanel,roomRect,roomSnapshot});
+  mountRoomGuide({busy:options.guideBusy});
   mountRoomEnhancements({open:openPanel,roomRect,roomSnapshot,assetsReady:()=>document.body.dataset.roomAsset===ROOMS[roomId].images[lighting[roomId]]});
   window.__sovereign={version:SOVEREIGN_VERSION,rooms:ROOMS,room:roomSnapshot,selectRoom,regions:roomRegions,broadcastCorners,hotspots:roomHotspots,rect:roomRect,open:(id)=>openPanel(id),config:()=>config};
 }

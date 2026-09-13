@@ -1,0 +1,19 @@
+{
+ "intro":{"title":"Winston room guide","text":"I'm Winston. Pause over an object, or reach it with your keyboard, and I'll explain what it does. You can turn this guide off at any time."},
+ "phone":{"title":"Winston","text":"Use the phone to speak with Winston, ask questions, and request a desk briefing."},
+ "music":{"title":"Apple Music","text":"The pocket player opens Apple Music, where you can connect your account and choose what to play."},
+ "journal":{"title":"Trade journal","text":"Open the journal to review your trades, record lessons, and reflect on your decisions."},
+ "keyboard":{"title":"Command","text":"The keyboard opens Command, with your watchlist, trading configuration, and desk controls."},
+ "trackpad":{"title":"Performance","text":"The trackpad opens Performance, where you can review closed trades and the results available for this bot."},
+ "notes":{"title":"Bull Report and notes","text":"The bull and bear open your Bull Report and notes, bringing your written market observations together."},
+ "lamp":{"title":"Risk and Bull Matrix","text":"The lamp opens Risk and Bull Matrix, where you can review position limits, risk capacity, and the checks before a trade."},
+ "mission":{"title":"Session Brief","text":"The framed brief brings together your mission, calendar, and watchlist. Start here to review the session."},
+ "vault":{"title":"Vault checks","text":"The shelf safe opens Vault checks, where you can review workspace access and connection checks."},
+ "research":{"title":"Saved research","text":"The desk drawer opens saved research. Search your collected notes and revisit useful findings."},
+ "pen":{"title":"Approvals","text":"The pen opens Approvals, where you can review pending proposals before deciding what to approve."},
+ "bookshelf":{"title":"Strategy library","text":"The books open the Strategy Library, where you can revisit the methods and reference material available in this workspace."},
+ "clock":{"title":"Market sessions","text":"The clock opens Market sessions, with market hours and session information."},
+ "tv":{"title":"Trading screen","text":"The desktop monitor shows your trading chart. Use its expand button for a larger view."},
+ "broadcast":{"title":"Broadcast","text":"The wall screen opens Broadcast. Choose a channel, watch the stream, or manage your channel list from Tools."},
+ "window":{"title":"Market conditions","text":"The window shortcut opens Market conditions for a broader view of the market context."}
+}

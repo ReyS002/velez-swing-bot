@@ -1,4 +1,4 @@
-import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.9.0";
+import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.10.0";
 const $ = (selector) => document.querySelector(selector);
 import { createDeskRecords } from "./desk-records.js?v=1.8.1";
 const deskRecords = createDeskRecords({active:()=>activePanel,redraw:()=>renderPanel(),escapeHtml});
@@ -7979,7 +7979,7 @@ function init() {
     clickObject: (panel) => setActivePanel(panel),
     summonJarvis: () => setActivePanel("phone"),
   };
-  mountSovereign({ product: "Velez Swing", open: setActivePanel, close: closePanel, buildHotspots, position: positionRoomElements, setTheme: applyRoomTheme, state: () => dashboardState, openProConsole });
+  mountSovereign({ guideBusy: () => Boolean(appleMusicState.playback.isPlaying || winstonState.callActive || winstonState.speaking || winstonState.listening), product: "Velez Swing", open: setActivePanel, close: closePanel, buildHotspots, position: positionRoomElements, setTheme: applyRoomTheme, state: () => dashboardState, openProConsole });
   window.__deskReady = true;
   window.__deskVersion = APP_BUILD;
 
