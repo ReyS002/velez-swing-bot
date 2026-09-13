@@ -1,10 +1,10 @@
 import {mountRoomEnhancements} from "./sovereign-enhancements.js?v=1.8.1";
 import {statueOutline} from "./sovereign-statue.js?v=1.4.3";
 import {mountObjectMotion} from "./sovereign-motion.js?v=1.8.1";
-import {layoutStone,stoneFile} from "./sovereign-stone.js?v=1.9.0";
+import {layoutStone,stoneFile} from "./sovereign-stone.js?v=1.11.0";
 import {mountRoomGuide} from "./sovereign-guide.js?v=1.10.0";
 // Shared Sovereign room shell. Keep byte-identical across bot editions.
-export const SOVEREIGN_VERSION = "1.10.0";
+export const SOVEREIGN_VERSION = "1.11.0";
 const ASSETS = "/dashboard/assets/sovereign/";
 const percent = ([x, y, w, h]) => ({ x: x / 100, y: y / 100, w: w / 100, h: h / 100 });
 export const ROOMS = {
@@ -123,7 +123,7 @@ export function syncRoomTheme(theme) {
   const plate=$(".photo-room");
   if(plate){const token=++preloadToken,id=roomId,file=ROOMS[id].images[lighting[id]];
     const load=src=>new Promise((resolve,reject)=>{const image=new Image();image.onload=resolve;image.onerror=reject;image.src=src;});
-    Promise.all([load(url),load(ASSETS+'objects-'+file+'?v=1.4.3'),load(ASSETS+'spacing-'+file+'?v=1.4.3'),...(stoneFile(id,file)?[load(ASSETS+stoneFile(id,file)+'?v=1.9.0')]:[])]).then(()=>{if(token!==preloadToken)return;plate.style.backgroundImage=`url("${url}")`;visibleArtwork={id,file};layoutRoomArtwork();document.body.dataset.roomAsset=file;layout();}).catch(()=>{if(token!==preloadToken)return;plate.style.backgroundImage="none";plate.querySelectorAll(".room-art-patch,.room-stone").forEach(element=>element.remove());visibleArtwork=null;document.body.dataset.roomAsset="unavailable";announce("This room image could not load. Try switching rooms again.");});
+    Promise.all([load(url),load(ASSETS+'objects-'+file+'?v=1.4.3'),load(ASSETS+'spacing-'+file+'?v=1.4.3'),...(stoneFile(id,file)?[load(ASSETS+stoneFile(id,file)+'?v=1.11.0')]:[])]).then(()=>{if(token!==preloadToken)return;plate.style.backgroundImage=`url("${url}")`;visibleArtwork={id,file};layoutRoomArtwork();document.body.dataset.roomAsset=file;layout();}).catch(()=>{if(token!==preloadToken)return;plate.style.backgroundImage="none";plate.querySelectorAll(".room-art-patch,.room-stone").forEach(element=>element.remove());visibleArtwork=null;document.body.dataset.roomAsset="unavailable";announce("This room image could not load. Try switching rooms again.");});
   }
   const picker=$("#sovereign-room-select");if(picker)picker.value=roomId;
   const toggle=$("#theme-toggle");if(toggle){toggle.innerHTML=`<span>${ROOMS[roomId].modes[lighting[roomId]]}</span><i data-lucide="sun-moon"></i>`;toggle.setAttribute("aria-label",`Lighting: ${ROOMS[roomId].modes[lighting[roomId]]}. Switch to ${ROOMS[roomId].modes[lighting[roomId]==="day"?"night":"day"]}`);}

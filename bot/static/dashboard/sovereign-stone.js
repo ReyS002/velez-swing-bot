@@ -8,7 +8,14 @@ const SURFACES={
  pacific:{edge:'M0 656 L559 538 L1027 539 L1672 595 L1672 941 L0 941Z',inset:'M99 747 C146 694 340 659 479 658 L1269 659 C1381 669 1515 721 1539 755 Q1552 797 1474 803 L174 803 Q69 806 99 747Z',chair:'M277 941 Q302 876 429 881 Q443 813 507 798 L1024 798 Q1093 802 1118 862 L1148 941Z',monitor:'M556 378H1026V585H800V616H850V634H717V616H775V585H556Z',lamp:'M135 589H150L180 620L228 630Q277 632 271 651Q264 673 192 676Q120 676 114 659Q113 643 135 638Z',extra:'M1548 544H1672V642H1564Z'},
  dubai:{edge:'M0 658 L557 574 L1024 568 L1672 695 L1672 941 L0 941Z',inset:'M2 745 C33 687 293 634 445 630 L1273 631 C1419 646 1594 706 1629 751 Q1643 791 1564 804 L102 804 Q-1 788 2 745Z',chair:'M264 941V859H368V941Z M1183 941V858H1270V941Z',monitor:'M556 374H1025V593H809V625H883V646H673V625H776V593H556Z',lamp:'M185 551H202V629Q264 633 264 650Q262 669 200 671Q133 669 132 651Q132 635 185 629Z',extra:'M1531 518H1614V647H1547Z M1602 548H1672V718L1591 667Z'}
 };
-export function stoneFile(id,file){return SURFACES[id]?`stone-${file}`:null;}
+const MATERIAL_ROOMS=new Set(['pacific','tokyo']);
+// Material studies retain the original object coordinates. Only architectural
+// surfaces are exposed; shelves, screens, lamps and object silhouettes stay live.
+const WALLS={
+ pacific:{surface:'M70 0H295V599L70 646Z',protect:'M70 190L282 213V378L70 385Z',lamp:'M201 457Q278 434 377 449L387 467L378 479Q282 493 201 475Z M227 476L136 555L143 574L216 630'},
+ tokyo:{surface:'M90 80L312 122V610L90 654Z M0 531L90 516V654L0 675Z M312 501L447 486V584L312 615Z',protect:'M99 153L299 189V440L99 445Z',lamp:'M211 468L371 415 M326 444Q377 429 433 451L459 477Q396 495 320 480Z M207 466V637'}
+};
+export function stoneFile(id,file){return SURFACES[id]?`${MATERIAL_ROOMS.has(id)?'materials':'stone'}-${file}`:null;}
 export function layoutStone(plate,id,file,rect,placed){
  let layer=plate.querySelector('.room-stone');
  const spec=SURFACES[id];
@@ -19,8 +26,10 @@ export function layoutStone(plate,id,file,rect,placed){
  const outlines=statueOutline(id,theme,w,h).replace(/^<svg[^>]*>/,'').replace(/<\/svg>$/,'');
  const [fx,fy,fw,fh]=placed.mission;
  const frame=`M${fx-3} ${fy-18} L${fx+fw+25} ${fy-12} L${fx+fw+21} ${fy+fh+27} L${fx-23} ${fy+fh+12}Z`;
- const mask=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1672 941"><rect width="1672" height="941" fill="black"/><path fill="white" d="${spec.edge}"/><g fill="black"><path d="${spec.inset}" stroke="white" stroke-width="6"/><path d="${spec.chair} ${spec.monitor} ${spec.lamp} ${spec.extra} ${frame}"/><g transform="translate(${x} ${y}) scale(.333333)">${outlines}</g><ellipse cx="${x+w/2}" cy="${y+h*.88}" rx="${w/2}" ry="${h*.12}"/></g></svg>`;
+ const wall=WALLS[id];
+ const wallMask=wall?`<path fill="white" d="${wall.surface}"/><path fill="black" d="${wall.protect}"/><path fill="none" stroke="black" stroke-width="6" d="${wall.lamp}"/>`:'';
+ const mask=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1672 941"><rect width="1672" height="941" fill="black"/><path fill="white" d="${spec.edge}"/>${wallMask}<g fill="black"><path d="${spec.inset}" stroke="white" stroke-width="6"/><path d="${spec.chair} ${spec.monitor} ${spec.lamp} ${wall?'':spec.extra} ${frame}"/><g transform="translate(${x} ${y}) scale(.333333)">${outlines}</g><ellipse cx="${x+w/2}" cy="${y+h*.88}" rx="${w/2}" ry="${h*.12}"/></g></svg>`;
  const uri=`url("data:image/svg+xml,${encodeURIComponent(mask)}")`;
- Object.assign(layer.style,{position:'fixed',display:'block',pointerEvents:'none',left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px',backgroundImage:`url("/dashboard/assets/sovereign/${stoneFile(id,file)}?v=1.9.0")`,backgroundSize:'100% 100%',maskImage:uri,maskMode:'luminance',maskSize:'100% 100%'});
+ Object.assign(layer.style,{position:'fixed',display:'block',pointerEvents:'none',left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px',backgroundImage:`url("/dashboard/assets/sovereign/${stoneFile(id,file)}?v=1.11.0")`,backgroundSize:'100% 100%',maskImage:uri,maskMode:'luminance',maskSize:'100% 100%'});
  layer.dataset.room=id;layer.dataset.theme=theme;
 }
