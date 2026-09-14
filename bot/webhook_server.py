@@ -1407,6 +1407,21 @@ class TradingViewWebhookEngine:
         self.risk_config = config.get("risk", {})
         self.symbol_config = {item["symbol"]: item for item in config.get("symbols", [])}
         self.logger = get_logger("tradingview_webhook")
+        configured_execute = bool(self.webhook_config.get("execute_orders", False))
+        armed = self._execute_orders()
+        if configured_execute != armed:
+            self.logger.warning(
+                "execution_config_env_mismatch: config.webhook.execute_orders=%s but runtime is %s "
+                "(VELEZ_EXECUTE_ORDERS/VELEZ_WATCH_ONLY env vars win at runtime) -- entries will %sbe submitted",
+                configured_execute,
+                "armed" if armed else "proposal_only",
+                "" if armed else "NOT ",
+            )
+        if not (os.getenv("VELEZ_LIFECYCLE_AUTO_EXECUTE", "false").strip().lower() in {"1", "true", "yes", "on"}):
+            self.logger.warning(
+                "lifecycle_auto_execute_disabled: VELEZ_LIFECYCLE_AUTO_EXECUTE is not set -- "
+                "automatic stop repair/breakeven/time-stop/force-close actions are OFF"
+            )
         self.strategy = VelezInstitutionalStrategy(config.get("velez_strategy", config.get("strategy", {})), self.logger)
         self.regime_cache: Dict[str, Any] = {"label": "unknown", "confidence": 0.0}
         self.top_down_cache: Dict[str, Any] = {}
