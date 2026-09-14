@@ -3,8 +3,8 @@ services:
     build:
       context: .
       dockerfile: bot/deploy/Dockerfile.webhook
-    image: velez-trading-bot-webhook:latest
-    container_name: velez-trading-bot-webhook
+    image: velez-swing-bot-webhook:latest
+    container_name: velez-swing-bot-webhook
     networks:
       - default
       - paper-order-bridge_default
@@ -24,21 +24,21 @@ services:
       BLS_SHARED_CACHE_SECONDS: "43200"
       BLS_FETCH_RETRY_DELAYS_SECONDS: "0,2,5"
     volumes:
-      - ./secrets:/opt/stacks/velez-trading-bot/secrets:ro
+      - ./secrets:/opt/stacks/velez-swing-bot/secrets:ro
       - ./data:/app/data
       - ./bot/config.yaml:/app/bot/config.yaml:ro
       - /opt/stacks/tba-repo/scripts/data/capitol_trades.db:/app/data/capitol_trades.db:ro
       - /opt/stacks/trading-bull-shared/calendar:/app/data/shared-calendar
     labels:
       - traefik.enable=true
-      - traefik.http.routers.velez-trading-bot.entrypoints=websecure
-      - traefik.http.routers.velez-trading-bot.rule=Host(`${VELEZ_PUBLIC_HOST}`)
-      - traefik.http.routers.velez-trading-bot.tls.certresolver=letsencrypt
-      - traefik.http.services.velez-trading-bot.loadbalancer.server.port=8080
+      - traefik.http.routers.velez-swing-bot.entrypoints=websecure
+      - traefik.http.routers.velez-swing-bot.rule=Host(`${VELEZ_PUBLIC_HOST}`)
+      - traefik.http.routers.velez-swing-bot.tls.certresolver=letsencrypt
+      - traefik.http.services.velez-swing-bot.loadbalancer.server.port=8080
 
   ollama:
     image: ollama/ollama:latest
-    container_name: velez-trading-bot-ollama
+    container_name: velez-swing-bot-ollama
     restart: unless-stopped
     profiles:
       - ai
