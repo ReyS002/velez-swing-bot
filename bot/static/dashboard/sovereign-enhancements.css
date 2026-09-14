@@ -39,6 +39,17 @@
 .desk-enhancements[data-room=tokyo] .desk-weather{mask-image:linear-gradient(90deg,#000 37.2%,transparent 37.3% 37.8%,#000 37.9% 50.9%,transparent 51% 51.5%,#000 51.6% 88.7%,transparent 88.8% 89.3%,#000 89.4%)}
 .desk-enhancements[data-room=pacific] .desk-weather{mask-image:linear-gradient(90deg,#000 39.9%,transparent 40% 41.6%,#000 41.7% 50.8%,transparent 50.9% 52.6%,#000 52.7% 75.8%,transparent 75.9% 77.2%,#000 77.3% 91.1%,transparent 91.2% 92.5%,#000 92.6%)}
 .desk-enhancements[data-paused=true] *{animation-play-state:paused!important;transition:none!important}
+/* Desk-awareness stays absent until a real state requires a small, direct cue. */
+.desk-awareness{position:fixed;inset:0;z-index:8;pointer-events:none}
+.desk-awareness-cue{position:fixed;display:block;padding:0;opacity:0;pointer-events:none;cursor:pointer;transition:opacity 180ms ease;isolation:isolate}
+.desk-awareness-cue:not([hidden]){opacity:1;pointer-events:auto}
+.desk-awareness-cue.mission{border:0;border-left:2px solid #e6bb67;border-bottom:1px solid #e6bb67;background:linear-gradient(90deg,#e6bb6733,transparent 28%);box-shadow:0 0 10px #e6bb6740}
+.desk-awareness-cue.approval{border:0;border-radius:50%;background:radial-gradient(circle,#fff3ca 0 15%,#e6bb67 28%,#b87824 48%,transparent 70%);box-shadow:0 0 12px #e6bb67a8}
+.desk-awareness-cue.connection{border:1px solid #ff9a96;border-radius:50%;background:radial-gradient(circle,#ffdad4 0 12%,#d8524c 36%,#7c1718 58%,transparent 70%);box-shadow:0 0 10px #e35955b3}
+.desk-awareness-cue:focus-visible{outline:2px solid #fff3cf;outline-offset:4px}
+.desk-awareness-cue.is-new{animation:desk-attention-arrive 3.2s ease-out 1}
+.sovereign.panel-open .desk-awareness{pointer-events:none}.sovereign.panel-open .desk-awareness-cue{pointer-events:none}
+@keyframes desk-attention-arrive{0%,18%,36%{filter:brightness(1.7);opacity:1}9%,27%{filter:brightness(.8);opacity:.48}100%{filter:none;opacity:1}}
 /* A tiny contact shadow stays at the base; no translation or floating handset. */
 .sovereign[data-object-motion=on] .room-hotspot[data-object-id=journal]:is(:hover,:focus-visible) .journal-art{filter:drop-shadow(0 2px 1px #0006);transform:none}
 @keyframes desk-cloud-drift{from{transform:translateX(-3%)}to{transform:translateX(4%)}}

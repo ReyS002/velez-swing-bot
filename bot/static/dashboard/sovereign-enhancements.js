@@ -24,11 +24,13 @@ export function mountRoomEnhancements({roomRect,roomSnapshot,open,assetsReady}) 
   const root=document.createElement("div");root.id="desk-enhancements";root.className="desk-enhancements";
   root.innerHTML=`<div class="desk-weather" aria-hidden="true"><div class="desk-clouds"></div><svg class="desk-aircraft" viewBox="0 0 100 30"><defs><linearGradient id="aircraft-metal" x2="0" y2="1"><stop stop-color="#e0e6e9"/><stop offset=".45" stop-color="#aab7bf"/><stop offset="1" stop-color="#43505a"/></linearGradient></defs><path fill="url(#aircraft-metal)" d="M3 18L12 17 6 3 12 4 25 16 65 15 80 14Q92 14 98 19Q100 22 87 23L28 23 17 25 8 24Z"/><path fill="#647580" d="M41 19L26 29 36 29 63 20ZM39 16L31 8 38 8 59 17Z"/><path fill="#283c49" d="M82 16L88 17 91 19H82Z"/><path stroke="#344754" stroke-width="1.4" stroke-dasharray="2 2" d="M30 18H76"/><ellipse cx="48" cy="24" rx="6" ry="2" fill="#64717a"/><circle cx="47" cy="21" r=".7" fill="#edcebb"/></svg><div class="desk-rain"></div><div class="desk-rain-beads"></div><div class="desk-city-glints"></div></div>
     <div class="desk-projection" aria-hidden="true"></div><div class="desk-shelf-light" aria-hidden="true"></div>
+    <div class="desk-awareness" aria-live="polite"><button type="button" class="desk-awareness-cue mission" data-desk-attention="event" hidden><span class="sr-only"></span></button><button type="button" class="desk-awareness-cue approval" data-desk-attention="approval" hidden><span class="sr-only"></span></button><button type="button" class="desk-awareness-cue connection" data-desk-attention="connection" hidden><span class="sr-only"></span></button></div>
     <div class="desk-instrument desk-session-clock" role="group" aria-label="World clocks; select a city for market sessions">${CITIES.map(([name],i)=>`<button type="button" data-city="${i}" aria-label="${name} time and market sessions"><span class="clock-face"><i class="clock-hour"></i><i class="clock-minute"></i><b></b></span><span class="clock-city">${name}</span></button>`).join("")}</div>
     <div class="desk-regional-accent" role="img"></div>`;
   document.body.append(root);
   const q=s=>root.querySelector(s);
-  let motion=readSetting("sovereign-ambience","on"), rain=readSetting("sovereign-rain","off");
+  let motion=readSetting("sovereign-ambience","on"), rain=readSetting("sovereign-rain","off"), awareness={};
+  const attentionTimers=new Map();
   const reduced=matchMedia("(prefers-reduced-motion: reduce)");
   let timer=null;
   function canMove(){return !reduced.matches&&!document.hidden&&document.body.dataset.objectMotion!=="off";}
@@ -49,7 +51,31 @@ export function mountRoomEnhancements({roomRect,roomSnapshot,open,assetsReady}) 
     Object.assign(q(".desk-weather").style,{left:r.left+"px",top:r.top+"px",width:r.width+"px",height:r.height+"px",clipPath:p.window||"inset(100%)"});
     Object.assign(q(".desk-projection").style,{left:"36vw",top:innerHeight-85+"px",width:"28vw",height:"28px"});
     root.style.setProperty("--instrument-scale",String(r.width/1672));
-    q(".desk-shelf-light").classList.remove("lit");
+    q(".desk-shelf-light").classList.remove("lit");layoutAttention();
+  }
+  function placeAttention(button,target,kind){
+    if(!button||!target)return;
+    const rect=target.getBoundingClientRect();
+    if(kind==="event")Object.assign(button.style,{left:rect.left-4+"px",top:rect.top-4+"px",width:rect.width+8+"px",height:rect.height+8+"px"});
+    if(kind==="approval")Object.assign(button.style,{left:rect.right-7+"px",top:rect.top-7+"px",width:"15px",height:"15px"});
+    if(kind==="connection")Object.assign(button.style,{left:rect.right-6+"px",top:rect.top-6+"px",width:"14px",height:"14px"});
+  }
+  function layoutAttention(){
+    placeAttention(q('[data-desk-attention="event"]'),document.querySelector('[data-object-id="mission"]'),"event");
+    placeAttention(q('[data-desk-attention="approval"]'),document.querySelector('[data-object-id="pen"]'),"approval");
+    placeAttention(q('[data-desk-attention="connection"]'),document.querySelector('[data-object-id="vault"]'),"connection");
+  }
+  function setAwareness(detail={}){
+    awareness=detail||{};
+    [["event","mission","amber"],["approval","safe","gold"],["connection","vault","red"]].forEach(([kind,panel,tone])=>{
+      const button=q(`[data-desk-attention="${kind}"]`),item=awareness[kind],signature=item?[kind,item.title,item.message].join("|"):"";
+      if(!button)return;
+      const changed=button.dataset.signature!==signature;button.dataset.signature=signature;button.hidden=!item;
+      if(!item){button.classList.remove("is-new");return;}
+      button.dataset.panel=item.panel||panel;button.dataset.tone=tone;button.title=item.title||"Desk item needs attention";button.querySelector(".sr-only").textContent=`${button.title}. Open details.`;
+      if(changed&&canMove()){button.classList.add("is-new");clearTimeout(attentionTimers.get(kind));attentionTimers.set(kind,setTimeout(()=>button.classList.remove("is-new"),3400));}
+    });
+    layoutAttention();
   }
   function setMotion(){root.dataset.ambience=motion;root.dataset.rain=rain;root.dataset.paused=String(!canMove());clearInterval(timer);timer=null;if(!document.hidden){tick();timer=setInterval(tick,30000);}}
   function tick(){
@@ -57,12 +83,14 @@ export function mountRoomEnhancements({roomRect,roomSnapshot,open,assetsReady}) 
     CITIES.forEach(([name,zone],i)=>{const parts=new Intl.DateTimeFormat("en-GB",{timeZone:zone,hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).formatToParts(now);const h=Number(parts.find(p=>p.type==="hour").value),m=Number(parts.find(p=>p.type==="minute").value);const b=q(`[data-city="${i}"]`);b.querySelector(".clock-hour").style.transform=`rotate(${h%12*30+m/2}deg)`;b.querySelector(".clock-minute").style.transform=`rotate(${m*6}deg)`;b.title=`${name} · ${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")} local time. Open sessions and calendar.`;b.setAttribute("aria-label",b.title);});
   }
   q(".desk-session-clock").addEventListener("click",e=>{const b=e.target.closest("[data-city]");if(b){document.body.dataset.sessionCity=b.dataset.city;open("clock",b);}});
+  q(".desk-awareness").addEventListener("click",event=>{const button=event.target.closest("[data-desk-attention]");if(!button)return;const kind=button.dataset.deskAttention,item=awareness[kind];if(!item)return;document.dispatchEvent(new CustomEvent("desk:attention-open",{detail:{panel:item.panel,message:item.message,tone:button.dataset.tone}}));open(item.panel,button);});
   function shelf(e){const target=e.target.closest?.('[data-object-id="vault"],[data-object-id="bookshelf"],.desk-regional-accent');if(!target||!canMove())return;const r=target.getBoundingClientRect(),light=q(".desk-shelf-light");Object.assign(light.style,{left:r.left-12+"px",top:r.top-8+"px",width:r.width+24+"px",height:r.height+16+"px"});light.classList.add("lit");}
   document.addEventListener("pointerover",shelf);document.addEventListener("focusin",shelf);
   for(const event of ["pointerout","focusout"])document.addEventListener(event,()=>q(".desk-shelf-light").classList.remove("lit"));
   const grid=document.querySelector(".sovereign-tools-grid");
   for(const [key,label] of [["ambience","Outdoor ambience"],["rain","Window rain"]]){const b=document.createElement("button");b.type="button";b.id=`desk-${key}-toggle`;const refresh=()=>{const on=(key==="ambience"?motion:rain)==="on";b.textContent=`${label}: ${on?"On":"Off"}`;b.setAttribute("aria-pressed",String(on));};b.addEventListener("click",()=>{if(key==="ambience"){motion=motion==="on"?"off":"on";saveSetting("sovereign-ambience",motion);}else{rain=rain==="on"?"off":"on";saveSetting("sovereign-rain",rain);}refresh();setMotion();});refresh();grid?.append(b);}
   document.addEventListener("desk:layout",layout);document.addEventListener("desk:roomchange",layout);
+  document.addEventListener("desk:awareness",event=>setAwareness(event.detail));
   document.addEventListener("desk:motionchange",setMotion);document.addEventListener("visibilitychange",()=>{setMotion();});reduced.addEventListener("change",setMotion);
   layout();setMotion();mountWater(root,roomSnapshot);
   return {layout};

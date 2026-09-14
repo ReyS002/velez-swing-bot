@@ -1,4 +1,4 @@
-import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.11.0";
+import { roomRect as sovereignRoomRect, roomRegions as sovereignRegions, roomHotspots as getSovereignHotspots, objectMarkup as sovereignObjectMarkup, roomSnapshot, syncRoomTheme, mountSovereign, updateSovereignChrome, workspaceAccountMarkup, workspaceConfiguration } from "./sovereign-room.js?v=1.12.0";
 const $ = (selector) => document.querySelector(selector);
 import { createDeskRecords } from "./desk-records.js?v=1.8.1";
 const deskRecords = createDeskRecords({active:()=>activePanel,redraw:()=>renderPanel(),escapeHtml});
@@ -3056,6 +3056,7 @@ function renderMission() {
       ${metric("Risk mood", mission.mood.label, mission.mood.headline)}
       ${metric("Approvals", mission.pending.length, mission.pending.length ? "Needs review" : "None pending")}
     </div>
+    ${renderSessionBriefChanges()}
     <section class="tool-section">
       <div class="section-title">Mission checklist</div>
       <div class="data-list compact-list">
@@ -3082,6 +3083,20 @@ function renderMission() {
         : ""
     }
   `;
+}
+
+function renderSessionBriefChanges() {
+  const next = nextDeskEvent();
+  const watchlist = (dashboardState.symbols || []).map((item) => item.symbol).filter(Boolean).sort();
+  const positions = Number(dashboardState.summary?.open_positions || dashboardState.positions?.length || 0);
+  const snapshot = { event: next ? [next.date, next.time, next.title || next.symbol].filter(Boolean).join("|") : "", watchlist, positions };
+  const key = "trading-bull-session-brief-last-visit";
+  let prior = null;
+  try { prior = JSON.parse(localStorage.getItem(key) || "null"); localStorage.setItem(key, JSON.stringify(snapshot)); } catch { /* Browser storage can be unavailable. */ }
+  const calendarLine = next ? `${calendarItemLine(next)}${prior?.event && prior.event !== snapshot.event ? " · changed since your last visit" : ""}` : "No upcoming macro or watchlist earnings item loaded";
+  const watchlistLine = prior ? `${watchlist.join(", ") || "No symbols"}${JSON.stringify(prior.watchlist || []) !== JSON.stringify(watchlist) ? " · changed since your last visit" : " · unchanged"}` : `${watchlist.join(", ") || "No symbols"} · baseline saved`;
+  const positionLine = prior ? `${positions}${Number(prior.positions || 0) !== positions ? ` · was ${prior.positions || 0} last visit` : " · unchanged"}` : `${positions} · baseline saved`;
+  return `<section class="tool-section session-brief-changes"><div class="section-title">What changed since your last visit</div><div class="data-list compact-list">${row("Calendar", calendarLine)}${row("Watchlist", watchlistLine)}${row("Positions", positionLine)}</div></section>`;
 }
 
 async function submitWatchlistSymbol(event) {
@@ -5851,6 +5866,7 @@ function updateActiveChrome() {
   document.body.classList.toggle("panel-open", panelOpen);
   updateWorkflowChrome();
   updateSovereignChrome({ panel: activePanel, open: panelOpen, state: dashboardState, music: appleMusicState, winston: winstonState });
+  syncDeskAwareness();
 }
 
 function applyRoomTheme(theme) {
@@ -6236,6 +6252,19 @@ function calendarIsStale(maxAgeMs = 5 * 60 * 1000) {
   return !calendarFetchedAt || Date.now() - calendarFetchedAt > maxAgeMs;
 }
 
+function syncDeskAwareness() {
+  const upcoming = nextDeskEvent();
+  const event = upcoming && String(upcoming.importance || "").toLowerCase() === "high" && upcoming.when?.getTime() - Date.now() <= 36 * 60 * 60 * 1000 ? upcoming : null;
+  const broker = dashboardState.broker || {};
+  const reason = String(broker.reason || "").toLowerCase();
+  const connectionIssue = broker.ok === false && !["", "loading", "checking"].includes(reason);
+  document.dispatchEvent(new CustomEvent("desk:awareness", { detail: {
+    event: event ? { panel: "mission", title: `${event.title || event.symbol || "Market event"} · ${calendarDate(event.date)}${event.time ? ` ${event.time}` : ""}`, message: "An upcoming market event is ready in Session Brief." } : null,
+    approval: (dashboardState.pending_approvals || []).length ? { panel: "safe", title: `${dashboardState.pending_approvals.length} approval${dashboardState.pending_approvals.length === 1 ? "" : "s"} ready`, message: "A reviewed setup is waiting in the Approval Inbox." } : null,
+    connection: connectionIssue ? { panel: "vault", title: broker.reason || "Broker connection needs attention", message: "A desk connection needs attention in Vault checks." } : null,
+  } }));
+}
+
 async function refreshCalendar(options = {}) {
   const force = Boolean(options.force);
   if (calendarRefreshPromise) return calendarRefreshPromise;
@@ -6249,6 +6278,7 @@ async function refreshCalendar(options = {}) {
     .then((payload) => {
       calendarState = payload;
       calendarFetchedAt = Date.now();
+      syncDeskAwareness();
       return payload;
     })
     .catch((error) => {
@@ -6258,6 +6288,7 @@ async function refreshCalendar(options = {}) {
         timestamp: new Date().toISOString(),
         error: error.message,
       };
+      syncDeskAwareness();
       return calendarState;
     })
     .finally(() => {
@@ -7635,6 +7666,9 @@ async function runRiskReplay(event) {
 
 function setActivePanel(panel, options = {}) {
   if (!panelCopy[panel]) return;
+  const priorPanel = activePanel;
+  const priorScroll = detailPanel?.scrollTop || panelBody?.scrollTop || 0;
+  document.dispatchEvent(new CustomEvent("desk:panel-request", { detail: { panel, previous: priorPanel, previousLabel: panelCopy[priorPanel]?.[1] || priorPanel, scrollTop: priorScroll, wasOpen: panelOpen, restore: Boolean(options.restore) } }));
   roomClear = false;
   activePanel = panel;
   if (["research","performance"].includes(panel)) deskRecords.load(panel);
@@ -7650,6 +7684,12 @@ function setActivePanel(panel, options = {}) {
     panelOpen = true;
   }
   updateActiveChrome();
+  if (options.restore && Number.isFinite(Number(options.restoreScroll))) {
+    requestAnimationFrame(() => {
+      if (detailPanel) detailPanel.scrollTop = Number(options.restoreScroll);
+      if (panelBody) panelBody.scrollTop = Number(options.restoreScroll);
+    });
+  }
   if (["mission", "calendar", "clock", "window", "notes"].includes(panel)) {
     refreshCalendar();
   }

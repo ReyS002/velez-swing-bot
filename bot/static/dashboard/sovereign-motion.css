@@ -125,3 +125,22 @@ body.sovereign[data-room-theme="day"]{--nav-glass:rgba(255,242,215,.24);--nav-in
 .sovereign .room-hotspot[data-object-id=pen]>.desk-pen{left:0;top:0;width:100%;height:100%}
 .sovereign .room-hotspot[data-object-id=pen]>.approval-count{position:absolute;right:-3px;top:-4px;opacity:1}
 .sovereign .room-hotspot[data-object-id=pen]>.approval-count:empty{display:none}
+
+/* The panel header is the common orientation point for every workspace view. */
+.sovereign .panel-experience-actions{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.sovereign #panel-back{max-width:184px;min-height:34px;padding:7px 11px;border:1px solid var(--sovereign-line);border-radius:17px;background:transparent;color:inherit;font:600 11px/1.2 inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.sovereign #panel-back[hidden]{display:none!important}
+.sovereign #panel-context{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:9px 22px;border-bottom:1px solid var(--sovereign-line);font-size:11px;line-height:1.4;color:var(--muted);flex:0 0 auto}
+.sovereign #panel-context[data-state=attention] [data-panel-status]{color:var(--amber)}
+.sovereign #panel-context[data-state=unavailable] [data-panel-status]{color:var(--red)}
+.sovereign #panel-context[data-state=loading] [data-panel-status]{color:var(--muted)}
+.sovereign #panel-context[data-state=empty] [data-panel-status]{color:var(--muted)}
+.sovereign #panel-context [data-panel-status]{min-width:0;overflow-wrap:anywhere;font-weight:650}
+.sovereign #panel-context [data-panel-freshness]{flex:0 0 auto;text-align:right;white-space:nowrap;color:var(--muted)}
+@media(max-width:760px){.sovereign #panel-context{padding:8px 14px;gap:9px;font-size:10px}.sovereign #panel-back{max-width:106px;font-size:10px;padding:6px 9px}.sovereign #panel-context [data-panel-freshness]{font-size:9px}}
+
+.sovereign .bull-pilot-pro-card{position:relative;overflow:hidden;border-color:color-mix(in srgb,var(--amber) 40%,transparent)!important}
+.sovereign .bull-pilot-pro-card:before{content:"";position:absolute;inset:0;background:linear-gradient(118deg,color-mix(in srgb,var(--amber) 10%,transparent),transparent 44%);pointer-events:none}
+.sovereign .bull-pilot-pro-card .section-title{display:flex;justify-content:space-between;gap:10px;color:var(--amber)}
+.sovereign #bull-pilot-pro-launch{grid-column:1/-1;position:relative;overflow:hidden}
+.sovereign #bull-pilot-pro-launch strong{font:650 12px/1.2 inherit}.sovereign #bull-pilot-pro-launch span{font-size:10px;color:var(--amber)}

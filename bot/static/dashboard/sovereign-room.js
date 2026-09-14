@@ -1,10 +1,11 @@
-import {mountRoomEnhancements} from "./sovereign-enhancements.js?v=1.8.1";
+import {mountRoomEnhancements} from "./sovereign-enhancements.js?v=1.12.0";
 import {statueOutline} from "./sovereign-statue.js?v=1.4.3";
 import {mountObjectMotion} from "./sovereign-motion.js?v=1.8.1";
 import {layoutStone,stoneFile} from "./sovereign-stone.js?v=1.11.0";
 import {mountRoomGuide} from "./sovereign-guide.js?v=1.10.0";
+import {mountPanelExperience,updatePanelExperience} from "./sovereign-panel.js?v=1.12.0";
 // Shared Sovereign room shell. Keep byte-identical across bot editions.
-export const SOVEREIGN_VERSION = "1.11.0";
+export const SOVEREIGN_VERSION = "1.12.0";
 const ASSETS = "/dashboard/assets/sovereign/";
 const percent = ([x, y, w, h]) => ({ x: x / 100, y: y / 100, w: w / 100, h: h / 100 });
 export const ROOMS = {
@@ -165,6 +166,7 @@ export function updateSovereignChrome({panel,open,state,music,winston}={}) {
   const now=$(".prop-now-playing");if(now)now.textContent=music?.nowPlaying?.title||"Your music";
   document.body.classList.toggle("sovereign-speaking",Boolean(winston?.speaking));
   if(!open)document.body.classList.remove("phone-active");
+  updatePanelExperience({panel,open,state});
 }
 export function workspaceConfiguration(){return config;}
 export function workspaceAccountMarkup(){return `<div class="mood-card good"><div><span>Workspace access</span><strong>${escape(config.product)}</strong><p>Your trading workspace and permissions.</p></div></div><div class="data-list"><div class="data-row"><span>Sign-in</span><strong>${escape(config.authenticated?"Connected":"Workspace access")}</strong></div><div class="data-row"><span>Plan</span><strong>${escape(config.tier||"Workspace")}</strong></div><div class="data-row"><span>Account management</span><strong>Managed by your workspace administrator</strong></div></div><p class="muted">Contact your workspace administrator for changes to sign-in or subscription access.</p>`;}
@@ -178,6 +180,7 @@ export function mountSovereign(options) {
   const nav=document.createElement("nav");nav.className="sovereign-dock";nav.setAttribute("aria-label","Desk navigation");nav.innerHTML=[["desk","Desk","armchair"],["laptop","Command","terminal"],["mentor","Mentor","sparkles"],["journal","Journal","book-open"],["broadcast","Broadcast","radio"],["tools","Tools","grid-2x2"]].map(([id,label,icon])=>`<button type="button" data-desk-action="${id}"${id==="tools"?' aria-expanded="false" aria-controls="sovereign-tools"':''}><i data-lucide="${icon}"></i><span>${label}</span></button>`).join("");$("#app-shell").append(nav);
   const tools=document.createElement("section");tools.id="sovereign-tools";tools.className="sovereign-tools";tools.hidden=true;tools.setAttribute("role","dialog");tools.setAttribute("aria-modal","true");tools.setAttribute("aria-labelledby","sovereign-tools-title");tools.innerHTML=`<header><div><small>YOUR WORKSPACE</small><h2 id="sovereign-tools-title">Tools</h2></div><button type="button" data-desk-action="close-tools" aria-label="Close tools">×</button></header><div class="sovereign-tools-grid">${Object.entries(PANEL_LABELS).map(([id,label])=>`<button type="button" data-desk-action="${id}">${label}<span>↗</span></button>`).join("")}<button type="button" data-desk-action="channels">Channel Manager<span>↗</span></button>${options.openProConsole?'<button type="button" data-desk-action="pro-console">Pro Console<span>↗</span></button>':''}</div>`;$("#app-shell").append(tools);
   const tabs=document.createElement("nav");tabs.id="sovereign-panel-tabs";tabs.setAttribute("aria-label","Related workspace views");$("#panel-body")?.before(tabs);
+  mountPanelExperience({open:(panel,restore)=>adapter.open(panel,restore),close:()=>adapter.close(),state:()=>adapter.state?.()});
   const expand=document.createElement("button");expand.type="button";expand.className="sovereign-chart-expand";expand.dataset.deskAction="expand-chart";expand.setAttribute("aria-label","Expand trading chart");expand.innerHTML='<i data-lucide="maximize-2"></i>';
   expand.addEventListener("click",event=>event.stopPropagation());$("#screen-terminal")?.append(expand);
   // Keep the embedded chart interactive; its own buttons must not open a panel.
