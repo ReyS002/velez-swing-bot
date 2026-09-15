@@ -138,6 +138,7 @@ class VelezInstitutionalStrategy:
         self.config = config
         self.logger = logger
         self.symbols: Dict[str, VelezContext] = {}
+        self._validate_setup_allowlist()
 
     def _get_context(self, symbol: str) -> VelezContext:
         if symbol in self.symbols:
@@ -189,6 +190,10 @@ class VelezInstitutionalStrategy:
         signals.extend(self._buy_sell_setup_signals(symbol, bar, shape, ctx, location, atr))
         signals.extend(self._nrb_acorn_signals(symbol, bar, shape, ctx, location, atr))
         signals.extend(self._fab4_trap_signals(symbol, bar, shape, ctx, location, atr))
+        # Before prioritisation, deliberately: _prioritized_signals keeps only
+        # one signal per side, so filtering afterwards would let a disallowed
+        # play suppress an allowed one that would otherwise have fired.
+        signals = self._setup_allowlist_filter(signals)
         signals = self._prioritized_signals(signals)
         signals = [
             signal for signal in signals
@@ -1347,6 +1352,100 @@ class VelezInstitutionalStrategy:
             "bar_by_bar_trailing_after_bars": cfg.get("trail_after_bars", 3),
             "momentum_exhaustion_bars": cfg.get("momentum_exhaustion_bars", 5),
         }
+
+    # ---- setup allowlist: one source of truth for what is live ----
+
+    @staticmethod
+    def _normalise_play_names(values) -> set:
+        if isinstance(values, (str, bytes)):
+            values = [values]
+        return {
+            str(item).strip().lower()
+            for item in (values or [])
+            if str(item).strip()
+        }
+
+    def _validate_setup_allowlist(self) -> None:
+        """Fail at construction on an unknown play name, not silently at runtime.
+
+        A typo in this list is the exact failure mode the list exists to
+        prevent: ``elephant`` instead of ``elephant_bar`` would quietly permit
+        nothing at all and the bot would simply stop trading, looking healthy.
+        """
+        cfg = self.config.get("setup_allowlist") or {}
+        if not isinstance(cfg, dict):
+            raise ValueError("setup_allowlist must be a mapping")
+        known = {play.value for play in VelezPlay}
+        for key in ("allowed_plays", "excluded_plays"):
+            unknown = sorted(self._normalise_play_names(cfg.get(key)) - known)
+            if unknown:
+                raise ValueError(
+                    f"setup_allowlist.{key} has unknown play(s): {', '.join(unknown)}. "
+                    f"Valid plays: {', '.join(sorted(known))}"
+                )
+
+    def describe_setup_allowlist(self) -> dict:
+        """What is live-tradeable right now, and on what stated evidence.
+
+        Intended for the webhook/dashboard so "what is actually enabled and
+        why" is answerable from one place instead of by reading nine scattered
+        ``enabled:`` flags.
+        """
+        cfg = self.config.get("setup_allowlist") or {}
+        allowed = sorted(self._normalise_play_names(cfg.get("allowed_plays")))
+        excluded = sorted(self._normalise_play_names(cfg.get("excluded_plays")))
+        active = bool(cfg.get("enabled", False))
+        known = sorted(play.value for play in VelezPlay)
+        if not active:
+            effective = known
+        elif bool(cfg.get("require_explicit", False)) and not allowed:
+            effective = []
+        else:
+            effective = [
+                play for play in known
+                if play not in excluded and (not allowed or play in allowed)
+            ]
+        return {
+            "enabled": active,
+            "allowed_plays": allowed,
+            "excluded_plays": excluded,
+            "require_explicit": bool(cfg.get("require_explicit", False)),
+            "effective_plays": effective,
+            "reason": cfg.get("reason"),
+            "evidence": cfg.get("evidence"),
+        }
+
+    def _setup_allowlist_filter(self, signals: List[Signal]) -> List[Signal]:
+        """Gate signals on the allowlist. Inert unless explicitly enabled.
+
+        This sits ALONGSIDE the per-play ``enabled:`` flags rather than
+        replacing them, because the two answer different questions. A play's
+        own flag decides whether its detector runs at all -- which matters
+        beyond cost, since several detectors mutate per-session state
+        (``opening_gap.go_used``, ``ctx.color_add_used``) that would otherwise
+        diverge. This list decides whether a detector's output is
+        live-tradeable, and is the single auditable record of that decision.
+        """
+        cfg = self.config.get("setup_allowlist") or {}
+        if not signals or not cfg.get("enabled", False):
+            return signals
+
+        allowed = self._normalise_play_names(cfg.get("allowed_plays"))
+        excluded = self._normalise_play_names(cfg.get("excluded_plays"))
+        if bool(cfg.get("require_explicit", False)) and not allowed:
+            # Fail closed: an empty list under require_explicit means "nothing
+            # has been signed off", which must never mean "everything".
+            return []
+
+        kept: List[Signal] = []
+        for signal in signals:
+            play = str(signal.metadata.get("play") or signal.reason or "").strip().lower()
+            if play in excluded:
+                continue
+            if allowed and play not in allowed:
+                continue
+            kept.append(signal)
+        return kept
 
     def _prioritized_signals(self, signals: List[Signal]) -> List[Signal]:
         if not signals:

@@ -173,6 +173,31 @@ scanner:
   lunch_start: "11:45"
   lunch_end: "13:30"
 velez_strategy:
+  # ---------------------------------------------------------------------
+  # Single source of truth for which plays are LIVE-TRADEABLE, and why.
+  # Ported verbatim from velez-trading-bot so both bots behave identically.
+  #
+  # It is a SECOND gate, not a replacement: a play's own `enabled:` flag
+  # controls whether its detector runs at all (several detectors mutate
+  # per-session state), while this list controls whether its output reaches
+  # the webhook/scanner.
+  #
+  # enabled: false  -> completely inert; live behaviour is governed solely by
+  #                    the per-play `enabled:` flags, exactly as it is today.
+  # allowed_plays   -> if non-empty, ONLY these plays are tradeable.
+  # excluded_plays  -> always dropped; takes precedence over allowed_plays.
+  # require_explicit-> with an empty allowed_plays, deny everything (fail
+  #                    closed) instead of permitting everything.
+  #
+  # Unknown play names raise at construction rather than silently permitting
+  # nothing.
+  setup_allowlist:
+    enabled: false
+    allowed_plays: []
+    excluded_plays: []
+    require_explicit: false
+    reason: null
+    evidence: null
   sma_fast: 20
   sma_slow: 200
   atr_period: 14
