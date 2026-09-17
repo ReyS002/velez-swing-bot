@@ -12,6 +12,7 @@ from ..core.portfolio import Portfolio
 from ..core.risk import RiskManager
 from ..core.strategy import NarrowToWideStrategy
 from ..core.velez_strategy import VelezInstitutionalStrategy
+from ..core.structure_strategy import StructureBreakRetestStrategy
 from ..core.types import Bar, Order, OrderType, Side, TradeRecord, Signal, DecisionTrace, Regime, NarrowWideState
 from ..core.utils import get_logger, log_event
 from .metrics import compute_metrics
@@ -28,7 +29,12 @@ class BacktestEngine:
     def __init__(self, config: dict) -> None:
         self.config = config
         self.logger = get_logger("backtest")
-        if "velez_strategy" in config:
+        if "structure_break_retest" in config:
+            structure_cfg = dict(config["structure_break_retest"])
+            structure_cfg.setdefault("market_regime", config.get("market_regime", {}))
+            self.strategy = StructureBreakRetestStrategy(structure_cfg, self.logger)
+            self._velez_mode = False
+        elif "velez_strategy" in config:
             self.strategy = VelezInstitutionalStrategy(config["velez_strategy"], self.logger)
             self._velez_mode = True
         else:
@@ -115,6 +121,7 @@ class BacktestEngine:
             pnl, position_closed = self.portfolio.apply_fill(fill, self.contract_multipliers[symbol])
             if position_closed:
                 self.risk.update_after_trade(pnl)
+                self.risk.update_after_trade_cross_day(pnl, today=bar.timestamp.date())
                 if closing_position and position is not None:
                     risk_per_unit = position.risk_per_share * orig_qty * self.contract_multipliers[symbol]
                     r_multiple = pnl / risk_per_unit if risk_per_unit > 0 else 0.0
@@ -182,6 +189,7 @@ class BacktestEngine:
             pnl, position_closed = self.portfolio.apply_fill(fill, self.contract_multipliers[symbol])
             if position_closed:
                 self.risk.update_after_trade(pnl)
+                self.risk.update_after_trade_cross_day(pnl, today=bar.timestamp.date())
                 risk_per_unit = position.risk_per_share * orig_qty * self.contract_multipliers[symbol]
                 r_multiple = pnl / risk_per_unit if risk_per_unit > 0 else 0.0
                 self.trades.append(
@@ -236,6 +244,26 @@ class BacktestEngine:
                         )
                         pnl, _ = self.portfolio.apply_fill(fill, self.contract_multipliers[symbol])
                         self.risk.update_after_trade(pnl)
+                        self.risk.update_after_trade_cross_day(pnl, today=bar.timestamp.date())
+                        risk_per_unit = position.risk_per_share * qty_exit * self.contract_multipliers[symbol]
+                        r_multiple = pnl / risk_per_unit if risk_per_unit > 0 else 0.0
+                        self.trades.append(
+                            TradeRecord(
+                                symbol=symbol,
+                                entry_time=position.entry_time,
+                                exit_time=bar.timestamp,
+                                qty=qty_exit,
+                                entry_price=position.entry_price,
+                                exit_price=target1,
+                                pnl=pnl,
+                                reason="partial_1",
+                                side=Side.BUY if position.qty > 0 else Side.SELL,
+                                mfe=position.max_favorable_excursion,
+                                mae=position.max_adverse_excursion,
+                                r_multiple=r_multiple,
+                                bars_held=position.bars_held,
+                            )
+                        )
                         position.partial_1_taken = True
                         if partial_cfg.get("move_stop_to_breakeven", True):
                             position.stop_price = position.entry_price
@@ -263,6 +291,26 @@ class BacktestEngine:
                         )
                         pnl, _ = self.portfolio.apply_fill(fill, self.contract_multipliers[symbol])
                         self.risk.update_after_trade(pnl)
+                        self.risk.update_after_trade_cross_day(pnl, today=bar.timestamp.date())
+                        risk_per_unit = position.risk_per_share * qty_exit * self.contract_multipliers[symbol]
+                        r_multiple = pnl / risk_per_unit if risk_per_unit > 0 else 0.0
+                        self.trades.append(
+                            TradeRecord(
+                                symbol=symbol,
+                                entry_time=position.entry_time,
+                                exit_time=bar.timestamp,
+                                qty=qty_exit,
+                                entry_price=position.entry_price,
+                                exit_price=target2,
+                                pnl=pnl,
+                                reason="partial_2",
+                                side=Side.BUY if position.qty > 0 else Side.SELL,
+                                mfe=position.max_favorable_excursion,
+                                mae=position.max_adverse_excursion,
+                                r_multiple=r_multiple,
+                                bars_held=position.bars_held,
+                            )
+                        )
                         position.partial_2_taken = True
 
     def _exits_config(self) -> dict:
@@ -337,6 +385,7 @@ class BacktestEngine:
         )
 
     def _run_loop(self, data: Dict[str, pd.DataFrame]) -> BacktestResult:
+        guardrails_enabled = self.config.get("risk", {}).get("guardrails_enabled", True)
         all_times = sorted({ts for df in data.values() for ts in df["timestamp"]})
         for ts in all_times:
             for sym, df in data.items():
@@ -347,22 +396,24 @@ class BacktestEngine:
                 self.last_prices[sym] = bar.close
                 if self.risk.current_day != bar.timestamp.date():
                     self.risk.reset_day(bar.timestamp.date())
+                self.risk.check_cross_day_resume(bar.timestamp.date())
 
                 self._execute_pending(sym, bar)
                 self._intrabar_exits(sym, bar)
 
                 signals = self.strategy.on_bar(sym, bar)
                 for signal in signals:
-                    limits = self.risk.check_limits(
-                        equity=self.portfolio.equity(self.last_prices, self.contract_multipliers),
-                        open_positions=self.portfolio.open_positions_count(),
-                    )
-                    if not limits.allowed:
-                        log_event(self.logger, "risk_block", {"symbol": sym, "reason": limits.reason})
-                        continue
+                    if guardrails_enabled:
+                        limits = self.risk.check_limits(
+                            equity=self.portfolio.equity(self.last_prices, self.contract_multipliers),
+                            open_positions=self.portfolio.open_positions_count(),
+                        )
+                        if not limits.allowed:
+                            log_event(self.logger, "risk_block", {"symbol": sym, "reason": limits.reason})
+                            continue
 
                     atr = signal.metadata.get("atr")
-                    if self.risk.check_circuit_breaker(signal.metadata.get("atr_percent")):
+                    if guardrails_enabled and self.risk.check_circuit_breaker(signal.metadata.get("atr_percent")):
                         log_event(self.logger, "circuit_breaker", {"symbol": sym})
                         continue
 
@@ -383,7 +434,7 @@ class BacktestEngine:
                     if stop_price is None:
                         continue
                     max_stop_pct = self.config["risk"].get("max_stop_pct", 0.1)
-                    if abs(bar.close - stop_price) / bar.close > max_stop_pct:
+                    if guardrails_enabled and abs(bar.close - stop_price) / bar.close > max_stop_pct:
                         continue
 
                     qty = self.risk.calculate_position_size(
@@ -394,6 +445,13 @@ class BacktestEngine:
                         max_order_qty=self.config["risk"].get("max_order_qty", 1000000),
                         max_leverage=self.config["risk"].get("max_leverage", 2.0),
                     )
+                    if guardrails_enabled and self.risk.cross_day_streak_active:
+                        qty = int(qty * self.risk.cross_day_size_multiplier())
+                        log_event(self.logger, "cross_day_streak_throttle", {
+                            "symbol": sym,
+                            "cross_day_losses": self.risk.cross_day_losses,
+                            "size_multiplier": self.risk.cross_day_size_multiplier(),
+                        })
                     if qty <= 0:
                         continue
 

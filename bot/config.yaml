@@ -32,6 +32,22 @@ risk:
   pyramid_add_fraction: 0.5
   # Advisory planner warning threshold only; it never changes order routing.
   planner_max_spread_bps: 20
+  cross_day_streak_protection:
+    # Persists a losing-streak count across day boundaries (max_consecutive_losses
+    # above resets daily by design) and reduces position size rather than halting
+    # trading, with an automatic time-based resume so it can't stay throttled
+    # indefinitely. Toggle live from the Trading Desk Risk & Bull Matrix panel
+    # (or POST /api/risk/cross-day-streak) without a restart -- that runtime
+    # value wins over this default once set.
+    enabled: true
+    expected_win_rate: 0.5       # prior from backtest; overridden by rolling observed rate once min_samples_for_adaptive is reached
+    significance_level: 0.05     # flag a streak only if it's this improbable given the win rate
+    min_threshold: 3
+    max_threshold: 15
+    rolling_window: 30           # trades used for the adaptive win-rate estimate
+    min_samples_for_adaptive: 20
+    size_multiplier: 0.5         # position size while a streak is flagged
+    resume_after_days: 5         # auto-resume even without an intervening win
 top_down:
   enabled: true
   profile: velez_intraday

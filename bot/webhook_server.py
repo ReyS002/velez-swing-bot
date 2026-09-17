@@ -1437,6 +1437,9 @@ class TradingViewWebhookEngine:
         self.recent_decisions: Deque[dict] = deque(maxlen=self.webhook_config.get("dashboard_decisions", 80))
         self.started_at = datetime.now(timezone.utc)
         self.journal = JournalStore(self.config)
+        cross_day_runtime_override = self.journal.get_setting("cross_day_streak_protection_enabled", None)
+        if cross_day_runtime_override is not None:
+            self.risk_config.setdefault("cross_day_streak_protection", {})["enabled"] = bool(cross_day_runtime_override)
         self.prop_manager = PropProfileManager(self.journal)
         self.prop_manager.apply_to_risk_manager(self.risk)
         self.prop_manager.apply_to_broker(self.broker)
@@ -4343,6 +4346,7 @@ class TradingViewWebhookEngine:
         )
 
     def risk_status_payload(self) -> dict:
+        self._sync_cross_day_streak()
         approval_required = self._requires_order_approval()
         broker_daily = self.broker_performance_payload(light=True)
         token_configured = bool(
@@ -4376,6 +4380,12 @@ class TradingViewWebhookEngine:
                 "time_in_force": self.webhook_config.get("time_in_force", "day"),
                 "take_profit_r": self.webhook_config.get("take_profit_r"),
                 "auth_required": self.webhook_config.get("auth_required", True),
+            },
+            "cross_day_streak": {
+                "enabled": self._cross_day_streak_enabled(),
+                "active": self.risk.cross_day_streak_active,
+                "cross_day_losses": self.risk.cross_day_losses,
+                "size_multiplier": self.risk.cross_day_size_multiplier(),
             },
             "broker_daily_pnl": {
                 key: broker_daily.get(key)
@@ -4415,6 +4425,60 @@ class TradingViewWebhookEngine:
             return auth
         self.journal.set_setting("require_order_approval", bool(enabled))
         return {**self.risk_status_payload(), "changed": True}
+
+    def _cross_day_streak_enabled(self) -> bool:
+        runtime_override = self.journal.get_setting("cross_day_streak_protection_enabled", None)
+        if runtime_override is not None:
+            return bool(runtime_override)
+        cfg = self.risk_config.get("cross_day_streak_protection", {}) or {}
+        return bool(cfg.get("enabled", False))
+
+    def _sync_cross_day_streak(self) -> None:
+        """Catch the in-memory RiskManager's cross-day tracker up on any trade
+        outcomes recorded since the last sync. Read-only with respect to order
+        flow -- only touches risk bookkeeping, never order submission. Safe to
+        call frequently (dashboard polls, pre-sizing, API reads)."""
+        try:
+            last_synced_id = int(self.journal.get_setting("cross_day_streak_last_synced_id", 0) or 0)
+        except (TypeError, ValueError):
+            last_synced_id = 0
+        outcomes = self.journal.latest_trade_outcomes(limit=200)
+        new_outcomes = [o for o in outcomes if o.get("pnl") is not None and int(o.get("id") or 0) > last_synced_id]
+        if not new_outcomes:
+            self.risk.check_cross_day_resume(datetime.now(timezone.utc).date())
+            return
+        new_outcomes.sort(key=lambda o: int(o.get("id") or 0))
+        today = datetime.now(timezone.utc).date()
+        for outcome in new_outcomes:
+            self.risk.update_after_trade_cross_day(float(outcome["pnl"]), today=today)
+        max_id = max(int(o.get("id") or 0) for o in new_outcomes)
+        self.journal.set_setting("cross_day_streak_last_synced_id", max_id)
+        self.risk.check_cross_day_resume(datetime.now(timezone.utc).date())
+
+    def cross_day_streak_status_payload(self) -> dict:
+        self._sync_cross_day_streak()
+        enabled = self._cross_day_streak_enabled()
+        cfg = self.risk_config.get("cross_day_streak_protection", {}) or {}
+        return {
+            "ok": True,
+            "enabled": enabled,
+            "active": self.risk.cross_day_streak_active if enabled else False,
+            "cross_day_losses": self.risk.cross_day_losses,
+            "threshold": self.risk._cross_day_threshold() if enabled else None,
+            "size_multiplier": self.risk.cross_day_size_multiplier() if enabled else 1.0,
+            "flagged_date": self.risk.cross_day_streak_flagged_date.isoformat() if self.risk.cross_day_streak_flagged_date else None,
+            "expected_win_rate": cfg.get("expected_win_rate", 0.5),
+            "resume_after_days": cfg.get("resume_after_days", 5),
+            "observed_trades_tracked": len(self.risk.cross_day_outcomes),
+        }
+
+    def set_cross_day_streak_protection(self, enabled: bool, approval_token: str) -> dict:
+        auth = self._authorize_approval_token(approval_token)
+        if not auth.get("ok"):
+            return auth
+        self.journal.set_setting("cross_day_streak_protection_enabled", bool(enabled))
+        self.risk_config.setdefault("cross_day_streak_protection", {})["enabled"] = bool(enabled)
+        return {**self.cross_day_streak_status_payload(), "changed": True}
 
     def winston_brief(self) -> dict:
         brief = self.daily_brief_payload()
@@ -8868,6 +8932,20 @@ class TradingViewWebhookEngine:
                     "top_down_reason": activation.get("reason"),
                 }
 
+        if self._cross_day_streak_enabled():
+            self._sync_cross_day_streak()
+            cross_day_multiplier = self.risk.cross_day_size_multiplier()
+            if 0 < cross_day_multiplier < 1.0:
+                before_cross_day_qty = qty
+                qty = max(1, int(qty * cross_day_multiplier))
+                size_fraction = qty / max(before_cross_day_qty, 1)
+                max_dollar_risk = round(max_dollar_risk * size_fraction, 2)
+                lot_plan = {
+                    **lot_plan,
+                    "cross_day_streak_multiplier": cross_day_multiplier,
+                    "cross_day_streak_losses": self.risk.cross_day_losses,
+                }
+
         corr_check = self._check_correlation(
             symbol,
             raw_positions,
@@ -11849,6 +11927,25 @@ def create_app(config: dict):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         result = await run_in_threadpool(
             engine.set_order_approval_required,
+            str(payload.get("enabled", "")).strip().lower() in {"1", "true", "yes", "on"},
+            str(payload.get("approval_token", "")),
+        )
+        status_code = 200 if result.get("ok") else 400
+        return JSONResponse(content=result, status_code=status_code, headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/risk/cross-day-streak")
+    async def cross_day_streak_status() -> JSONResponse:
+        result = await run_in_threadpool(engine.cross_day_streak_status_payload)
+        return JSONResponse(content=result, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/risk/cross-day-streak")
+    async def cross_day_streak_toggle(request: Request) -> JSONResponse:
+        try:
+            payload = await _payload_from_request(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        result = await run_in_threadpool(
+            engine.set_cross_day_streak_protection,
             str(payload.get("enabled", "")).strip().lower() in {"1", "true", "yes", "on"},
             str(payload.get("approval_token", "")),
         )

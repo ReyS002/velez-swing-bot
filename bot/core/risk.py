@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from datetime import date
 import math
-from typing import Optional
+from typing import Deque, Optional
 
 from .types import Position, Side
 from .utils import safe_div
@@ -24,6 +25,17 @@ class RiskManager:
         self.api_errors: int = 0
         self.kill_switch: bool = False
 
+        # Cross-day losing-streak protection. Deliberately separate state from
+        # consecutive_losses/kill_switch above, which reset_day() zeroes every
+        # calendar day by design (a same-day circuit breaker). This tracker
+        # persists across day boundaries and is only touched by the methods
+        # below, so it is additive and inert unless explicitly enabled in config.
+        cross_day_window = (config.get("cross_day_streak_protection", {}) or {}).get("rolling_window", 30)
+        self.cross_day_losses: int = 0
+        self.cross_day_outcomes: Deque[bool] = deque(maxlen=cross_day_window)
+        self.cross_day_streak_active: bool = False
+        self.cross_day_streak_flagged_date: Optional[date] = None
+
     def reset_day(self, new_day: date) -> None:
         self.current_day = new_day
         self.daily_loss = 0.0
@@ -38,6 +50,81 @@ class RiskManager:
         self.daily_loss += pnl
         if self.consecutive_losses >= self.config["max_consecutive_losses"]:
             self.kill_switch = True
+
+    def _cross_day_config(self) -> dict:
+        return self.config.get("cross_day_streak_protection", {}) or {}
+
+    def _cross_day_threshold(self) -> Optional[int]:
+        """Streak length statistically improbable given the strategy's win rate.
+
+        Uses a rolling observed win rate once enough trades have accumulated;
+        otherwise falls back to the configured prior (e.g. from a backtest).
+        A lower win rate naturally tolerates a longer normal losing streak
+        before it's flagged, so this doesn't fire on ordinary variance for a
+        near-coinflip strategy the way a fixed universal count would.
+        """
+        cfg = self._cross_day_config()
+        if not cfg.get("enabled", False):
+            return None
+        win_rate = cfg.get("expected_win_rate", 0.5)
+        min_samples = cfg.get("min_samples_for_adaptive", 20)
+        if len(self.cross_day_outcomes) >= min_samples:
+            win_rate = sum(self.cross_day_outcomes) / len(self.cross_day_outcomes)
+        win_rate = min(max(win_rate, 0.01), 0.99)
+        significance = cfg.get("significance_level", 0.05)
+        threshold = math.ceil(math.log(significance) / math.log(1 - win_rate))
+        min_threshold = cfg.get("min_threshold", 3)
+        max_threshold = cfg.get("max_threshold", 15)
+        return max(min_threshold, min(threshold, max_threshold))
+
+    def update_after_trade_cross_day(self, pnl: float, *, today: Optional[date] = None) -> None:
+        """Persistent-across-days companion to update_after_trade(). Call this
+        alongside (not instead of) update_after_trade() at every trade-close site.
+
+        `today` should be the bar/trade date for backtests (simulated time) or
+        is left to default to the real wall-clock date for live trading --
+        self.current_day is backtest-only bookkeeping (set by reset_day(), which
+        the live webhook path never calls), so it can't be relied on here.
+        """
+        cfg = self._cross_day_config()
+        if not cfg.get("enabled", False):
+            return
+        won = pnl > 0
+        self.cross_day_outcomes.append(won)
+        if won:
+            self.cross_day_losses = 0
+            self.cross_day_streak_active = False
+            self.cross_day_streak_flagged_date = None
+            return
+        self.cross_day_losses += 1
+        threshold = self._cross_day_threshold()
+        if threshold is not None and self.cross_day_losses >= threshold and not self.cross_day_streak_active:
+            self.cross_day_streak_active = True
+            self.cross_day_streak_flagged_date = today if today is not None else (self.current_day or date.today())
+
+    def check_cross_day_resume(self, today: date) -> None:
+        """Auto-resume valve: clears the flagged streak after N calendar days
+        even without a win, so a quiet strategy doesn't stay throttled forever
+        waiting for a trade that may not come soon."""
+        cfg = self._cross_day_config()
+        if not cfg.get("enabled", False) or not self.cross_day_streak_active:
+            return
+        if self.cross_day_streak_flagged_date is None:
+            return
+        resume_after_days = cfg.get("resume_after_days", 5)
+        if (today - self.cross_day_streak_flagged_date).days >= resume_after_days:
+            self.cross_day_streak_active = False
+            self.cross_day_losses = 0
+            self.cross_day_streak_flagged_date = None
+
+    def cross_day_size_multiplier(self) -> float:
+        """1.0 normally; reduced (not zeroed) while a cross-day losing streak
+        is flagged, so a subsequent winner isn't fully missed while capping
+        damage from a real edge/regime breakdown."""
+        cfg = self._cross_day_config()
+        if not cfg.get("enabled", False) or not self.cross_day_streak_active:
+            return 1.0
+        return cfg.get("size_multiplier", 0.5)
 
     def sync_broker_daily_pnl(self, account: dict) -> dict:
         """Use the broker's day-start equity as the live daily-loss source.

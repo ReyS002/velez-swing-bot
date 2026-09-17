@@ -47,13 +47,16 @@ class YFinanceDataProvider(BaseDataProvider):
         )
         if df.empty:
             return df
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
         df = df.rename(columns=str.lower)
         df = df.rename(columns={"adj close": "adj_close"})
         df.index = pd.to_datetime(df.index)
         tz = pytz.timezone(timezone)
         if df.index.tz is None:
             df.index = df.index.tz_localize(tz)
-        df = df.reset_index().rename(columns={"index": "timestamp"})
+        df = df.reset_index()
+        df = df.rename(columns={df.columns[0]: "timestamp"})
         return df[["timestamp", "open", "high", "low", "close", "volume"]]
 
 

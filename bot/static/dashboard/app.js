@@ -2670,6 +2670,10 @@ function renderRiskCommandCenter() {
   const lotSizing = risk.lot_sizing || {};
   const approvalRequired = Boolean(state.approval_required);
   const nextMode = !approvalRequired;
+  const crossDayStreak = state.cross_day_streak || {};
+  const crossDayEnabled = Boolean(crossDayStreak.enabled);
+  const crossDayNextMode = !crossDayEnabled;
+  const crossDayActive = Boolean(crossDayStreak.active);
   return `
     <section class="tool-section">
       <div class="section-title">Risk command center</div>
@@ -2686,17 +2690,22 @@ function renderRiskCommandCenter() {
         ${row("Max stop", percent(risk.max_stop_pct))}
         ${row("Pyramid add", percent(risk.pyramid_add_fraction))}
         ${row("Full core", lotSizing.max_lots == null ? "Unknown" : `${lotSizing.max_lots} lots = configured max risk`)}
+        ${row("Cross-day streak guard", crossDayEnabled ? (crossDayActive ? `Active — ${crossDayStreak.cross_day_losses ?? "?"} losses, sizing x${crossDayStreak.size_multiplier ?? 1}` : `Watching — ${crossDayStreak.cross_day_losses ?? 0} losses`) : "Off")}
       </div>
       <div class="actions">
         <button class="action-button" type="button" data-risk-approval-toggle="${String(nextMode)}" ${approvalToken && !riskUpdatePromise ? "" : "disabled"} aria-pressed="${approvalRequired ? "true" : "false"}">
           <i data-lucide="shield-check"></i>
           <span>${approvalRequired ? "Keep approval required" : "Require Winston approval"}</span>
         </button>
+        <button class="action-button" type="button" data-cross-day-streak-toggle="${String(crossDayNextMode)}" ${approvalToken && !riskUpdatePromise ? "" : "disabled"} aria-pressed="${crossDayEnabled ? "true" : "false"}" title="Reduces position size after a losing streak that's statistically improbable at this strategy's win rate, and auto-resumes after a win or a few days.">
+          <i data-lucide="shield-alert"></i>
+          <span>${crossDayEnabled ? "Disable cross-day streak guard" : "Enable cross-day streak guard"}</span>
+        </button>
         <button class="symbol-button" type="button" data-risk-refresh><i data-lucide="refresh-cw"></i> Refresh risk</button>
         <button class="symbol-button" type="button" data-notification-test><i data-lucide="send"></i> Test notifications</button>
       </div>
       <div class="empty-state compact">
-        ${escapeHtml(approvalToken ? "Approval-mode changes require the local approval token and never expose secrets in the browser." : "Enter the approval token in the phone panel before changing approval mode or running the webhook dry-run test.")}
+        ${escapeHtml(approvalToken ? "Approval-mode and streak-guard changes require the local approval token and never expose secrets in the browser." : "Enter the approval token in the phone panel before changing approval mode, the cross-day streak guard, or running the webhook dry-run test.")}
       </div>
     </section>
   `;
@@ -2825,6 +2834,12 @@ function reductionPlanCard(item) {
 function positionDoctorCard(position) {
   const candidates = position.claim_candidates || [];
   const actions = position.actions || [];
+  const ownership = position.ownership || {};
+  const ownershipLabel = ownership.type === "external"
+    ? `External | ${ownership.source_system || "unknown"} / ${ownership.source_strategy || "unknown"} | ${ownership.status || "unverified"} | evidence ${(ownership.evidence_sha256 || "missing").slice(0, 12)}`
+    : ownership.type === "trading_bull_journal"
+      ? `Trading Bull journal | ${ownership.alert_ref || position.linked_alert_ref || "linked"}`
+      : "Unclaimed";
   const rValue = position.current_r_multiple === null || position.current_r_multiple === undefined ? "R N/A" : `${Number(position.current_r_multiple).toFixed(2)}R`;
   return `
     <article class="decision lifecycle-card">
@@ -2835,6 +2850,7 @@ function positionDoctorCard(position) {
       <div class="decision-meta">${escapeHtml([position.side, `qty ${position.qty || 0}`, `P/L ${money(position.unrealized_pl || 0)}`].filter(Boolean).join(" | "))}</div>
       <div class="data-list compact-list">
         ${row("Broker", [`Entry ${position.entry_price ?? "N/A"}`, `Stop ${position.stop_price ?? "missing"}`, position.stop_source || "unknown"].join(" | "))}
+        ${row("Ownership", ownershipLabel)}
         ${row("Journal", position.linked_alert_ref ? `${position.linked_alert_ref} | ${position.linked_setup || "setup"}` : "No journal link")}
         ${row("Next", position.next_action || "Review position state.")}
       </div>
@@ -3086,6 +3102,7 @@ function renderMission() {
 }
 
 function renderSessionBriefChanges() {
+  const calendar = currentCalendarState();
   const next = nextDeskEvent();
   const watchlist = (dashboardState.symbols || []).map((item) => item.symbol).filter(Boolean).sort();
   const positions = Number(dashboardState.summary?.open_positions || dashboardState.positions?.length || 0);
@@ -5750,6 +5767,9 @@ function renderPanel() {
   $("[data-risk-approval-toggle]")?.addEventListener("click", (event) => {
     toggleApprovalMode(event.currentTarget.dataset.riskApprovalToggle === "true");
   });
+  $("[data-cross-day-streak-toggle]")?.addEventListener("click", (event) => {
+    toggleCrossDayStreak(event.currentTarget.dataset.crossDayStreakToggle === "true");
+  });
   $("[data-notification-test]")?.addEventListener("click", runNotificationTest);
   $$("[data-scanner-mode]").forEach((button) => {
     button.addEventListener("click", () => setScannerMode(button.dataset.scannerMode));
@@ -7406,6 +7426,36 @@ async function toggleApprovalMode(enabled) {
   await riskUpdatePromise;
 }
 
+async function toggleCrossDayStreak(enabled) {
+  const token = approvalToken.trim();
+  if (!token) {
+    winstonTranscript("system", "Enter the approval token in the phone panel before changing the cross-day streak guard.");
+    return;
+  }
+  riskUpdatePromise = fetch("/api/risk/cross-day-streak", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled, approval_token: token }),
+  })
+    .then((response) => response.json().then((data) => ({ response, data })).catch(() => ({ response, data: {} })))
+    .then(({ response, data }) => {
+      if (!response.ok || !data.ok) throw new Error(data.reason || `cross-day streak guard update failed (${response.status})`);
+      riskState = { ...currentRiskState(), cross_day_streak: data };
+      winstonTranscript("system", data.enabled ? "Cross-day streak guard is now on — position size will drop after a statistically improbable losing streak." : "Cross-day streak guard is off.");
+      return data;
+    })
+    .catch((error) => {
+      winstonTranscript("system", `Cross-day streak guard update blocked: ${error?.message || "unknown error"}.`);
+      return currentRiskState();
+    })
+    .finally(() => {
+      riskUpdatePromise = null;
+      if (["laptop", "lamp"].includes(activePanel)) renderPanel();
+    });
+  renderPanel();
+  await riskUpdatePromise;
+}
+
 async function runNotificationTest() {
   try {
     const response = await fetch("/api/notifications/test", {
@@ -8019,7 +8069,7 @@ function init() {
     clickObject: (panel) => setActivePanel(panel),
     summonJarvis: () => setActivePanel("phone"),
   };
-  mountSovereign({ guideBusy: () => Boolean(appleMusicState.playback.isPlaying || winstonState.callActive || winstonState.speaking || winstonState.listening), product: "Velez Swing", open: setActivePanel, close: closePanel, buildHotspots, position: positionRoomElements, setTheme: applyRoomTheme, state: () => dashboardState, openProConsole });
+  mountSovereign({ guideBusy: () => Boolean(appleMusicState.playback.isPlaying || winstonState.callActive || winstonState.speaking || winstonState.listening), product: "Velez Bot", open: setActivePanel, close: closePanel, buildHotspots, position: positionRoomElements, setTheme: applyRoomTheme, state: () => dashboardState, openProConsole });
   window.__deskReady = true;
   window.__deskVersion = APP_BUILD;
 

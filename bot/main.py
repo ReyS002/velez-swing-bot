@@ -33,6 +33,8 @@ def run_backtest(args) -> None:
     if args.symbols:
         wanted = set(args.symbols.split(","))
         symbols = [s for s in symbols if s["symbol"] in wanted]
+    if getattr(args, "no_guardrails", False):
+        config.setdefault("risk", {})["guardrails_enabled"] = False
 
     engine = BacktestEngine(config)
     result = engine.run(symbols, parse_date(args.start), parse_date(args.end), args.tf)
@@ -112,6 +114,11 @@ def main() -> None:
     backtest.add_argument("--start", required=True)
     backtest.add_argument("--end", required=True)
     backtest.add_argument("--tf", default="1m")
+    backtest.add_argument(
+        "--no-guardrails",
+        action="store_true",
+        help="Disable risk-manager gating (daily loss kill switch, circuit breaker, max stop pct) for a raw-signal comparison run. Position sizing still applies.",
+    )
 
     trade = sub.add_parser("trade")
     trade.add_argument("--mode", default="paper")

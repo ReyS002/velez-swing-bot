@@ -20,6 +20,8 @@ def compute_metrics(trades: List[TradeRecord], initial_cash: float) -> Dict[str,
             "sharpe": 0.0,
             "sortino": 0.0,
             "calmar": 0.0,
+            "profit_factor": 0.0,
+            "avg_r_multiple": 0.0,
         }
 
     trades = sorted(trades, key=lambda t: t.exit_time)
@@ -27,8 +29,13 @@ def compute_metrics(trades: List[TradeRecord], initial_cash: float) -> Dict[str,
     ending_equity = initial_cash + total_pnl
 
     wins = [t for t in trades if t.pnl > 0]
+    losses = [t for t in trades if t.pnl < 0]
     win_rate = len(wins) / len(trades) if trades else 0.0
     expectancy = total_pnl / len(trades) if trades else 0.0
+    gross_win = sum(t.pnl for t in wins)
+    gross_loss = abs(sum(t.pnl for t in losses))
+    profit_factor = (gross_win / gross_loss) if gross_loss > 0 else (float("inf") if gross_win > 0 else 0.0)
+    avg_r_multiple = sum(t.r_multiple for t in trades) / len(trades)
 
     # Equity curve from trade exits
     equity = initial_cash
@@ -73,4 +80,6 @@ def compute_metrics(trades: List[TradeRecord], initial_cash: float) -> Dict[str,
         "sharpe": sharpe,
         "sortino": sortino,
         "calmar": calmar,
+        "profit_factor": profit_factor,
+        "avg_r_multiple": avg_r_multiple,
     }
