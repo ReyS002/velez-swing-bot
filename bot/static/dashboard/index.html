@@ -53,6 +53,19 @@
             </select>
             <small id="trading-mode-status">Sync</small>
           </label>
+          <label class="mode-switcher" data-status="warn" title="Session Lock — new entries and adds only">
+            <i data-lucide="clock-3"></i>
+            <span>Session</span>
+            <select id="session-lock-select" aria-label="Session Lock">
+              <option value="all">All</option>
+              <option value="asia">Asia</option>
+              <option value="london">London</option>
+              <option value="london_new_york_overlap">London / NY</option>
+              <option value="new_york">New York</option>
+              <option value="us_cash">US Cash</option>
+            </select>
+            <small id="session-lock-status">Sync</small>
+          </label>
           <button class="status-pill" id="execution-pill" type="button" data-desk-action="lamp" title="Open Risk & Bull Matrix">Execution</button>
           <button class="status-pill" id="broker-pill" type="button" data-desk-action="vault" title="Open broker connection details">Broker</button>
           <button class="status-pill" id="positions-pill" type="button" data-desk-action="laptop" title="Open positions and command center">Positions</button>

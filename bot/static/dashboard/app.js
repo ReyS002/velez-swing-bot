@@ -27,6 +27,8 @@ const positionsPill = $("#positions-pill");
 const themeToggle = $("#theme-toggle");
 const tradingModeSelect = $("#trading-mode-select");
 const tradingModeStatus = $("#trading-mode-status");
+const sessionLockSelect = $("#session-lock-select");
+const sessionLockStatus = $("#session-lock-status");
 const navRevealZone = $("#nav-reveal-zone");
 const workflowButtons = $$(".workflow-button");
 const dataDisclosure = $("#data-disclosure");
@@ -92,6 +94,15 @@ let tradingModeState = {
   timestamp: null,
 };
 let tradingModeRefreshPromise = null;
+let sessionLockState = {
+  ok: false,
+  selection: "all",
+  entry_allowed: false,
+  saving: false,
+  error: null,
+  timestamp: null,
+};
+let sessionLockRefreshPromise = null;
 let hardeningState = null;
 let hardeningRefreshPromise = null;
 let latencyState = null;
@@ -148,6 +159,14 @@ const TRADING_MODE_LABELS = {
   intraday: "Intraday",
   swing: "Swing",
   dual: "Both",
+};
+const SESSION_LOCK_LABELS = {
+  all: "All",
+  asia: "Asia",
+  london: "London",
+  london_new_york_overlap: "London / NY",
+  new_york: "New York",
+  us_cash: "US Cash",
 };
 const tradingViewSymbols = [
   { label: "SPY", symbol: "AMEX:SPY" },
@@ -2123,6 +2142,39 @@ function renderTradingModeControl() {
   }
   if (tradingModeStatus) {
     tradingModeStatus.textContent = tradingModeState.saving ? "Saving" : tradingModeState.ok ? TRADING_MODE_LABELS[mode] : "Sync";
+  }
+}
+
+function normalizeSessionLock(selection) {
+  const value = String(selection || "all").toLowerCase().trim();
+  return Object.prototype.hasOwnProperty.call(SESSION_LOCK_LABELS, value) ? value : "all";
+}
+
+function renderSessionLockControl() {
+  if (!sessionLockSelect) return;
+
+  const selection = normalizeSessionLock(sessionLockState.selection);
+  const locked = sessionLockState.entry_allowed === false;
+  const settingsBroken = sessionLockState.settings_valid === false;
+  const wrapper = sessionLockSelect.closest(".mode-switcher");
+  const status = sessionLockState.saving ? "saving" : sessionLockState.error || settingsBroken ? "bad" : sessionLockState.ok && !locked ? "good" : "warn";
+  const nextOpen = sessionLockState.next_open_at ? new Date(sessionLockState.next_open_at).toLocaleString() : "";
+
+  if (document.activeElement !== sessionLockSelect) {
+    sessionLockSelect.value = selection;
+  }
+  sessionLockSelect.disabled = Boolean(sessionLockState.saving || !approvalToken);
+
+  if (wrapper) {
+    wrapper.dataset.status = status;
+    wrapper.title = sessionLockState.error
+      ? `Session Lock sync failed: ${sessionLockState.error}`
+      : !approvalToken
+        ? "Session Lock requires the local approval token to change."
+        : `${sessionLockState.label || SESSION_LOCK_LABELS[selection]} — ${sessionLockState.window_label || "broker-permitted hours"}${nextOpen ? `; next open ${nextOpen}` : ""}`;
+  }
+  if (sessionLockStatus) {
+    sessionLockStatus.textContent = sessionLockState.saving ? "Saving" : sessionLockState.ok ? (locked ? "Locked" : "Open") : "Sync";
   }
 }
 
@@ -6459,6 +6511,99 @@ async function setTradingMode(mode) {
   renderTradingModeControl();
 }
 
+async function refreshSessionLock(options = {}) {
+  const force = Boolean(options.force);
+  if (sessionLockRefreshPromise) return sessionLockRefreshPromise;
+  if (!force && sessionLockState.ok && Date.now() - new Date(sessionLockState.timestamp || 0).getTime() < 30000) {
+    renderSessionLockControl();
+    return sessionLockState;
+  }
+
+  sessionLockRefreshPromise = fetch("/api/settings/session-lock", { cache: "no-store" })
+    .then((response) => {
+      if (!response.ok) throw new Error(`status ${response.status}`);
+      return response.json();
+    })
+    .then((payload) => {
+      const state = payload.session_lock || {};
+      sessionLockState = {
+        ...state,
+        ok: payload.ok !== false && !state.error,
+        selection: normalizeSessionLock(state.selection),
+        saving: false,
+        error: state.error || null,
+        timestamp: new Date().toISOString(),
+      };
+      renderSessionLockControl();
+      return sessionLockState;
+    })
+    .catch((error) => {
+      sessionLockState = {
+        ...sessionLockState,
+        ok: false,
+        saving: false,
+        error: error.message,
+        timestamp: new Date().toISOString(),
+      };
+      renderSessionLockControl();
+      return sessionLockState;
+    })
+    .finally(() => {
+      sessionLockRefreshPromise = null;
+    });
+
+  renderSessionLockControl();
+  return sessionLockRefreshPromise;
+}
+
+async function setSessionLock(selection) {
+  const previousSelection = normalizeSessionLock(sessionLockState.selection);
+  const nextSelection = normalizeSessionLock(selection);
+  if (!approvalToken) {
+    sessionLockState = { ...sessionLockState, error: "Approval token required" };
+    renderSessionLockControl();
+    return;
+  }
+  sessionLockState = {
+    ...sessionLockState,
+    selection: nextSelection,
+    saving: true,
+    error: null,
+  };
+  renderSessionLockControl();
+
+  try {
+    const response = await fetch("/api/settings/session-lock", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_lock: nextSelection, approval_token: approvalToken }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.error || payload.ok === false) {
+      throw new Error(payload.detail || payload.reason || payload.error || `status ${response.status}`);
+    }
+    sessionLockState = {
+      ...(payload.session_lock || {}),
+      ok: true,
+      selection: normalizeSessionLock(payload.session_lock?.selection),
+      saving: false,
+      error: null,
+      timestamp: new Date().toISOString(),
+    };
+  } catch (error) {
+    sessionLockState = {
+      ...sessionLockState,
+      selection: previousSelection,
+      ok: false,
+      saving: false,
+      error: error.message,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  renderSessionLockControl();
+}
+
 async function refreshCoverage(options = {}) {
   const force = Boolean(options.force);
   if (coverageRefreshPromise) return coverageRefreshPromise;
@@ -7807,6 +7952,7 @@ async function refreshState() {
     applyWinstonRuntime(dashboardState.winston);
   }
   refreshTradingMode();
+  refreshSessionLock();
   if (["mission", "calendar", "clock", "window", "notes"].includes(activePanel)) {
     refreshCalendar();
   }
@@ -8006,6 +8152,10 @@ tradingModeSelect?.addEventListener("change", (event) => {
   setTradingMode(event.target.value);
 });
 
+sessionLockSelect?.addEventListener("change", (event) => {
+  setSessionLock(event.target.value);
+});
+
 function init() {
   buildHotspots();
   window.addEventListener("load", () => window.lucide?.createIcons());
@@ -8046,6 +8196,8 @@ function init() {
     refreshHealth,
     refreshTradingMode,
     setTradingMode,
+    refreshSessionLock,
+    setSessionLock,
     refreshLifecycle,
     refreshReview,
     refreshCloseReport,
@@ -8082,8 +8234,10 @@ function init() {
   renderMobileViews();
   updateActiveChrome();
   renderTradingModeControl();
+  renderSessionLockControl();
   refreshWinstonStatus();
   refreshTradingMode({ force: true });
+  refreshSessionLock({ force: true });
   refreshState().finally(() => scheduleDashboardRefresh());
 }
 

@@ -54,6 +54,14 @@ from .core.top_down_brain import build_top_down_state, merged_top_down_config
 from .core.performance_tracker import PerformanceTracker
 from .core.event_filter import EventFilter
 from .core.velez_lot_sizing import build_lot_plan, public_lot_config
+from .core.session_lock import (
+    session_lock_options,
+    session_lock_state,
+    session_scope,
+    settings_path as session_lock_settings_path,
+    update_session_lock,
+    update_settings_value,
+)
 from .core.decision_intelligence import (
     RiskExecutionPlanner,
     TradeReadinessEngine,
@@ -1437,6 +1445,10 @@ class TradingViewWebhookEngine:
         self.recent_decisions: Deque[dict] = deque(maxlen=self.webhook_config.get("dashboard_decisions", 80))
         self.started_at = datetime.now(timezone.utc)
         self.journal = JournalStore(self.config)
+        self.session_lock_scope = session_scope(self.config, "velez_swing")
+        self.session_lock_thread: Optional[threading.Thread] = None
+        self.session_lock_stop = threading.Event()
+        self.session_lock_last_reconciliation: dict = {"status": "not_started", "timestamp": None}
         cross_day_runtime_override = self.journal.get_setting("cross_day_streak_protection_enabled", None)
         if cross_day_runtime_override is not None:
             self.risk_config.setdefault("cross_day_streak_protection", {})["enabled"] = bool(cross_day_runtime_override)
@@ -1505,6 +1517,196 @@ class TradingViewWebhookEngine:
         except Exception as e:
             self.logger.warning(f"Error reading central settings file: {e}")
             return True
+
+    def _session_lock_asset_type(self, symbol: str, metadata: Optional[dict] = None) -> str:
+        """Resolve the asset class before applying a session-specific entry lock."""
+        details = self.symbol_config.get(str(symbol or "").upper(), {})
+        source = metadata if isinstance(metadata, dict) else {}
+        return str(
+            source.get("asset_type")
+            or source.get("asset_class")
+            or source.get("type")
+            or details.get("asset_type")
+            or details.get("asset_class")
+            or details.get("type")
+            or "equity"
+        )
+
+    def session_lock_status(self, *, asset_type: str = "", now: Optional[datetime] = None) -> dict:
+        state = session_lock_state(
+            session_lock_settings_path(),
+            self.session_lock_scope,
+            asset_type=asset_type,
+            now=now,
+        )
+        return {
+            **state,
+            "options": session_lock_options(),
+            "reconciliation": {
+                "status": self.session_lock_last_reconciliation.get("status"),
+                "timestamp": self.session_lock_last_reconciliation.get("timestamp"),
+                "staged_cancelled_count": len(self.session_lock_last_reconciliation.get("staged_cancelled", [])),
+                "broker_cancelled_count": len(self.session_lock_last_reconciliation.get("broker_cancelled", [])),
+                "error_count": len(self.session_lock_last_reconciliation.get("errors", [])),
+            },
+        }
+
+    def _session_lock_entry_state(
+        self,
+        symbol: str,
+        metadata: Optional[dict] = None,
+        *,
+        now: Optional[datetime] = None,
+    ) -> dict:
+        return self.session_lock_status(
+            asset_type=self._session_lock_asset_type(symbol, metadata),
+            now=now,
+        )
+
+    def _record_session_lock_audit(self, event: dict) -> None:
+        """Persist control changes on older Velez journals without losing history."""
+        recorder = getattr(self.journal, "record_control_audit", None)
+        if callable(recorder):
+            recorder(event)
+            return
+        key = f"session_lock.audit.{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}.{secrets.token_hex(4)}"
+        self.journal.set_setting(key, event)
+
+    def set_session_lock(self, selection: str, approval_token: str) -> dict:
+        auth = self._authorize_approval_token(approval_token)
+        if not auth.get("ok"):
+            return auth
+        try:
+            stored = update_session_lock(session_lock_settings_path(), self.session_lock_scope, selection)
+        except ValueError as exc:
+            return {
+                "ok": False,
+                "reason": "invalid_session_lock",
+                "detail": str(exc),
+                "allowed": [item["id"] for item in session_lock_options()],
+            }
+        state = self.session_lock_status()
+        reconciliation = self.reconcile_session_lock()
+        self._record_session_lock_audit(
+            {
+                "source": "trading_desk",
+                "actor": "approved_operator",
+                "command": "set_session_lock",
+                "status": "applied",
+                "detail": f"Session Lock set to {stored['selection']} for {self.session_lock_scope}.",
+                "metadata": {"scope": self.session_lock_scope, "selection": stored["selection"], "state": state},
+            }
+        )
+        return {"ok": True, "session_lock": state, "reconciliation": reconciliation}
+
+    def start_session_lock_worker(self) -> None:
+        if self.session_lock_thread and self.session_lock_thread.is_alive():
+            return
+        self.session_lock_stop.clear()
+        self.session_lock_thread = threading.Thread(
+            target=self._session_lock_loop,
+            name=f"{self.session_lock_scope}-session-lock",
+            daemon=True,
+        )
+        self.session_lock_thread.start()
+
+    def stop_session_lock_worker(self) -> None:
+        self.session_lock_stop.set()
+        if self.session_lock_thread and self.session_lock_thread.is_alive():
+            self.session_lock_thread.join(timeout=5)
+
+    def _session_lock_loop(self) -> None:
+        interval = max(15, min(int(os.getenv("TRADING_BULL_SESSION_LOCK_RECONCILE_SECONDS", "30") or 30), 300))
+        while not self.session_lock_stop.is_set():
+            try:
+                self.reconcile_session_lock()
+            except Exception as exc:
+                log_event(self.logger, "session_lock_reconciliation_failed", {"reason": type(exc).__name__})
+            self.session_lock_stop.wait(interval)
+
+    def _session_lock_cancellable_entry_order(self, order: dict, position_symbols: set[str]) -> bool:
+        symbol = str(order.get("symbol") or "").upper().strip()
+        if not symbol or symbol in position_symbols:
+            return False
+        filled_qty = self._float(order.get("filled_qty"))
+        if filled_qty is None or filled_qty != 0:
+            return False
+        if order.get("parent_order_id") or order.get("legs"):
+            return False
+        order_type = str(order.get("type") or order.get("order_type") or "").lower()
+        if order_type in {"stop", "stop_limit", "trailing_stop"}:
+            return False
+        client_order_id = str(order.get("client_order_id") or "")
+        if not client_order_id.startswith("velez-"):
+            return False
+        return str(order.get("status") or "").lower() in {"new", "accepted", "pending_new", "pending_replace"}
+
+    def reconcile_session_lock(self, *, now: Optional[datetime] = None) -> dict:
+        """Expire unsafe staged entries and unfilled, bot-owned entry parents."""
+        current = now or datetime.now(timezone.utc)
+        staged_cancelled: list[str] = []
+        errors: list[dict] = []
+        for pending in self.journal.pending_orders():
+            state = self._session_lock_entry_state(str(pending.get("symbol") or ""), now=current)
+            if state.get("entry_allowed"):
+                continue
+            approval_id = str(pending.get("id") or pending.get("approval_id") or "")
+            if not approval_id:
+                continue
+            try:
+                if self.journal.cancel_staged_pending_order(approval_id, str(state["lock_reason"])):
+                    staged_cancelled.append(approval_id)
+            except Exception as exc:
+                errors.append({"id": approval_id, "reason": type(exc).__name__})
+
+        broker_cancelled: list[dict] = []
+        broker_configured = bool(getattr(self.broker, "is_configured", lambda: False)())
+        if broker_configured:
+            try:
+                positions = self.broker.get_positions_raw()
+                orders = self.broker.get_orders_raw(status="open", limit=200, direction="desc", nested=True)
+                position_symbols = {
+                    str(item.get("symbol") or "").upper().strip()
+                    for item in positions
+                    if item.get("symbol")
+                }
+                for order in orders:
+                    state = self._session_lock_entry_state(str(order.get("symbol") or ""), now=current)
+                    if state.get("entry_allowed") or not self._session_lock_cancellable_entry_order(order, position_symbols):
+                        continue
+                    order_id = str(order.get("id") or "")
+                    if not order_id:
+                        continue
+                    try:
+                        response = self.broker.cancel_order(order_id)
+                        broker_cancelled.append({"id": order_id, "symbol": order.get("symbol"), "reason": state["lock_reason"], "response": response})
+                    except Exception as exc:
+                        errors.append({"id": order_id, "symbol": order.get("symbol"), "reason": type(exc).__name__})
+            except Exception as exc:
+                errors.append({"broker": "snapshot", "reason": type(exc).__name__})
+
+        result = {
+            "status": "reconciled",
+            "timestamp": current.astimezone(timezone.utc).isoformat(),
+            "scope": self.session_lock_scope,
+            "session_lock": self.session_lock_status(now=current),
+            "staged_cancelled": staged_cancelled,
+            "broker_cancelled": broker_cancelled,
+            "errors": errors,
+        }
+        self.session_lock_last_reconciliation = result
+        if staged_cancelled or broker_cancelled:
+            self._record_session_lock_audit(
+                {
+                    "source": "session_lock_worker",
+                    "actor": "system",
+                    "command": "cancel_out_of_session_entries",
+                    "status": "applied",
+                    "detail": "Cancelled staged or unfilled entry orders after Session Lock closed.",
+                    "metadata": result,
+                }
+            )
+        return result
 
     def handle_payload(
         self,
@@ -1642,6 +1844,7 @@ class TradingViewWebhookEngine:
                 "approval_required": self._requires_order_approval(),
                 "approval_mode_source": self._approval_mode_source(),
             },
+            "session_lock": self.session_lock_status(now=now),
             "symbols": symbols,
             "top_down": self.top_down_state_payload(refresh=False, cached_only=True),
             "scanner": self.scanner_public_status(),
@@ -8061,6 +8264,16 @@ class TradingViewWebhookEngine:
         pending = self.journal.get_pending_order(approval_id)
         if not pending:
             return {"ok": False, "reason": "pending_order_not_found", "review_action_label": "Conditions Not Met"}
+        session_state = self._session_lock_entry_state(str(pending.get("symbol") or ""))
+        if not session_state.get("entry_allowed"):
+            cancelled = self.journal.cancel_staged_pending_order(approval_id, str(session_state["lock_reason"]))
+            return {
+                "ok": False,
+                "reason": session_state["lock_reason"],
+                "review_action_label": "Conditions Not Met",
+                "pending": self.journal._public_pending(cancelled or pending),
+                "session_lock": session_state,
+            }
         payload = dict(pending.get("order_payload") or {})
         control = payload.get("_bullwarden") if isinstance(payload.get("_bullwarden"), dict) else {}
         bullwarden_guard = self.bullwarden.entry_allowed(
@@ -8766,6 +8979,16 @@ class TradingViewWebhookEngine:
             return WebhookDecision("rejected", "missing_entry_or_stop", symbol=symbol, side=side, play=play)
         if order_type not in {"market", "limit"}:
             return WebhookDecision("rejected", f"unsupported_order_type:{order_type}", symbol=symbol, side=side, play=play)
+        session_state = self._session_lock_entry_state(symbol, metadata)
+        if not session_state.get("entry_allowed"):
+            return WebhookDecision(
+                "rejected",
+                str(session_state["lock_reason"]),
+                symbol=symbol,
+                side=side,
+                play=play,
+                metadata={"session_lock": session_state},
+            )
         # Direct TradingView signals bypass the bar handler, so enforce the
         # same high-impact calendar protection here as on scanner signals.
         if not dry_run:
@@ -9521,6 +9744,7 @@ class TradingViewWebhookEngine:
             "confluence": metadata.get("confluence"),
             "top_down": metadata.get("top_down"),
             "correlation": metadata.get("correlation"),
+            "session_lock": metadata.get("session_lock"),
             "payload_version": source.get("payload_version") or source.get("pine_version") or source.get("script_version") or source.get("version"),
             "alert_ref": hashlib.sha1(str(alert_id).encode("utf-8")).hexdigest()[:10],
             "chart_context": {
@@ -11395,6 +11619,7 @@ def create_app(config: dict):
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        engine.start_session_lock_worker()
         engine.start_scanner()
         engine.start_operations_worker()
         engine.calendar.earnings_cache.start()
@@ -11406,6 +11631,7 @@ def create_app(config: dict):
             engine.calendar.earnings_cache.stop()
             app.state.desk_records.stop()
             engine.stop_scanner_worker()
+            engine.stop_session_lock_worker()
 
     app = FastAPI(title="Trading Bull Desk Webhook", version="0.1.0", lifespan=lifespan)
     app.state.engine = engine
@@ -11670,18 +11896,28 @@ def create_app(config: dict):
         if mode not in {"intraday", "swing", "dual"}:
             raise HTTPException(status_code=400, detail="trading_mode must be 'intraday', 'swing', or 'dual'")
         
-        settings_path = os.getenv("TRADING_BULL_SETTINGS_PATH", "/app/data/trading_bull_settings.json")
         try:
-            settings = {}
-            if os.path.exists(settings_path):
-                with open(settings_path, "r") as f:
-                    settings = json.load(f)
-            settings["trading_mode"] = mode
-            with open(settings_path, "w") as f:
-                json.dump(settings, f, indent=2)
+            update_settings_value(session_lock_settings_path(), "trading_mode", mode)
             return {"ok": True, "trading_mode": mode}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to save settings: {e}")
+
+    @app.get("/api/settings/session-lock")
+    async def get_session_lock() -> dict:
+        return {"ok": True, "session_lock": engine.session_lock_status()}
+
+    @app.patch("/api/settings/session-lock")
+    async def update_session_lock_setting(request: Request) -> JSONResponse:
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+        result = await run_in_threadpool(
+            engine.set_session_lock,
+            str(body.get("session_lock", body.get("selection", ""))),
+            str(body.get("approval_token", "")),
+        )
+        return JSONResponse(content=result, status_code=200 if result.get("ok") else 400)
 
     @app.get("/api/bot/health")
     async def bot_health() -> JSONResponse:

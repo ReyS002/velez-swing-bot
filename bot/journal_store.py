@@ -375,6 +375,21 @@ class JournalStore:
             row = db.execute("SELECT * FROM pending_orders WHERE id = ?", (str(approval_id).upper().strip(),)).fetchone()
         return self._pending_row(row) if row else None
 
+    def cancel_staged_pending_order(self, approval_id: str, reason: str) -> Optional[dict]:
+        """Invalidate a not-yet-submitted entry without touching broker orders."""
+        cleaned_id = str(approval_id).upper().strip()
+        now = _utc_now().isoformat()
+        with self._connect() as db:
+            cursor = db.execute(
+                """
+                UPDATE pending_orders
+                SET status = 'cancelled', updated_at = ?, error = ?
+                WHERE id = ? AND status = 'staged'
+                """,
+                (now, str(reason or "cancelled")[:500], cleaned_id),
+            )
+        return self.get_pending_order(cleaned_id) if cursor.rowcount == 1 else None
+
     def expire_pending_orders(self) -> int:
         now = _utc_now().isoformat()
         with self._connect() as db:
