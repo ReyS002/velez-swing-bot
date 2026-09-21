@@ -1,0 +1,7 @@
+# Desk visual polish 1.14.0
+
+Shared phone/player proportions and separation in all six rooms; horizontal phone and Session Brief labels; player face is a gold Apple logo without playback text. Cape baked devices are removed via localized clean background plates preloaded before room display. Cape ocean shares the Hawaii wave renderer, with a separate shoreline/window mask and no sailboat. New York day/night plates expose walnut flooring behind the desktop.
+
+Generated artwork: OpenAI built-in imagegen, 2026-09-21. Source plates cape-day-clean.png, cape-night-clean.png, stone-manhattan-day-clean.png, stone-manhattan-night-clean.png. Prompts requested exact camera/object registration, removal only of Cape telephone/cord/player, and shortening only the rear New York desktop to expose satin brown walnut flooring. Night edit used the approved day boundary reference. Full generated files retained; Cape uses a localized CSS crop and New York uses existing protected object masks. No trading behavior or broker configuration changed.
+
+Validation: browser checks cover all six rooms in day/night on all three editions, 126 object panel opens, desktop/mobile layouts and launch behavior; focused checks verify uniform device proportions, separation, logo-only faces, horizontal unclipped labels, Cape/Hawaii ocean pixel motion, and reduced-motion handling. Existing phone, room-controller identity and desk intelligence tests pass (16 total).

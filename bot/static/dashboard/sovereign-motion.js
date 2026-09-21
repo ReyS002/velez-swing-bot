@@ -40,13 +40,13 @@ export function mountObjectMotion({open,roomRect,roomSnapshot}) {
       if(panel==='phone'){
         const art=target.querySelector('.phone-art');
         animate(art.querySelector('.phone-display'),[{filter:'brightness(1)'},{filter:'brightness(1.3)'}],420);
-        if(roomSnapshot().id!=='cape'){
+        {
           const e=append(art,svg('0 0 1415 1061',`<defs><clipPath id="motion-coastal-handset"><path d="M109 109Q114 76 169 75L319 78Q345 84 352 122L462 805Q466 850 423 864L298 865Q244 858 235 815Z"/></clipPath></defs><g class="coastal-handset">${img('phone-coastal.png',1415,1061,'clip-path="url(#motion-coastal-handset)"')}</g>`),'desk-motion-art');
           animate(e.querySelector('g'),[{transform:'translateY(0)'},{transform:'translateY(-15px) rotate(-2deg)'}],420);
         }
       } else if(panel==='music'){
         const art=target.querySelector('.music-art');
-        if(roomSnapshot().id!=='cape'){
+        {
         const e=append(art,svg('58 46 910 1420',`<defs><clipPath id="motion-wheel"><circle cx="509" cy="925" r="190"/></clipPath></defs><g class="desk-motion-wheel">${img('pocket-player.png',1024,1536,'clip-path="url(#motion-wheel)"')}</g>`),'desk-motion-art');
         animate(e.querySelector('g'),[{transform:'rotate(0)'},{transform:'rotate(18deg)'}],360);
         }

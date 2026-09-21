@@ -11,7 +11,7 @@ def test_desk_intelligence_is_connected_to_shared_room_state():
     app = (ASSETS / "app.js").read_text(encoding="utf-8")
     html = (ASSETS / "index.html").read_text(encoding="utf-8")
 
-    assert 'export const SOVEREIGN_VERSION = "1.13.1";' in room
+    assert 'export const SOVEREIGN_VERSION = "1.14.0";' in room
     assert 'mountPanelExperience' in room and 'updatePanelExperience' in room
     assert 'desk:panel-request' in panel and 'desk:attention-open' in panel
     assert 'restoreScroll' in panel
