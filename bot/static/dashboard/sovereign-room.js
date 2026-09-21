@@ -6,7 +6,7 @@ import {mountRoomGuide} from "./sovereign-guide.js?v=1.10.0";
 import {mountPanelExperience,updatePanelExperience} from "./sovereign-panel.js?v=1.12.0";
 import {mountCapeLaunch} from "./sovereign-launch.js?v=1.13.1";
 // Shared Sovereign room shell. Keep byte-identical across bot editions.
-export const SOVEREIGN_VERSION = "1.14.0";
+export const SOVEREIGN_VERSION = "1.14.1";
 const ASSETS = "/dashboard/assets/sovereign/";
 const percent = ([x, y, w, h]) => ({ x: x / 100, y: y / 100, w: w / 100, h: h / 100 });
 export const ROOMS = {
@@ -24,7 +24,7 @@ const ROOM_ART = {
  media:[[130,349,127,93],[1048,535,505,207]],
  pacific:[[306,260,113,94],[1027,500,550,217],[307,78,110,87]],
  tokyo:[[316,254,107,78],[1057,492,503,213],[316,337,108,74]],
- manhattan:[null,[1040,486,511,212],[318,341,94,82,318,135]],
+ manhattan:[[318,250,108,87],[1040,486,511,212],[318,341,94,82,318,135]],
  dubai:[[320,350,112,83],[1030,496,529,206],[320,518,113,64]]
 };
 // Interior calendar faces and sculpture bounds, calibrated per lighting artwork.
@@ -55,7 +55,7 @@ function layoutRoomArtwork(){
  const regions=ROOM_ART[visibleArtwork.id];
  let patches=[...plate.querySelectorAll('.room-art-patch')];
  if(patches.length!==regions.length){patches.forEach(e=>e.remove());patches=regions.map(()=>{const e=document.createElement('span');e.className='room-art-patch';e.setAttribute('aria-hidden','true');plate.append(e);return e;});}
- regions.forEach((region,i)=>{const e=patches[i];if(!region){e.hidden=true;return;}e.hidden=false;const [x,y,w,h,sx=x,sy=y]=region;e.style.transformOrigin="0 0";e.style.transform=visibleArtwork.id==="manhattan"&&i===2?"skewY(-7.4deg)":"none";e.style.clipPath=visibleArtwork.id==="manhattan"&&i===2?"polygon(2% 4%,96% 23%,96% 96%,2% 85%)":"none";Object.assign(e.style,{left:(r.left+x*r.width/1672)+'px',top:(r.top+y*r.height/941)+'px',width:w*r.width/1672+'px',height:h*r.height/941+'px',backgroundImage:`url("${ASSETS}${i===1?"spacing":"objects"}-${visibleArtwork.file}?v=1.4.3")`,backgroundSize:`${r.width}px ${r.height}px`,backgroundPosition:`${-sx*r.width/1672}px ${-sy*r.height/941}px`});});
+ regions.forEach((region,i)=>{const e=patches[i];if(!region){e.hidden=true;return;}e.hidden=false;const [x,y,w,h,sx=x,sy=y]=region;e.style.transformOrigin="0 0";e.style.transform=visibleArtwork.id==="manhattan"&&i===2?"skewY(-7.4deg)":"none";e.style.clipPath=visibleArtwork.id==="manhattan"&&i===2?"polygon(2% 4%,96% 23%,96% 96%,2% 85%)":"none";Object.assign(e.style,{left:(r.left+x*r.width/1672)+'px',top:(r.top+y*r.height/941)+'px',width:w*r.width/1672+'px',height:h*r.height/941+'px',backgroundImage:`url("${ASSETS}${visibleArtwork.id==="manhattan"&&i===0?"shelf-fixed":i===1?"spacing":"objects"}-${visibleArtwork.file}?v=1.4.3")`,backgroundSize:`${r.width}px ${r.height}px`,backgroundPosition:`${-sx*r.width/1672}px ${-sy*r.height/941}px`});});
  layoutStone(plate,visibleArtwork.id,visibleArtwork.file,r,SPACING_LAYOUT[visibleArtwork.id][visibleArtwork.file.includes('day')||visibleArtwork.file.includes('focus')?'day':'night']);
 }
 // Clockwise wall-plane corners in the original 1672 × 941 room artwork.
@@ -143,7 +143,7 @@ export function syncRoomTheme(theme) {
   const plate=$(".photo-room");
   if(plate){const token=++preloadToken,id=roomId,file=ROOMS[id].images[lighting[id]];
     const load=src=>new Promise((resolve,reject)=>{const image=new Image();image.onload=resolve;image.onerror=reject;image.src=src;});
-    Promise.all([load(url),...(id==='cape'?[load(ASSETS+`cape-${file.includes('night')?'night':'day'}-desktop-clear.png`),...(file.includes('night')?[load(ASSETS+'cape-approved-night.png')]:[])]:[load(ASSETS+'objects-'+file+'?v=1.4.3'),load(ASSETS+'spacing-'+file+'?v=1.4.3')]),...(stoneFile(id,file)?[load(ASSETS+stoneFile(id,file)+'?v=1.11.0')]:[])]).then(()=>{if(token!==preloadToken)return;plate.style.backgroundImage=`url("${url}")`;visibleArtwork={id,file};layoutRoomArtwork();document.body.dataset.roomAsset=file;layout();}).catch(()=>{if(token!==preloadToken)return;plate.style.backgroundImage="none";plate.querySelectorAll(".room-art-patch,.room-stone,.cape-desktop-clear,.cape-pad-clean").forEach(element=>element.remove());visibleArtwork=null;document.body.dataset.roomAsset="unavailable";announce("This room image could not load. Try switching rooms again.");});
+    Promise.all([load(url),...(id==='manhattan'?[load(ASSETS+'shelf-fixed-'+file+'?v=1.4.3')]:[]),...(id==='cape'?[load(ASSETS+`cape-${file.includes('night')?'night':'day'}-desktop-clear.png`),...(file.includes('night')?[load(ASSETS+'cape-approved-night.png')]:[])]:[load(ASSETS+'objects-'+file+'?v=1.4.3'),load(ASSETS+'spacing-'+file+'?v=1.4.3')]),...(stoneFile(id,file)?[load(ASSETS+stoneFile(id,file)+'?v=1.11.0')]:[])]).then(()=>{if(token!==preloadToken)return;plate.style.backgroundImage=`url("${url}")`;visibleArtwork={id,file};layoutRoomArtwork();document.body.dataset.roomAsset=file;layout();}).catch(()=>{if(token!==preloadToken)return;plate.style.backgroundImage="none";plate.querySelectorAll(".room-art-patch,.room-stone,.cape-desktop-clear,.cape-pad-clean").forEach(element=>element.remove());visibleArtwork=null;document.body.dataset.roomAsset="unavailable";announce("This room image could not load. Try switching rooms again.");});
   }
   const picker=$("#sovereign-room-select");if(picker)picker.value=roomId;
   const toggle=$("#theme-toggle");if(toggle){toggle.innerHTML=`<span>${ROOMS[roomId].modes[lighting[roomId]]}</span><i data-lucide="sun-moon"></i>`;toggle.setAttribute("aria-label",`Lighting: ${ROOMS[roomId].modes[lighting[roomId]]}. Switch to ${ROOMS[roomId].modes[lighting[roomId]==="day"?"night":"day"]}`);}
