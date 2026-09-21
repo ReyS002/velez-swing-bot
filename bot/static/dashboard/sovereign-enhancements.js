@@ -5,6 +5,7 @@ const CITIES = [
   ["Tokyo", "Asia/Tokyo"], ["Dubai", "Asia/Dubai"],
 ];
 const LAYOUTS = {
+  cape:{clock:null,accent:null,window:"polygon(28% 16%,100% 0,100% 59%,28% 53%)"},
   media: {clock:null,accent:null,window:null},
   pacific:{clock:null,accent:null,window:"polygon(30% 18%,100% 0,100% 62%,31% 53%)"},
   tokyo:{clock:null,accent:null,window:"polygon(27% 20%,100% 0,100% 56%,27% 49%)"},

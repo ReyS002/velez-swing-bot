@@ -4,7 +4,7 @@ const ASSETS='/dashboard/assets/sovereign/';
 const PANELS=new Set(['phone','music','notes','mission','bookshelf','vault','lamp','journal']);
 const OBJECT={notes:'notes',mission:'mission',bookshelf:'bookshelf',vault:'vault',lamp:'lamp',phone:'phone',music:'music',journal:'journal'};
 // One visible volume in each 1672 × 941 room plate. Some shelves use horizontal books.
-const BOOKS={media:[151,170,10,50],pacific:[384,200,10,51],tokyo:[333,185,10,59],manhattan:[345,222,64,8],dubai:[344,454,10,42]};
+const BOOKS={cape:[368,184,10,51],media:[151,170,10,50],pacific:[384,200,10,51],tokyo:[333,185,10,59],manhattan:[345,222,64,8],dubai:[344,454,10,42]};
 export function mountObjectMotion({open,roomRect,roomSnapshot}) {
   if(document.documentElement.dataset.objectMotionMounted)return;
   document.documentElement.dataset.objectMotionMounted='true';
@@ -34,19 +34,28 @@ export function mountObjectMotion({open,roomRect,roomSnapshot}) {
     const img=(file,w,h,attr='')=>`<image href="${ASSETS+file}" width="${w}" height="${h}" ${attr}/>`;
     const layer=(rect)=>{
       const e=append(document.body,'','desk-motion-slice');const room=roomRect();
-      Object.assign(e.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px',backgroundImage:panel==='mission'?`url("${ASSETS}spacing-${document.body.dataset.roomAsset}?v=1.4.3")`:panel==='vault'&&roomSnapshot().id!=='media'?`url("${ASSETS}objects-${document.body.dataset.roomAsset}?v=1.4.3")`:getComputedStyle(document.querySelector('.photo-room')).backgroundImage,backgroundSize:`${room.width}px ${room.height}px`,backgroundPosition:`${room.left-rect.left}px ${room.top-rect.top+(panel==='vault'&&roomSnapshot().id==='manhattan'?206*room.height/941:0)}px`});return e;
+      Object.assign(e.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px',backgroundImage:roomSnapshot().id==='cape'?`url("${ASSETS}${document.body.dataset.roomAsset}")`:panel==='mission'?`url("${ASSETS}spacing-${document.body.dataset.roomAsset}?v=1.4.3")`:panel==='vault'&&roomSnapshot().id!=='media'?`url("${ASSETS}objects-${document.body.dataset.roomAsset}?v=1.4.3")`:getComputedStyle(document.querySelector('.photo-room')).backgroundImage,backgroundSize:`${room.width}px ${room.height}px`,backgroundPosition:`${room.left-rect.left}px ${room.top-rect.top+(panel==='vault'&&roomSnapshot().id==='manhattan'?206*room.height/941:0)}px`});return e;
     };
     try {
       if(panel==='phone'){
-        const art=target.querySelector('.phone-art'),original=art.querySelector('svg');
-        const style=original.style.visibility;original.style.visibility='hidden';cleanup.push(()=>original.style.visibility=style);
-        const e=append(art,svg('80 145 1100 980',`<defs><clipPath id="motion-phone-base"><path d="M157 278 Q163 230 208 224 L809 222 Q853 225 865 275 L880 880 L1144 881 L1163 950 L1168 978 V1048 Q1168 1090 1109 1095 H149 Q88 1090 87 1048 V978 L111 881 L142 784Z"/></clipPath><clipPath id="motion-receiver"><path d="M878 210 Q885 160 929 155 L1032 153 Q1078 156 1087 199 L1116 800 Q1120 869 1069 884 L944 884 Q900 883 895 830Z"/></clipPath></defs>${img('phone-glass.png',1254,1254,'clip-path="url(#motion-phone-base)"')}<path d="M90 981 Q620 1010 1165 981 V1048 Q1165 1090 1110 1095 H149 Q90 1090 90 1048Z" fill="#171c1d" stroke="#9e8758" stroke-width="3"/><g class="desk-motion-handset">${img('phone-glass.png',1254,1254,'clip-path="url(#motion-receiver)"')}</g>`),'desk-motion-art');
-        animate(e.querySelector('g'),[{transform:'translate(0,0) rotate(0)'},{transform:'translate(-10px,-28px) rotate(-5deg)'}]);
+        const art=target.querySelector('.phone-art');
+        animate(art.querySelector('.phone-display'),[{filter:'brightness(1)'},{filter:'brightness(1.3)'}],420);
+        if(roomSnapshot().id!=='cape'){
+          const e=append(art,svg('0 0 1415 1061',`<defs><clipPath id="motion-coastal-handset"><path d="M109 109Q114 76 169 75L319 78Q345 84 352 122L462 805Q466 850 423 864L298 865Q244 858 235 815Z"/></clipPath></defs><g class="coastal-handset">${img('phone-coastal.png',1415,1061,'clip-path="url(#motion-coastal-handset)"')}</g>`),'desk-motion-art');
+          animate(e.querySelector('g'),[{transform:'translateY(0)'},{transform:'translateY(-15px) rotate(-2deg)'}],420);
+        }
       } else if(panel==='music'){
         const art=target.querySelector('.music-art');
+        if(roomSnapshot().id!=='cape'){
         const e=append(art,svg('58 46 910 1420',`<defs><clipPath id="motion-wheel"><circle cx="509" cy="925" r="190"/></clipPath></defs><g class="desk-motion-wheel">${img('pocket-player.png',1024,1536,'clip-path="url(#motion-wheel)"')}</g>`),'desk-motion-art');
         animate(e.querySelector('g'),[{transform:'rotate(0)'},{transform:'rotate(18deg)'}],360);
+        }
         animate(art.querySelector('.music-display'),[{filter:'brightness(1)'},{filter:'brightness(1.35)'}],360);
+      } else if(panel==='journal'&&roomSnapshot().id==='cape'){
+        const r=target.getBoundingClientRect(),e=layer(r);
+        e.style.clipPath='polygon(0 15%,69% 0,100% 78%,31% 99%)';
+        e.style.transformOrigin='0 70%';
+        animate(e,[{transform:'perspective(500px) rotateY(0deg)'},{transform:'perspective(500px) rotateY(-54deg) translateY(-2px)'}],580);
       } else if(panel==='journal'){
         const art=target.querySelector('.journal-art');
         const e=append(art,svg('100 130 1350 768',`<defs><clipPath id="motion-cover"><path d="M167 243 L901 138 Q935 135 952 150 L1415 620 Q1448 661 1416 672 L518 810 Q487 818 477 798 L124 304Z"/></clipPath></defs><path fill="#ede0bd" stroke="#ba9c69" stroke-width="8" d="M167 243 L920 138 L1430 660 L500 810 L124 304Z"/><path d="M216 291 L516 763" stroke="#bca675" stroke-width="9" opacity=".5"/><g class="desk-motion-cover">${img('journal-no-pen.png',1536,1024,'clip-path="url(#motion-cover)"')}<path class="cover-lining" opacity="0" fill="#dccba5" stroke="#6d381a" stroke-width="16" d="M167 243 L920 138 L1430 660 L500 810 L124 304Z"/></g>`),'desk-motion-art');

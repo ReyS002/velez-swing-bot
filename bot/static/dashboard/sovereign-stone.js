@@ -1,4 +1,4 @@
-import {statueOutline} from './sovereign-statue.js?v=1.4.3';
+import {statueOutline} from './sovereign-statue.js?v=1.13.0';
 
 // Clip generated stone textures to the room surfaces. The original artwork remains
 // visible everywhere else, including all interactive objects and the entire view.
@@ -19,7 +19,7 @@ export function stoneFile(id,file){return SURFACES[id]?`${MATERIAL_ROOMS.has(id)
 export function layoutStone(plate,id,file,rect,placed){
  let layer=plate.querySelector('.room-stone');
  const spec=SURFACES[id];
- if(!spec){layer?.remove();return;}
+ if(!spec){layer?.remove();plate.querySelector('.room-desk-depth')?.remove();return;}
  if(!layer){layer=document.createElement('span');layer.className='room-stone';layer.setAttribute('aria-hidden','true');plate.append(layer);}
  const theme=file.includes('day')?'day':'night';
  const [x,y,w,h]=placed.notes;
@@ -32,4 +32,12 @@ export function layoutStone(plate,id,file,rect,placed){
  const uri=`url("data:image/svg+xml,${encodeURIComponent(mask)}")`;
  Object.assign(layer.style,{position:'fixed',display:'block',pointerEvents:'none',left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px',backgroundImage:`url("/dashboard/assets/sovereign/${stoneFile(id,file)}?v=1.11.0")`,backgroundSize:'100% 100%',maskImage:uri,maskMode:'luminance',maskSize:'100% 100%'});
  layer.dataset.room=id;layer.dataset.theme=theme;
+ // Shadow only the vertical desk apron; never darken the working surface,
+ // objects, chair, or the floor visible through Dubai's central opening.
+ let depth=plate.querySelector('.room-desk-depth');
+ if(!depth){depth=document.createElement('span');depth.className='room-desk-depth';depth.setAttribute('aria-hidden','true');plate.append(depth);}
+ const faces={tokyo:'M0 850H377V941H0Z M1250 850H1672V941H1250Z',manhattan:'M0 851H370V941H0Z M1187 851H1672V941H1187Z',pacific:'M0 864H1672V941H0Z',dubai:'M0 856H260V941H0Z M1274 856H1672V941H1274Z'};
+ const shade=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1672 941"><defs><linearGradient id="d" x2="0" y2="1"><stop stop-color="#090b0d" stop-opacity=".36"/><stop offset="1" stop-color="#151317" stop-opacity=".17"/></linearGradient><mask id="m"><rect width="1672" height="941" fill="white"/><path d="${spec.chair}" fill="black"/></mask></defs><path d="${faces[id]}" fill="url(#d)" mask="url(#m)"/></svg>`;
+ Object.assign(depth.style,{position:'fixed',pointerEvents:'none',left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px',backgroundImage:`url("data:image/svg+xml,${encodeURIComponent(shade)}")`,backgroundSize:'100% 100%'});
+
 }

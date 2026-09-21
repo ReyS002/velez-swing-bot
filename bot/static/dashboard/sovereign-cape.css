@@ -1,0 +1,21 @@
+/* Calibrated to the approved photograph. Existing room furniture is untouched. */
+#cape-launch-canvas{position:fixed;z-index:10;pointer-events:none;contain:strict}
+#cape-launch-canvas[hidden]{display:none}
+.cape-launch-controls{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:15px;border:1px solid var(--sovereign-line);border-radius:12px;background:#c6aa7010}
+.cape-launch-controls>div,.cape-launch-controls>small{grid-column:1/-1}
+.cape-launch-controls strong{display:block;font-size:14px;color:var(--sovereign-gold)}
+.cape-launch-controls span,.cape-launch-controls small{display:block;margin-top:6px;font-size:12px;line-height:1.5;color:inherit}
+.cape-launch-controls button[aria-checked=true]{box-shadow:inset 3px 0 #bfaa72}
+.cape-launch-controls button:disabled{opacity:.55;cursor:default}
+.sovereign .phone-art>svg{overflow:visible}
+.sovereign .room-hotspot .phone-display{left:35%;top:24%;width:56%;height:45%;gap:calc(7px * var(--room-scale));transform:rotate(-3deg);font-size:calc(12px * var(--room-scale))}
+.sovereign[data-environment=cape] .room-hotspot .phone-display{left:27%;top:5%;width:66%;height:72%;font-size:calc(10px * var(--room-scale));background:linear-gradient(130deg,#172028,#080e16);clip-path:polygon(0 12%,87% 0,100% 93%,12% 100%);transform:none}
+.sovereign[data-environment=cape] .music-art>svg,.sovereign[data-environment=cape] .journal-art>svg,.sovereign[data-environment=cape] .desk-pen{visibility:hidden}
+.sovereign[data-environment=cape] .music-display{background:#070d12;left:10%;top:13%;width:73%;height:40%;font-size:calc(6px * var(--room-scale));transform:rotate(-3deg)}
+.sovereign[data-environment=cape] .brief-face{inset:0;padding:12% 8%;clip-path:polygon(9% 0,100% 8%,91% 100%,0 90%);background:linear-gradient(115deg,#d0b893,#e8d0aa);transform:none}
+.sovereign[data-environment=cape] .room-hotspot[data-object-id=journal],.sovereign[data-environment=cape] .room-hotspot[data-object-id=music]{filter:none}
+.cape-pad-clean{position:fixed;pointer-events:none;display:block;mask-image:linear-gradient(transparent,black 7%,black 95%,transparent);mask-size:100% 100%}
+@media(prefers-reduced-motion:reduce){#cape-launch-canvas{transition:none}}
+/* Follow the lamp's silhouette so its large bounding box cannot cover the phone. */
+.sovereign[data-environment=cape] .room-hotspot[data-object-id=lamp]{clip-path:polygon(41% 0,100% 0,100% 22%,51% 22%,27% 57%,41% 84%,56% 88%,58% 100%,0 100%,0 87%,18% 83%,8% 60%,30% 30%)}
+@media(max-width:760px){.sovereign .status-strip{display:flex!important;flex-wrap:wrap;gap:6px}.sovereign .status-strip>.status-pill,.sovereign .status-strip>.theme-toggle,.sovereign .status-strip>.sovereign-room-picker{flex:0 0 auto;min-width:max-content;white-space:normal}.cape-launch-controls{grid-template-columns:1fr}}

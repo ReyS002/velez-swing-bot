@@ -1,30 +1,35 @@
-import {mountRoomEnhancements} from "./sovereign-enhancements.js?v=1.12.0";
-import {statueOutline} from "./sovereign-statue.js?v=1.4.3";
-import {mountObjectMotion} from "./sovereign-motion.js?v=1.8.1";
-import {layoutStone,stoneFile} from "./sovereign-stone.js?v=1.11.0";
+import {mountRoomEnhancements} from "./sovereign-enhancements.js?v=1.13.0";
+import {statueOutline} from "./sovereign-statue.js?v=1.13.0";
+import {mountObjectMotion} from "./sovereign-motion.js?v=1.13.0";
+import {layoutStone,stoneFile} from "./sovereign-stone.js?v=1.13.0";
 import {mountRoomGuide} from "./sovereign-guide.js?v=1.10.0";
 import {mountPanelExperience,updatePanelExperience} from "./sovereign-panel.js?v=1.12.0";
+import {mountCapeLaunch} from "./sovereign-launch.js?v=1.13.0";
 // Shared Sovereign room shell. Keep byte-identical across bot editions.
-export const SOVEREIGN_VERSION = "1.12.0";
+export const SOVEREIGN_VERSION = "1.13.0";
 const ASSETS = "/dashboard/assets/sovereign/";
 const percent = ([x, y, w, h]) => ({ x: x / 100, y: y / 100, w: w / 100, h: h / 100 });
 export const ROOMS = {
-  media: { name: "Executive", modes: { night: "Cinema", day: "Focus" }, defaultTheme: "night", images: { night: "executive-cinema-clean.png", day: "executive-focus-clean.png" }, screen: [37.25,45.55,25.1,18.1], broadcast: [31.699,15.409,36.603,27.843], objects: { phone:[19.6,65.8,9.7,15.8],music:[32.5,66.8,4.6,11.7],journal:[68.8,76.4,10.8,8.7],keyboard:[38.5,74.6,19.2,6],trackpad:[58.6,75.6,5.9,4.8],lamp:[12,48,15,25],mission:[69.65,59.3,6.45,10.6],notes:[78.5,61,12,14],vault:[85.9,48.9,3.05,7.3],bookshelf:[8,16,3.3,9] } },
-  pacific: { name: "Hawaii", modes: { night: "Sunset", day: "Day" }, defaultTheme: "night", images: { night: "hawaii-sunset-clean.png", day: "hawaii-day-clean.png" }, screen: [33.7,40.65,27.2,20.65], broadcast: [4.8,21.6,11.6,25.5], objects: {phone:[13.5,67.5,11.6,17],music:[27,66.8,4.6,10.7],journal:[69.5,77,10.1,10.1],keyboard:[32.5,71.5,25,6.5],trackpad:[58.4,72.9,5.9,4.9],lamp:[7,47,16.5,24.5],mission:[70.7,55.9,7,11.5],notes:[81.5,55,11.5,17],vault:[19.1388,10.2019,4.3660,5.8448],bookshelf:[22,20,2.5,7]} },
-  tokyo: { name: "Tokyo", modes: { day: "Clear Day", night: "Blue Hour" }, defaultTheme: "day", images: { day: "tokyo-day-clean.png", night: "tokyo-night-clean.png" }, screen:[36.55,41.6,25.4,19.8], broadcast:[6.7,18.5,10.35,27.6], objects:{phone:[12,66,13.9,17.7],music:[31,65.5,5.4,12.5],journal:[66.9,74.1,10.6,10.4],keyboard:[36.8,72.6,19.5,5.8],trackpad:[57.3,74.1,6.7,4.6],lamp:[8.5,39,19.5,27.5],mission:[69.8,54.8,6.15,12.1],notes:[79.7,56.5,10.5,13.4],vault:[19.7368,37.4070,4.6053,4.9947],bookshelf:[19,18,2.8,8]} },
-  manhattan: { name:"New York", modes:{night:"Night",day:"Day"}, defaultTheme:"night", images:{night:"manhattan-night-clean.png",day:"manhattan-day-clean.png"},screen:[34.35,41.65,27.4,19.85],broadcast:[4.05,22.1,12.85,24.8],objects:{phone:[13.8,63,10.9,17],music:[27.8,66.3,4.4,11],journal:[69.6,73.6,8.9,9.4],keyboard:[33.3,72.5,24,6.3],trackpad:[58.7,73.3,6.5,4.8],lamp:[7.5,47,15.4,23.5],mission:[70.2,54.35,6.7,11.8],notes:[80.7,55.8,9.2,13.8],vault:[19.1986,37.1945,5.0239,6.5887],bookshelf:[19.2,23,5.5,2.5]} },
-  dubai: {name:"Dubai",modes:{day:"Day",night:"Night"},defaultTheme:"day",images:{day:"dubai-day-clean.png",night:"dubai-night-clean.png"},screen:[33.75,40.4,27.2,21.8],broadcast:[4.7,21.1,12.45,21.3],objects:{phone:[13.5,66.5,12,15.3],music:[27.3,66.6,4,10.7],journal:[71,75.1,9.6,9.5],keyboard:[32.3,72.2,24.8,6],trackpad:[57.5,73,7.2,4.5],lamp:[8,45.5,13.6,25.5],mission:[71,55.35,6.9,11.7],notes:[80.5,53.2,11,17.5],vault:[20.3947,56.4293,4.3660,4.7821],bookshelf:[19.5,47,5,6]}}
+  cape: {name:"Cape Canaveral",modes:{day:"Coastal Day",night:"Launch Twilight"},defaultTheme:"night",images:{day:"cape-day-clean.png",night:"cape-night-clean.png"},screen:[38.1,40.6,19.85,17.5],broadcast:[4.95,17.45,11.35,19.75],objects:{phone:[16.7,56.45,11.15,12.7],music:[28.3,57.6,3.4,9.25],journal:[66.45,68.05,8.65,7.5],keyboard:[37.2,66.65,18,4.65],trackpad:[56.4,67,5.3,4.2],lamp:[8.4,44.3,14.9,23.4],mission:[63.2,53.2,7.3,10.5],notes:[74.6,56.6,10.5,10.8],vault:[19.5,9.65,3.9,6.6],bookshelf:[21.7,18.4,2.8,7.6]}},
+  media: { name: "Executive", modes: { night: "Cinema", day: "Focus" }, defaultTheme: "night", images: { night: "executive-cinema-clean.png", day: "executive-focus-clean.png" }, screen: [37.25,45.55,25.1,18.1], broadcast: [31.699,15.409,36.603,27.843], objects: { phone:[19.2,69.6,11.6,11.8],music:[32.5,66.8,4.6,11.7],journal:[68.8,76.4,10.8,8.7],keyboard:[38.5,74.6,19.2,6],trackpad:[58.6,75.6,5.9,4.8],lamp:[12,48,15,25],mission:[69.65,59.3,6.45,10.6],notes:[78.5,61,12,14],vault:[85.9,48.9,3.05,7.3],bookshelf:[8,16,3.3,9] } },
+  pacific: { name: "Hawaii", modes: { night: "Sunset", day: "Day" }, defaultTheme: "night", images: { night: "hawaii-sunset-clean.png", day: "hawaii-day-clean.png" }, screen: [33.7,40.65,27.2,20.65], broadcast: [4.8,21.6,11.6,25.5], objects: {phone:[13.2,71.3,12.9,13.2],music:[27,66.8,4.6,10.7],journal:[69.5,77,10.1,10.1],keyboard:[32.5,71.5,25,6.5],trackpad:[58.4,72.9,5.9,4.9],lamp:[7,47,16.5,24.5],mission:[70.7,55.9,7,11.5],notes:[81.5,55,11.5,17],vault:[19.1388,10.2019,4.3660,5.8448],bookshelf:[22,20,2.5,7]} },
+  tokyo: { name: "Tokyo", modes: { day: "Clear Day", night: "Blue Hour" }, defaultTheme: "day", images: { day: "tokyo-day-clean.png", night: "tokyo-night-clean.png" }, screen:[36.55,41.6,25.4,19.8], broadcast:[6.7,18.5,10.35,27.6], objects:{phone:[12,70.4,14.2,13.3],music:[31,65.5,5.4,12.5],journal:[66.9,74.1,10.6,10.4],keyboard:[36.8,72.6,19.5,5.8],trackpad:[57.3,74.1,6.7,4.6],lamp:[8.5,39,19.5,27.5],mission:[69.8,54.8,6.15,12.1],notes:[79.7,56.5,10.5,13.4],vault:[19.7368,37.4070,4.6053,4.9947],bookshelf:[19,18,2.8,8]} },
+  manhattan: { name:"New York", modes:{night:"Night",day:"Day"}, defaultTheme:"night", images:{night:"manhattan-night-clean.png",day:"manhattan-day-clean.png"},screen:[34.35,41.65,27.4,19.85],broadcast:[4.05,22.1,12.85,24.8],objects:{phone:[13.5,67.2,12.6,12.8],music:[27.8,66.3,4.4,11],journal:[69.6,73.6,8.9,9.4],keyboard:[33.3,72.5,24,6.3],trackpad:[58.7,73.3,6.5,4.8],lamp:[7.5,47,15.4,23.5],mission:[70.2,54.35,6.7,11.8],notes:[80.7,55.8,9.2,13.8],vault:[19.1986,37.1945,5.0239,6.5887],bookshelf:[19.2,23,5.5,2.5]} },
+  dubai: {name:"Dubai",modes:{day:"Day",night:"Night"},defaultTheme:"day",images:{day:"dubai-day-clean.png",night:"dubai-night-clean.png"},screen:[33.75,40.4,27.2,21.8],broadcast:[4.7,21.1,12.45,21.3],objects:{phone:[13.1,69.2,13,12.6],music:[27.3,66.6,4,10.7],journal:[71,75.1,9.6,9.5],keyboard:[32.3,72.2,24.8,6],trackpad:[57.5,73,7.2,4.5],lamp:[8,45.5,13.6,25.5],mission:[71,55.35,6.9,11.7],notes:[80.5,53.2,11,17.5],vault:[20.3947,56.4293,4.3660,4.7821],bookshelf:[19.5,47,5,6]}}
 };
 // Localized artwork regions in source pixels: cleared shelf, calendar/sculpture arrangement, safe.
+// A null slot preserves the overlay ordering while leaving that part of the room artwork untouched.
 const ROOM_ART = {
+ cape:[],
  media:[[130,349,127,93],[1048,535,505,207]],
  pacific:[[306,260,113,94],[1027,500,550,217],[307,78,110,87]],
  tokyo:[[316,254,107,78],[1057,492,503,213],[316,337,108,74]],
- manhattan:[[316,332,110,84],[1040,486,511,212],[318,341,94,82,318,135]],
+ manhattan:[null,[1040,486,511,212],[318,341,94,82,318,135]],
  dubai:[[320,350,112,83],[1030,496,529,206],[320,518,113,64]]
 };
 // Interior calendar faces and sculpture bounds, calibrated per lighting artwork.
 const SPACING_LAYOUT = {
+ cape:{day:{mission:[1064,505,114,91],notes:[1252,531,173,96]},night:{mission:[1064,505,114,91],notes:[1252,531,173,96]}},
  media:{day:{mission:[1090,557,105,105],notes:[1257,582,230,123]},night:{mission:[1072,557,105,105],notes:[1257,583,230,122]}},
  pacific:{day:{mission:[1080,525,110,105],notes:[1280,563,209,116]},night:{mission:[1053,525,110,105],notes:[1274,563,208,116]}},
  tokyo:{day:{mission:[1084,517,108,108],notes:[1275,542,233,124]},night:{mission:[1086,517,102,108],notes:[1255,540,240,125]}},
@@ -35,15 +40,22 @@ let visibleArtwork=null;
 function layoutRoomArtwork(){
  if(!visibleArtwork)return;
  const plate=document.querySelector('.photo-room'),r=roomRect();
+ let pad=plate.querySelector('.cape-pad-clean');
+ if(visibleArtwork.id==='cape'&&visibleArtwork.file.includes('night')){
+  if(!pad){pad=document.createElement('span');pad.className='cape-pad-clean';plate.append(pad);}
+  plate.style.backgroundImage=`url("${ASSETS}cape-approved-night.png")`;
+  Object.assign(pad.style,{left:r.left+1035*r.width/1672+'px',top:r.top+158*r.height/941+'px',width:305*r.width/1672+'px',height:212*r.height/941+'px',backgroundImage:`url("${ASSETS}cape-night-clean.png")`,backgroundSize:`${r.width}px ${r.height}px`,backgroundPosition:`${-1035*r.width/1672}px ${-158*r.height/941}px`});
+ }else pad?.remove();
  const regions=ROOM_ART[visibleArtwork.id];
  let patches=[...plate.querySelectorAll('.room-art-patch')];
  if(patches.length!==regions.length){patches.forEach(e=>e.remove());patches=regions.map(()=>{const e=document.createElement('span');e.className='room-art-patch';e.setAttribute('aria-hidden','true');plate.append(e);return e;});}
- regions.forEach(([x,y,w,h,sx=x,sy=y],i)=>{const e=patches[i];e.style.transformOrigin="0 0";e.style.transform=visibleArtwork.id==="manhattan"&&i===2?"skewY(-7.4deg)":"none";e.style.clipPath=visibleArtwork.id==="manhattan"&&i===2?"polygon(2% 4%,96% 23%,96% 96%,2% 85%)":"none";Object.assign(e.style,{left:(r.left+x*r.width/1672)+'px',top:(r.top+y*r.height/941)+'px',width:w*r.width/1672+'px',height:h*r.height/941+'px',backgroundImage:`url("${ASSETS}${i===1?"spacing":"objects"}-${visibleArtwork.file}?v=1.4.3")`,backgroundSize:`${r.width}px ${r.height}px`,backgroundPosition:`${-sx*r.width/1672}px ${-sy*r.height/941}px`});});
+ regions.forEach((region,i)=>{const e=patches[i];if(!region){e.hidden=true;return;}e.hidden=false;const [x,y,w,h,sx=x,sy=y]=region;e.style.transformOrigin="0 0";e.style.transform=visibleArtwork.id==="manhattan"&&i===2?"skewY(-7.4deg)":"none";e.style.clipPath=visibleArtwork.id==="manhattan"&&i===2?"polygon(2% 4%,96% 23%,96% 96%,2% 85%)":"none";Object.assign(e.style,{left:(r.left+x*r.width/1672)+'px',top:(r.top+y*r.height/941)+'px',width:w*r.width/1672+'px',height:h*r.height/941+'px',backgroundImage:`url("${ASSETS}${i===1?"spacing":"objects"}-${visibleArtwork.file}?v=1.4.3")`,backgroundSize:`${r.width}px ${r.height}px`,backgroundPosition:`${-sx*r.width/1672}px ${-sy*r.height/941}px`});});
  layoutStone(plate,visibleArtwork.id,visibleArtwork.file,r,SPACING_LAYOUT[visibleArtwork.id][visibleArtwork.file.includes('day')||visibleArtwork.file.includes('focus')?'day':'night']);
 }
 // Clockwise wall-plane corners in the original 1672 × 941 room artwork.
 // Executive faces the viewer; the scenic-room walls recede toward the window.
 const BROADCAST_CORNERS = {
+  cape: [[83,167],[271,195],[271,348],[83,352]],
   media: [[530,145],[1142,145],[1142,407],[530,407]],
   pacific: [[75,197],[278,220],[278,432],[75,449]],
   tokyo: [[105,160],[294,197],[294,434],[105,445]],
@@ -76,8 +88,9 @@ export function roomRegions() { const r=ROOMS[roomId]; return {screen:percent(r.
 export function roomHotspots() {
  const placed=SPACING_LAYOUT[roomId][lighting[roomId]||ROOMS[roomId].defaultTheme];
  const objects={...ROOMS[roomId].objects};
- objects.research={media:[75.8,90.5,14,4.5],pacific:[80,94,17,4.4],tokyo:[81.5,92,13.7,3.5],manhattan:[79.7,91.5,10.5,3.7],dubai:[81.4,92,10.2,3.5]}[roomId];
+ objects.research={cape:[74,81,15,7],media:[75.8,90.5,14,4.5],pacific:[80,94,17,4.4],tokyo:[81.5,92,13.7,3.5],manhattan:[79.7,91.5,10.5,3.7],dubai:[81.4,92,10.2,3.5]}[roomId];
  const [jx,jy,jw,jh]=objects.journal;objects.pen=[jx+jw*1.04,jy+jh*.2,jw*.31,jh*.68];
+ if(roomId==='cape')objects.pen=[74.7,69.3,3.8,6.1];
  if(roomId==="media")objects.clock=[85.8,18.7,3.3,7.3];
  return Object.entries(objects).map(([id,rect])=>{
   let bounds=percent(rect);
@@ -88,7 +101,7 @@ export function roomHotspots() {
 export function objectMarkup(definition) {
   const id=definition.id;
   if(id==="notes")return statueOutline(roomId,lighting[roomId]||ROOMS[roomId].defaultTheme,definition.w*1672,definition.h*941);
-  if(id==="phone") return `<span class="prop-art phone-art"><svg viewBox="80 145 1100 980" aria-hidden="true"><defs><clipPath id="phone-silhouette"><path d="M86 978 L98 930 L111 881 L133 801 L142 784 L157 278 Q163 230 208 224 L809 222 Q853 225 865 275 L878 210 Q885 160 929 155 L1032 153 Q1078 156 1087 199 L1116 800 L1144 881 L1163 950 L1168 978 L1168 1048 Q1168 1073 1139 1090 Q1128 1103 1109 1108 L149 1108 Q128 1102 116 1088 Q88 1069 87 1048 Z"/></clipPath></defs><image href="${ASSETS}phone-glass.png" width="1254" height="1254" clip-path="url(#phone-silhouette)"/></svg><span class="phone-display"><small>WINSTON</small><strong>Start call</strong><span>Brief · Research</span></span></span><span class="prop-caption">Winston</span>`;
+  if(id==="phone") return `<span class="prop-art phone-art">${roomId==='cape'?'<svg viewBox="0 0 1 1" aria-hidden="true"></svg>':`<svg viewBox="0 0 1415 1061" aria-hidden="true"><image href="${ASSETS}phone-coastal.png" width="1415" height="1061"/></svg>`}<span class="phone-display"><small>WINSTON</small><strong>Start call</strong><span>Brief · Research</span></span></span><span class="prop-caption">Winston</span>`;
   if(id==="music") return `<span class="prop-art music-art"><svg viewBox="58 46 910 1420" aria-hidden="true"><defs><clipPath id="player-silhouette"><path d="M160 129 Q162 49 235 50 L795 50 Q865 51 866 125 L884 1148 Q926 1160 939 1205 L963 1310 L963 1394 Q963 1447 900 1457 L119 1457 Q61 1447 61 1395 L61 1310 L84 1213 Q95 1171 139 1154 Z"/></clipPath></defs><image href="${ASSETS}pocket-player.png" width="1024" height="1536" clip-path="url(#player-silhouette)"/></svg><span class="music-display"><small>APPLE MUSIC</small><span class="prop-now-playing">Your music</span></span></span><span class="prop-caption">Music</span>`;
   if(id==="journal") return `<span class="prop-art journal-art"><svg viewBox="100 130 1350 768" aria-hidden="true"><defs><clipPath id="journal-silhouette"><path d="M167 243 L901 138 Q935 135 952 150 L1415 620 Q1448 661 1416 672 L1438 720 Q1448 743 1419 752 L518 890 Q487 898 477 878 L124 374 Q84 300 137 260 Z"/></clipPath></defs><image href="${ASSETS}journal-no-pen.png" width="1536" height="1024" clip-path="url(#journal-silhouette)"/></svg></span><span class="prop-caption">Journal</span>`;
   if(id==="mission") return `<span class="brief-face"><strong>SESSION BRIEF</strong><span>Mission</span><span>Calendar</span><span>Watchlist</span></span>`;
@@ -124,7 +137,7 @@ export function syncRoomTheme(theme) {
   const plate=$(".photo-room");
   if(plate){const token=++preloadToken,id=roomId,file=ROOMS[id].images[lighting[id]];
     const load=src=>new Promise((resolve,reject)=>{const image=new Image();image.onload=resolve;image.onerror=reject;image.src=src;});
-    Promise.all([load(url),load(ASSETS+'objects-'+file+'?v=1.4.3'),load(ASSETS+'spacing-'+file+'?v=1.4.3'),...(stoneFile(id,file)?[load(ASSETS+stoneFile(id,file)+'?v=1.11.0')]:[])]).then(()=>{if(token!==preloadToken)return;plate.style.backgroundImage=`url("${url}")`;visibleArtwork={id,file};layoutRoomArtwork();document.body.dataset.roomAsset=file;layout();}).catch(()=>{if(token!==preloadToken)return;plate.style.backgroundImage="none";plate.querySelectorAll(".room-art-patch,.room-stone").forEach(element=>element.remove());visibleArtwork=null;document.body.dataset.roomAsset="unavailable";announce("This room image could not load. Try switching rooms again.");});
+    Promise.all([load(url),...(id==='cape'?(file.includes('night')?[load(ASSETS+'cape-approved-night.png')]:[]):[load(ASSETS+'objects-'+file+'?v=1.4.3'),load(ASSETS+'spacing-'+file+'?v=1.4.3')]),...(stoneFile(id,file)?[load(ASSETS+stoneFile(id,file)+'?v=1.11.0')]:[])]).then(()=>{if(token!==preloadToken)return;plate.style.backgroundImage=`url("${url}")`;visibleArtwork={id,file};layoutRoomArtwork();document.body.dataset.roomAsset=file;layout();}).catch(()=>{if(token!==preloadToken)return;plate.style.backgroundImage="none";plate.querySelectorAll(".room-art-patch,.room-stone").forEach(element=>element.remove());visibleArtwork=null;document.body.dataset.roomAsset="unavailable";announce("This room image could not load. Try switching rooms again.");});
   }
   const picker=$("#sovereign-room-select");if(picker)picker.value=roomId;
   const toggle=$("#theme-toggle");if(toggle){toggle.innerHTML=`<span>${ROOMS[roomId].modes[lighting[roomId]]}</span><i data-lucide="sun-moon"></i>`;toggle.setAttribute("aria-label",`Lighting: ${ROOMS[roomId].modes[lighting[roomId]]}. Switch to ${ROOMS[roomId].modes[lighting[roomId]==="day"?"night":"day"]}`);}
@@ -196,5 +209,6 @@ export function mountSovereign(options) {
   mountObjectMotion({open:openPanel,roomRect,roomSnapshot});
   mountRoomGuide({busy:options.guideBusy});
   mountRoomEnhancements({open:openPanel,roomRect,roomSnapshot,assetsReady:()=>document.body.dataset.roomAsset===ROOMS[roomId].images[lighting[roomId]]});
+  mountCapeLaunch({roomRect,roomSnapshot});
   window.__sovereign={version:SOVEREIGN_VERSION,rooms:ROOMS,room:roomSnapshot,selectRoom,regions:roomRegions,broadcastCorners,hotspots:roomHotspots,rect:roomRect,open:(id)=>openPanel(id),config:()=>config};
 }

@@ -70,8 +70,8 @@ def test_v623_phone_art_and_winston_voice_lock_are_wired():
     assert 'id="desk-phone-object"' not in html
     assert "deskPhoneObject" not in js
     assert "phoneObjectRegion" not in js
-    assert "phone-glass.png" in room_js
-    assert 'export const SOVEREIGN_VERSION = "1.12.0";' in room_js
+    assert "phone-coastal.png" in room_js
+    assert 'export const SOVEREIGN_VERSION = "1.13.0";' in room_js
     assert "body.sovereign:not([data-room-asset]) .photo-room" in sovereign_css
     assert "opacity .18s ease" in sovereign_css
     assert server.count('FileResponse(dashboard_index, headers={"Cache-Control": "no-store"})') == 2
@@ -91,7 +91,7 @@ def test_v623_phone_art_and_winston_voice_lock_are_wired():
     assert "Waiting for microphone permission" in listening
 
 
-def test_room_regions_keep_realistic_objects_in_all_five_rooms():
+def test_room_regions_keep_realistic_objects_in_all_six_rooms():
     import json
     import re
 
@@ -100,7 +100,7 @@ def test_room_regions_keep_realistic_objects_in_all_five_rooms():
     literal = re.sub(r'([,{]\s*)([A-Za-z_]\w*)\s*:', r'\1"\2":', literal)
     # Decode the first object without depending on which declaration follows it.
     rooms, _ = json.JSONDecoder().raw_decode(literal)
-    assert set(rooms) == {"media", "pacific", "tokyo", "manhattan", "dubai"}
+    assert set(rooms) == {"cape", "media", "pacific", "tokyo", "manhattan", "dubai"}
     for room in rooms.values():
         objects = room["objects"]
         assert objects["phone"][0] < objects["music"][0]
@@ -129,8 +129,8 @@ def test_room_regions_keep_realistic_objects_in_all_five_rooms():
 
 
 def test_current_phone_asset_is_valid_truecolor_png():
-    payload = (STATIC / "sovereign" / "phone-glass.png").read_bytes()
+    payload = (STATIC / "sovereign" / "phone-coastal.png").read_bytes()
     assert payload[:8] == b"\x89PNG\r\n\x1a\n"
-    assert payload[25] == 2  # PNG truecolor; the SVG applies the silhouette clip.
+    assert payload[25] == 6  # Native alpha preserves the handset and fine coiled cord.
     room_js = (STATIC / "sovereign-room.js").read_text(encoding="utf-8")
-    assert 'clipPath id="phone-silhouette"' in room_js
+    assert "phone-coastal.png" in room_js
