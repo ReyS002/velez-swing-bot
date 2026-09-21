@@ -58,7 +58,7 @@ export function mountCapeLaunch({ roomRect, roomSnapshot }) {
   }
   function updateControls() {
     toggle.setAttribute('aria-checked', String(enabled)); toggle.textContent = `Launch animation: ${enabled ? 'On' : 'Off'}`;
-    preview.disabled = roomSnapshot().id !== 'cape' || reduced.matches || document.body.dataset.objectMotion === 'off' || elapsed !== null;
+    preview.disabled = !canAnimate() || elapsed !== null;
     status.textContent = reduced.matches ? 'Paused for reduced motion.' : document.body.dataset.objectMotion === 'off' ? 'Enable Object motion to preview launches.' : roomSnapshot().id !== 'cape' ? 'Select Cape Canaveral to preview a launch.' : elapsed !== null ? 'Launch in progress · smoke will clear naturally.' : enabled ? 'Next launch after 10–15 minutes of visible room time.' : 'Automatic launches off. Preview once whenever you like.';
   }
   function begin() {

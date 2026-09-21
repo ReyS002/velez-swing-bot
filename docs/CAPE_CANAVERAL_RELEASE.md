@@ -1,4 +1,4 @@
-# Cape Canaveral desk release — 1.13.0
+# Cape Canaveral desk release — 1.13.1
 
 Cape Canaveral is the sixth room, with Coastal Day and Launch Twilight lighting. The twilight interior uses the approved original art; only the distant pad is cleaned for moving rocket, exhaust and smoke. Daytime retains the same furniture positions.
 

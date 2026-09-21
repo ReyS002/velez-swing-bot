@@ -4,9 +4,9 @@ import {mountObjectMotion} from "./sovereign-motion.js?v=1.13.0";
 import {layoutStone,stoneFile} from "./sovereign-stone.js?v=1.13.0";
 import {mountRoomGuide} from "./sovereign-guide.js?v=1.10.0";
 import {mountPanelExperience,updatePanelExperience} from "./sovereign-panel.js?v=1.12.0";
-import {mountCapeLaunch} from "./sovereign-launch.js?v=1.13.0";
+import {mountCapeLaunch} from "./sovereign-launch.js?v=1.13.1";
 // Shared Sovereign room shell. Keep byte-identical across bot editions.
-export const SOVEREIGN_VERSION = "1.13.0";
+export const SOVEREIGN_VERSION = "1.13.1";
 const ASSETS = "/dashboard/assets/sovereign/";
 const percent = ([x, y, w, h]) => ({ x: x / 100, y: y / 100, w: w / 100, h: h / 100 });
 export const ROOMS = {
