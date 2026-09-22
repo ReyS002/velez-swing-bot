@@ -2,7 +2,7 @@
 :root { --sovereign-ink:#101516; --sovereign-panel:rgba(16,22,23,.96); --sovereign-gold:#d5b67e; --sovereign-line:rgba(213,182,126,.25); --sovereign-muted:#b5bdbb; --sovereign-ease:cubic-bezier(.2,.8,.2,1); --room-scale:1; }
 body.sovereign { background:#080c0d; color:#f2eee5; font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif; }
 .sovereign .photo-room { position:fixed;inset:0;background-size:contain!important;background-position:center!important;background-repeat:no-repeat!important;filter:none!important;transform:none!important;transition:opacity .18s ease; }
-body.sovereign:not([data-room-asset]) .photo-room { opacity:0; }
+body.sovereign:not([data-room-asset]) .photo-room { opacity:0;transition:none; }
 body.sovereign:not([data-room-asset]) :is(#room-hotspots,#screen-terminal,.status-strip,#broadcast-stage,.sovereign-dock) { opacity:0!important;visibility:hidden!important;pointer-events:none!important; }
 .sovereign #app-shell::before,.sovereign #app-shell::after,.sovereign .photo-room::before,.sovereign .photo-room::after { display:none!important; }
 .sovereign #app-shell > :not(.photo-room):not(#room-hotspots):not(#screen-terminal):not(.topbar):not(#detail-panel):not(#hover-tag):not(#winston-audio-player):not(#broadcast-stage):not(#broadcast-scrim):not(.sovereign-dock):not(#sovereign-tools):not(#sovereign-chart-close):not(#sovereign-announcer):not(#pro-console) { display:none!important; }

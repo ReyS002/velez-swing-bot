@@ -6,7 +6,7 @@ import {mountRoomGuide} from "./sovereign-guide.js?v=1.10.0";
 import {mountPanelExperience,updatePanelExperience} from "./sovereign-panel.js?v=1.12.0";
 import {mountCapeLaunch} from "./sovereign-launch.js?v=1.13.1";
 // Shared Sovereign room shell. Keep byte-identical across bot editions.
-export const SOVEREIGN_VERSION = "1.14.1";
+export const SOVEREIGN_VERSION = "1.14.2";
 const ASSETS = "/dashboard/assets/sovereign/";
 const percent = ([x, y, w, h]) => ({ x: x / 100, y: y / 100, w: w / 100, h: h / 100 });
 export const ROOMS = {
@@ -142,6 +142,10 @@ export function syncRoomTheme(theme) {
   const url=ASSETS+ROOMS[roomId].images[lighting[roomId]]+"?v=1.4.3";
   const plate=$(".photo-room");
   if(plate){const token=++preloadToken,id=roomId,file=ROOMS[id].images[lighting[id]];
+    // Clear the prior room before loading the next plate. The black Sovereign
+    // shell and logo remain visible, but no stale room or partially positioned
+    // overlay can flash while a cached or new scene finishes decoding.
+    document.body.removeAttribute("data-room-asset");
     const load=src=>new Promise((resolve,reject)=>{const image=new Image();image.onload=resolve;image.onerror=reject;image.src=src;});
     Promise.all([load(url),...(id==='manhattan'?[load(ASSETS+'shelf-fixed-'+file+'?v=1.4.3')]:[]),...(id==='cape'?[load(ASSETS+`cape-${file.includes('night')?'night':'day'}-desktop-clear.png`),...(file.includes('night')?[load(ASSETS+'cape-approved-night.png')]:[])]:[load(ASSETS+'objects-'+file+'?v=1.4.3'),load(ASSETS+'spacing-'+file+'?v=1.4.3')]),...(stoneFile(id,file)?[load(ASSETS+stoneFile(id,file)+'?v=1.11.0')]:[])]).then(()=>{if(token!==preloadToken)return;plate.style.backgroundImage=`url("${url}")`;visibleArtwork={id,file};layoutRoomArtwork();document.body.dataset.roomAsset=file;layout();}).catch(()=>{if(token!==preloadToken)return;plate.style.backgroundImage="none";plate.querySelectorAll(".room-art-patch,.room-stone,.cape-desktop-clear,.cape-pad-clean").forEach(element=>element.remove());visibleArtwork=null;document.body.dataset.roomAsset="unavailable";announce("This room image could not load. Try switching rooms again.");});
   }
@@ -152,8 +156,10 @@ export function syncRoomTheme(theme) {
 export function selectRoom(id) {
   if(!ROOMS[id])return;
   roomId=id;localStorage.setItem("bull-pilot-environment",id);
-  adapter?.setTheme(lighting[id]||ROOMS[id].defaultTheme);
-  syncRoomTheme(lighting[id]||ROOMS[id].defaultTheme);
+  // The edition adapter already calls syncRoomTheme when it applies lighting.
+  // Calling it again races two loaders and can briefly expose a half-settled room.
+  if(adapter?.setTheme)adapter.setTheme(lighting[id]||ROOMS[id].defaultTheme);
+  else syncRoomTheme(lighting[id]||ROOMS[id].defaultTheme);
   adapter?.buildHotspots();layout();announce(`${ROOMS[id].name}, ${ROOMS[id].modes[lighting[id]]}`);
 }
 function announce(message){const region=$("#sovereign-announcer");if(region)region.textContent=message;}
