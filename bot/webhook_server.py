@@ -1407,6 +1407,139 @@ def _create_broker():
     return SimulatedBroker()
 
 
+
+# --- BEGIN YAHOO-SYMBOL-MAP 2026-09-21 ---
+# Fail-fast Yahoo ticker resolution for TV FX/crypto/futures spellings.
+# Equities unchanged; futures/index CFD roots skipped (no dated-contract guessing).
+# Does NOT alter watchlist allowlist, risk caps, or Tradovate dated map.
+# IMPORTANT: ThreadPoolExecutor must shutdown(wait=False) or timeout is useless.
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as _YahooFuturesTimeout
+import re as _yahoo_re
+from typing import Callable as _YahooCallable, Optional as _YahooOptional
+
+_YAHOO_SKIP_FUTURES_ROOTS = frozenset({
+    "ES", "MES", "NQ", "MNQ", "YM", "MYM", "RTY", "M2K",
+    "GC", "MGC", "SI", "SIL", "CL", "MCL", "NG", "QG",
+    "ZB", "ZN", "ZF", "ZT", "UB", "TN",
+    "6E", "6J", "6B", "6A", "6C", "6S", "6N",
+    "BTC", "ETH",  # futures roots; spot crypto handled as BTCUSD etc.
+    # Cash / CFD indices — bare TV names hang Yahoo; skip (fail-fast)
+    "US30", "US100", "US500", "NAS100", "SPX", "SPX500", "NDX", "DJI",
+    "DE40", "UK100", "JP225", "HK50", "AU200", "EU50", "GER40", "FRA40",
+})
+_YAHOO_CRYPTO_BASES = frozenset({
+    "BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "AVAX", "LINK", "DOT", "MATIC",
+    "LTC", "BCH", "UNI", "ATOM", "NEAR", "APT", "ARB", "OP", "SUI", "PEPE",
+    "SHIB", "TON", "TRX", "XLM", "FIL", "AAVE", "CRV",
+})
+_YAHOO_FX_CCY = frozenset({
+    "EUR", "GBP", "AUD", "NZD", "USD", "CAD", "CHF", "JPY", "SEK", "NOK",
+    "MXN", "ZAR", "CNH", "HKD", "SGD",
+})
+_YF_TIMEOUT_SEC = 1.5
+
+
+def _yahoo_strip_tv_prefix(symbol: str) -> str:
+    s = str(symbol or "").strip().upper()
+    if ":" in s:
+        s = s.split(":")[-1]
+    s = s.replace("/", "").replace("-", "").replace("=", "")
+    if s.endswith("1!"):
+        s = s[:-2]
+    elif s.endswith("!"):
+        s = s[:-1]
+    return s
+
+
+def resolve_yahoo_ticker(symbol: str) -> _YahooOptional[str]:
+    """Map TV symbol -> Yahoo ticker, or None to skip Yahoo (fail-fast)."""
+    raw = _yahoo_strip_tv_prefix(symbol)
+    if not raw:
+        return None
+    if raw in _YAHOO_SKIP_FUTURES_ROOTS:
+        return None
+    if _yahoo_re.fullmatch(r"[A-Z]{1,4}[FGHJKMNQUVXZ]\d{1,2}", raw):
+        return None
+    # FX pairs before crypto USD-suffix (EURUSD must not become EUR-USD)
+    if (
+        len(raw) == 6
+        and raw[:3] in _YAHOO_FX_CCY
+        and raw[3:] in _YAHOO_FX_CCY
+        and raw[:3] != raw[3:]
+    ):
+        return f"{raw}=X"
+    for quote in ("USDT", "USD", "USDC", "PERP"):
+        if raw.endswith(quote) and len(raw) > len(quote):
+            base = raw[: -len(quote)]
+            # Require known crypto base — do not treat FX left-legs as crypto
+            if base in _YAHOO_CRYPTO_BASES:
+                return f"{base}-USD"
+    if raw in _YAHOO_CRYPTO_BASES:
+        return f"{raw}-USD"
+    if str(symbol).endswith("=X") or "-" in str(symbol):
+        return str(symbol).strip()
+    return raw
+
+
+def yahoo_fetch_bars_safe(
+    symbol: str,
+    timeframe: str,
+    *,
+    fetch_impl: _YahooCallable,
+    timeout_sec: float = _YF_TIMEOUT_SEC,
+):
+    import pandas as _pd
+
+    yahoo = resolve_yahoo_ticker(symbol)
+    if yahoo is None:
+        return _pd.DataFrame()
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        fut = pool.submit(fetch_impl, yahoo, timeframe)
+        frame = fut.result(timeout=timeout_sec)
+        if frame is None:
+            return _pd.DataFrame()
+        return frame
+    except _YahooFuturesTimeout:
+        return _pd.DataFrame()
+    except Exception:
+        return _pd.DataFrame()
+    finally:
+        # wait=False is required — otherwise timeout still blocks on Yahoo exit
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+def yahoo_download_safe(symbol: str, **kwargs):
+    import pandas as _pd
+
+    yahoo = resolve_yahoo_ticker(symbol)
+    if yahoo is None:
+        return _pd.DataFrame()
+    try:
+        import yfinance as yf
+    except ImportError:
+        return _pd.DataFrame()
+
+    def _run():
+        return yf.download(yahoo, progress=False, **kwargs)
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        fut = pool.submit(_run)
+        df = fut.result(timeout=_YF_TIMEOUT_SEC)
+        if df is None:
+            return _pd.DataFrame()
+        return df
+    except _YahooFuturesTimeout:
+        return _pd.DataFrame()
+    except Exception:
+        return _pd.DataFrame()
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+# --- END YAHOO-SYMBOL-MAP 2026-09-21 ---
+
 class TradingViewWebhookEngine:
     def __init__(self, config: dict, broker: Optional[Any] = None) -> None:
         self.config = config
@@ -1772,28 +1905,71 @@ class TradingViewWebhookEngine:
         self._remember_decisions(decisions, alert_id)
         return {"ok": all(d.status not in {"rejected", "error"} for d in decisions), "decisions": [d.__dict__ for d in decisions]}
 
-    def _check_watchlist_allowlist(self, payload: dict) -> Optional["WebhookDecision"]:
-        """Reject TradingView-sourced signals for symbols not in the active watchlist.
 
-        Prevents stray/rogue Pine alerts (e.g. a forgotten alert on a chart that
-        isn't part of the curated watchlist) from placing trades that bypass the
-        volume/volatility screening applied to config.yaml's scanner.symbols list.
-        Internal scanner-originated signals never hit this path since they only
-        ever loop over scanner_config['symbols'] to begin with.
+    def _check_watchlist_allowlist(self, payload: dict) -> Optional["WebhookDecision"]:
+        """Reject TradingView-sourced signals for symbols not on the Desk watchlist.
+
+        Allowed set is the enabled Desk journal watchlist, plus config/scanner
+        symbols. Incoming symbols are normalized the same way as `_symbol`
+        (exchange prefix / continuous `1!` stripped). Slashless aliases are
+        accepted so EUR/USD and EURUSD match. Risk caps (max open positions,
+        dollar risk, etc.) still apply after this gate.
         """
         try:
             symbol = self._symbol(payload)
         except Exception:
             return None  # Let normal payload validation handle malformed symbol fields
-        allowed = set(self.scanner_config.get("symbols", []) or [])
-        allowed |= set(self.symbol_config.keys())
-        if allowed and symbol not in allowed:
+
+        allowed = self._watchlist_allowlist_symbols()
+        # Also accept slashless / continuous-normalized forms of the incoming symbol
+        candidates = {symbol, symbol.replace("/", "")}
+        if allowed and candidates.isdisjoint(allowed):
             return WebhookDecision(
                 status="rejected",
                 reason=f"symbol_not_in_watchlist:{symbol}",
                 symbol=symbol,
             )
         return None
+
+    def _watchlist_allowlist_symbols(self) -> set[str]:
+        """Enabled Desk watchlist + config/scanner symbols, normalized for matching."""
+        import re as _re
+
+        allowed: set[str] = set()
+
+        def _add(raw: object) -> None:
+            s = str(raw or "").upper().strip().replace(" ", "")
+            if not s:
+                return
+            s = _re.sub(r"^[A-Z0-9_]+:", "", s)
+            s = _re.sub(r"\d+!$", "", s)
+            s = _re.sub(r"!$", "", s)
+            allowed.add(s)
+            allowed.add(s.replace("/", ""))
+            # BTCUSD <-> BTC style aliases for crypto quotes
+            if s.endswith("USD") and "/" not in s and len(s) > 3:
+                base = s[:-3]
+                if base.isalpha() and 2 <= len(base) <= 5 and base not in {"USD", "USDT"}:
+                    allowed.add(base)
+            if s.isalpha() and 2 <= len(s) <= 5 and s not in {"SPY", "QQQ", "IWM", "ES", "NQ", "YM", "GC", "SI", "MES", "MNQ"}:
+                # only add USD suffix alias for short crypto-like bases already on list as BTC
+                pass
+            if "/" not in s and s.isalpha() and len(s) <= 5:
+                # if watchlist has BTC, also accept BTCUSD
+                allowed.add(s + "USD")
+
+        try:
+            for item in self.journal.list_watchlist(include_disabled=False):
+                if item.get("enabled", True) is False:
+                    continue
+                _add(item.get("symbol"))
+        except Exception:
+            pass
+        for item in self.scanner_config.get("symbols", []) or []:
+            _add(item)
+        for key in self.symbol_config.keys():
+            _add(key)
+        return {x for x in allowed if x}
 
     def dashboard_state(self) -> dict:
         broker_status = self.broker.validate_connection() if self.broker.is_configured() else {"ok": False, "reason": "missing_credentials"}
@@ -3177,7 +3353,7 @@ class TradingViewWebhookEngine:
                 "1day": "D", "1d": "D", "day": "D", "daily": "D",
             }
             _tf_code = _tf_map.get(_tf_raw, timeframe if str(timeframe) in {"1","2","3","5","10","15","30","60","120","240","D","W","M"} else "15")
-            df = fetch_bars_yfinance(symbol, _tf_code, days_back=10)
+            df = yahoo_fetch_bars_safe(symbol, _tf_code, days_back=10, fetch_impl=fetch_bars_yfinance)
             if df is None or df.empty:
                 return []
             bars: List[Bar] = []
@@ -3436,7 +3612,7 @@ class TradingViewWebhookEngine:
                 log_event(self.logger, "top_down_alpaca_daily_fallback", {"symbol": symbol, "reason": str(exc)[:160]})
         from .core.trifecta import fetch_bars_yfinance
 
-        frame = fetch_bars_yfinance(symbol, "D", days_back=max(days * 2, 120))
+        frame = yahoo_fetch_bars_safe(symbol, "D", days_back=max(days * 2, 120), fetch_impl=fetch_bars_yfinance)
         if frame is None or frame.empty:
             return []
         bars: List[Bar] = []
@@ -3521,7 +3697,7 @@ class TradingViewWebhookEngine:
     def _yfinance_daily_close(self, symbol: str) -> dict:
         from .core.trifecta import fetch_bars_yfinance
 
-        frame = fetch_bars_yfinance(symbol, "D", days_back=10)
+        frame = yahoo_fetch_bars_safe(symbol, "D", days_back=10, fetch_impl=fetch_bars_yfinance)
         if frame is None or frame.empty or "Close" not in frame:
             raise RuntimeError("yfinance_daily_bars_unavailable")
         now_et = datetime.now(ZoneInfo("America/New_York"))
@@ -3634,7 +3810,7 @@ class TradingViewWebhookEngine:
         from .core.trifecta import fetch_bars_yfinance
 
         for interval in ("1", "5", "D"):
-            frame = fetch_bars_yfinance(symbol, interval, days_back=5)
+            frame = yahoo_fetch_bars_safe(symbol, interval, days_back=5, fetch_impl=fetch_bars_yfinance)
             if frame is None or frame.empty or "Close" not in frame:
                 continue
             cleaned = frame.dropna(subset=["Close"])
@@ -5691,7 +5867,7 @@ class TradingViewWebhookEngine:
     def _fetch_mentor_yfinance_bars(self, *, symbol: str, timeframe: str, limit: int) -> List[Bar]:
         from .core.trifecta import fetch_bars_yfinance
         tf_code = self._yfinance_timeframe_code(timeframe)
-        frame = fetch_bars_yfinance(symbol, tf_code, days_back=10)
+        frame = yahoo_fetch_bars_safe(symbol, tf_code, days_back=10, fetch_impl=fetch_bars_yfinance)
         if frame is None or frame.empty:
             return []
         bars: List[Bar] = []
@@ -8898,7 +9074,7 @@ class TradingViewWebhookEngine:
         try:
             interval_map = {"2": "2m", "5": "5m"}
             interval = interval_map.get(tf, "5m")
-            df = yf.download(symbol, period="5d", interval=interval, progress=False)
+            df = yahoo_download_safe(symbol, period="5d", interval=interval, progress=False)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.droplevel(1)
             if df.empty or len(df) < max(lookback, 2):
@@ -8939,7 +9115,7 @@ class TradingViewWebhookEngine:
         # ── Gate 3: Trend alignment (SMA20 vs SMA200 on higher timeframe) ──
         if trend_align:
             try:
-                htf_df = yf.download(symbol, period="1mo", interval=higher_tf, progress=False)
+                htf_df = yahoo_download_safe(symbol, period="1mo", interval=higher_tf, progress=False)
                 if isinstance(htf_df.columns, pd.MultiIndex):
                     htf_df.columns = htf_df.columns.droplevel(1)
                 if not htf_df.empty and len(htf_df) >= 200:
@@ -9011,10 +9187,15 @@ class TradingViewWebhookEngine:
 
         # ── Webhook-time signal / 1H / 4H confluence ──
         tf = str(metadata.get("timeframe", ""))
+        def _yahoo_safe_confluence_fetch(_sym: str, _tf: str):
+            from .core.trifecta import fetch_bars as _fetch_bars
+            return yahoo_fetch_bars_safe(_sym, _tf, fetch_impl=_fetch_bars)
+
         confluence = score_webhook_confluence(
             symbol, tf, side,
             config=self.config.get("velez_strategy", self.config.get("strategy", {})),
             log=self.logger,
+            fetcher=_yahoo_safe_confluence_fetch,
         )
         if confluence["action"] == "skip":
             return WebhookDecision(
