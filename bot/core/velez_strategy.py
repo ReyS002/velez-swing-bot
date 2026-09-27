@@ -279,12 +279,20 @@ class VelezInstitutionalStrategy:
             "state_rule": doctrine.MARKET_STATES.get(state or "", {}).get("velez_action_rule"),
             "sma_spread_pct": spread_pct,
             "sma20_slant": slant,
+            "atr": atr,
         }
         ctx.last_market_state = result
         return result
 
-    def _doctrine_gate(self, signal: Signal, bar: Bar, location: LocationAssessment, market: dict) -> dict:
+    def _doctrine_gate(
+        self, signal: Signal, bar: Bar, location: LocationAssessment, market: dict, event_open: Optional[float] = None
+    ) -> dict:
         play = str(signal.metadata.get("play") or signal.reason)
+        # Three-finger spread: stretch from the 20 SMA in ATR, measured from the event bar's open
+        # so an igniting elephant leaving the 20 is not mistaken for a chase.
+        ext, ext_side = doctrine.extension_atr(
+            bar.open if event_open is None else event_open, location.sma20, market.get("atr")
+        )
         return doctrine.entry_gate(
             "long" if signal.side == Side.BUY else "short",
             play,
@@ -295,6 +303,8 @@ class VelezInstitutionalStrategy:
             near_200=location.near_200,
             elephant_origin=signal.metadata.get("elephant_origin_class"),
             metadata=signal.metadata,
+            extension_atr=ext,
+            extension_side=ext_side,
         )
 
     def _needs_break(self, signal: Signal) -> bool:
@@ -339,6 +349,7 @@ class VelezInstitutionalStrategy:
                     "trigger": doctrine.break_trigger(
                         "long" if signal.side == Side.BUY else "short", bar.high, bar.low, self._tick_size(symbol)
                     ),
+                    "event_open": bar.open,
                     "event_high": bar.high,
                     "event_low": bar.low,
                     "bars_left": int(self._doctrine_cfg().get("trigger_window_bars", 1)),
@@ -373,6 +384,7 @@ class VelezInstitutionalStrategy:
                     "trigger": doctrine.break_trigger(
                         "long" if signal.side == Side.BUY else "short", bar.high, bar.low, self._tick_size(symbol)
                     ),
+                    "event_open": bar.open,
                     "event_high": bar.high,
                     "event_low": bar.low,
                     "bars_left": int(self._doctrine_cfg().get("trigger_window_bars", 1)),
@@ -412,7 +424,7 @@ class VelezInstitutionalStrategy:
                     self._log_doctrine("doctrine_setup_expired", original, ["no_break_within_window"])
                 continue
             del ctx.armed[side_key]
-            gate = self._doctrine_gate(original, bar, location, market)
+            gate = self._doctrine_gate(original, bar, location, market, event_open=armed.get("event_open"))
             if not gate["allowed"]:
                 self._log_doctrine("doctrine_entry_blocked", original, gate["reasons"])
                 continue

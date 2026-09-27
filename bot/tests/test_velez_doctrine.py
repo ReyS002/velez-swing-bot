@@ -23,7 +23,7 @@ T0 = datetime(2026, 6, 1, 14, 0, tzinfo=timezone.utc)
 
 # sha256 of core/velez_doctrine.py. Changing the rulebook is a deliberate act:
 # update velez-mcp/velez.py, re-copy it, and update this hash in the same commit.
-DOCTRINE_SHA256 = "f692779f26038c54a8c69723c731e14f804fc22914213d57ec9a032d7e520267"
+DOCTRINE_SHA256 = "ae89a8c60275cddcde4e71ea02f67bc8fb76b9d4c685b25aae9b0c840049e3e7"
 
 
 def cfg(**overrides):
@@ -298,3 +298,40 @@ def test_alert_for_unknown_symbol_is_tagged_unverified_not_silently_trusted():
     sig = Signal("NEW", Side.BUY, "elephant_bar", {"play": "elephant_bar", "stop_price": 9.0})
     assert strategy.admit_external("NEW", [sig]) == [sig]
     assert sig.metadata["doctrine"]["verified"] is False
+
+
+# ── Three-finger spread and adds (2026.09.3) ──
+
+def _stretched_external(play, stretch_atr):
+    """An external signal whose event bar opens `stretch_atr` ATRs above the rising 20."""
+    from bot.core.types import Signal
+
+    strategy = VelezInstitutionalStrategy(cfg())
+    rows = uptrend()
+    run(strategy, rows)
+    ctx = strategy.symbols["TEST"]
+    atr = ctx.last_market_state["atr"]
+    assert atr
+    o = ctx.last_location.sma20 + stretch_atr * atr
+    event = bar(len(rows), o, o + 0.05, o - 0.01, o + 0.04)
+    sig = Signal("TEST", Side.BUY, play, {"play": play, "stop_price": event.low - 0.01})
+    return strategy, strategy.admit_external("TEST", [sig], event), sig
+
+
+def test_continuation_is_never_chased_three_fingers_from_the_20():
+    _, admitted, sig = _stretched_external("elephant_bar", 3.5)
+    assert admitted == []
+    assert "three_finger_spread_chase" in sig.metadata["doctrine"]["reasons"]
+
+
+def test_continuation_near_the_20_is_not_a_spread_chase():
+    _, _, sig = _stretched_external("elephant_bar", 0.5)
+    assert "three_finger_spread_chase" not in sig.metadata["doctrine"]["reasons"]
+
+
+def test_color_change_adds_only_in_p1_or_p2():
+    _, admitted, sig = _stretched_external("color_change_add", 2.5)
+    assert admitted == []
+    assert "add_outside_p1_p2" in sig.metadata["doctrine"]["reasons"]
+    _, _, early = _stretched_external("color_change_add", 0.5)
+    assert "add_outside_p1_p2" not in early.metadata["doctrine"]["reasons"]

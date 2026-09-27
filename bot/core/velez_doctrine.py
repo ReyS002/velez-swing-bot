@@ -33,7 +33,7 @@ try:
 except Exception:  # pragma: no cover
     ZoneInfo = None
 
-DOCTRINE_VERSION = "2026.09.2"
+DOCTRINE_VERSION = "2026.09.3"
 
 # ── Defaults (mirror bot/config.yaml → velez_strategy where one exists) ──
 
@@ -62,6 +62,9 @@ TAIL_PCT = 0.66
 ONE_EIGHTY_RECOVER_PCT = 0.8
 NRB_RANGE_MULT = 0.65
 NRB_LOOKBACK = 7
+# Three-finger spread: distance from the 20 SMA in ATRs of the chart being traded.
+TFS_CAUTION_ATR = 2.0
+TFS_BLOCK_ATR = 3.0
 MIDDAY_START = time(11, 30)
 MIDDAY_END = time(13, 30)
 SESSION_OPEN = time(9, 30)
@@ -475,11 +478,24 @@ def entry_gate(
     near_200: bool,
     elephant_origin: Optional[str] = None,
     metadata: Optional[dict[str, Any]] = None,
+    extension_atr: Optional[float] = None,
+    extension_side: Optional[str] = None,
 ) -> dict[str, Any]:
-    """The hard Velez rules every bot applies before an entry. Returns {allowed, reasons, family}."""
+    """The hard Velez rules every bot applies before an entry. Returns {allowed, reasons, family}.
+
+    With `extension_atr`/`extension_side` (price vs the 20 SMA in ATRs), two
+    more rules apply: no chasing a three-finger spread in the trend's
+    direction, and adds (color_change_add) only early in the move (P1/P2).
+    """
     long = _norm_side(side) == "long"
     family = play_family(play, metadata)
     reasons: list[str] = []
+    if extension_atr is not None and family == "continuation":
+        tfs = three_finger_spread("long" if long else "short", extension_atr, extension_side or "at")
+        if tfs["status"] == "block":
+            reasons.append("three_finger_spread_chase")
+        if str(play).lower() == "color_change_add" and not add_allowed(trend_position(extension_atr)):
+            reasons.append("add_outside_p1_p2")
     if sma200 is not None:
         vetoed = (price < sma200 and sma200_slope != "rising") if long else (price > sma200 and sma200_slope != "falling")
         if vetoed and not (family == "reversal" and near_200):
@@ -489,6 +505,211 @@ def entry_gate(
     if elephant_origin == "exhausting":
         reasons.append("exhausting_elephant")
     return {"allowed": not reasons, "reasons": reasons, "family": family}
+
+
+# ── Rules ported from Trading Bull Academy (src/strategy/*.ts) ──
+
+def extension_atr(price: float, sma20: Optional[float], atr_value: Optional[float]) -> tuple[Optional[float], str]:
+    """Distance of price from the 20 SMA in ATRs, and which side it is on."""
+    if sma20 is None or not atr_value:
+        return None, "at"
+    side = "above" if price > sma20 else "below" if price < sma20 else "at"
+    return round(abs(price - sma20) / atr_value, 2), side
+
+
+def three_finger_spread(
+    direction: str,
+    extension: Optional[float],
+    side: str,
+    family: str = "continuation",
+    reversal_event: bool = False,
+) -> dict[str, Any]:
+    """Velez's three-finger spread -- price stretched far from the 20.
+
+    Measured in ATRs (the rule is visual, so it scales with the chart). It
+    blocks CHASING in the stretch's direction and is the PERMISSION for V-top
+    / V-bottom reversals against it, which also need a strong event bar.
+    """
+    if extension is None:
+        return {"status": "ok", "reason": "No 20 SMA/ATR read; spread not evaluated."}
+    long = _norm_side(direction) == "long"
+    with_stretch = (long and side == "above") or (not long and side == "below")
+    against = (long and side == "below") or (not long and side == "above")
+    if family == "reversal":
+        if not against or extension < TFS_CAUTION_ATR:
+            return {"status": "caution", "reason": f"Reversal without a three-finger spread ({extension} ATR). Velez plays V tops/bottoms only off a spread."}
+        if not reversal_event:
+            return {"status": "caution", "reason": "Spread present but no confirmed reversal event bar yet."}
+        return {"status": "ok", "reason": f"Three-finger spread ({extension} ATR) qualifies the reversal."}
+    if with_stretch and extension >= TFS_BLOCK_ATR:
+        return {"status": "block", "reason": f"{extension} ATR from the 20 in the trade's direction: that's a chase."}
+    if with_stretch and extension >= TFS_CAUTION_ATR:
+        return {"status": "caution", "reason": f"Stretched {extension} ATR from the 20; wait for a pullback toward it."}
+    return {"status": "ok", "reason": "Not stretched in the trade's direction."}
+
+
+def trend_position(extension: Optional[float], breakout: bool = False, follow_through: bool = True) -> str:
+    """Where in the move price is: P1 fresh, P2 established, P3 late, P4 extended (distance from the 20 in ATRs)."""
+    if extension is None:
+        return "unknown"
+    if breakout and follow_through and extension < 1:
+        return "P1"
+    if follow_through and extension < TFS_CAUTION_ATR:
+        return "P2"
+    if extension < TFS_BLOCK_ATR:
+        return "P3"
+    return "P4"
+
+
+def add_allowed(position: str) -> bool:
+    """Velez adds to winners early in the move only: P1/P2. Never late (P3) or extended (P4)."""
+    return position in ("P1", "P2")
+
+
+def first_color_change(bars: list[dict[str, Any]], direction: str, min_push: int = 2) -> bool:
+    """The FIRST small counter-color rest bar of the move (the RBI/GBI add point).
+
+    Needs >= `min_push` bars of push, a counter bar no bigger than half the
+    push bodies, holding inside the push, and no earlier counter-color bar
+    since the move began (where price last closed on the other side of the 20).
+    The counter bar may be the last bar or the one before a resuming bar.
+    """
+    long = _norm_side(direction) == "long"
+    is_with = (lambda b: b["c"] > b["o"]) if long else (lambda b: b["c"] < b["o"])
+    is_counter = (lambda b: b["c"] < b["o"]) if long else (lambda b: b["c"] > b["o"])
+    closes = [b["c"] for b in bars]
+    for idx in (len(bars) - 1, len(bars) - 2):
+        if idx < min_push or not is_counter(bars[idx]):
+            continue
+        push, i = 0, idx - 1
+        while i >= 0 and is_with(bars[i]):
+            push += 1
+            i -= 1
+        if push < min_push:
+            continue
+        push_bodies = [abs(b["c"] - b["o"]) for b in bars[idx - push: idx]]
+        avg_push = sum(push_bodies) / len(push_bodies)
+        counter = bars[idx]
+        small = abs(counter["c"] - counter["o"]) <= 0.5 * avg_push
+        last_push = bars[idx - 1]
+        holds = (counter["l"] >= min(last_push["o"], last_push["c"]) - avg_push) if long else (
+            counter["h"] <= max(last_push["o"], last_push["c"]) + avg_push
+        )
+        no_second = all(not is_counter(b) for b in bars[idx + 1:])
+        move_start = -1
+        for j in range(idx - 1, SMA_FAST - 2, -1):
+            line = sma(closes[: j + 1], SMA_FAST)
+            if line is None:
+                break
+            if (long and closes[j] < line) or (not long and closes[j] > line):
+                move_start = j
+                break
+        first_in_move = all(not is_counter(b) for b in bars[move_start + 1: idx]) if move_start >= 0 else True
+        if small and holds and no_second and first_in_move:
+            return True
+    return False
+
+
+def trifecta(bars15: list[dict[str, Any]], bars5: list[dict[str, Any]], bars2: list[dict[str, Any]]) -> dict[str, Any]:
+    """Velez's 2/5/15 alignment: 15m sets the side, 5m sets up, 2m triggers."""
+    reasons: list[str] = []
+    c15 = [b["c"] for b in bars15]
+    s_now, s_prev = sma(c15, SMA_FAST), sma(c15, SMA_FAST, 1)
+    if s_now is None or s_prev is None:
+        return {"status": "BLOCK", "bias": "unknown", "reasons": ["Need 21+ 15m bars for the 15m 20 SMA."]}
+    last15 = bars15[-1]["c"]
+    bias = "bullish" if last15 > s_now and s_now >= s_prev else "bearish" if last15 < s_now and s_now <= s_prev else "neutral"
+    if bias == "neutral":
+        return {"status": "BLOCK", "bias": bias, "reasons": ["15m bias is neutral: no side."]}
+    if len(bars5) < 20 or len(bars2) < 2:
+        return {"status": "BLOCK", "bias": bias, "reasons": ["Need 20+ 5m bars and 2+ 2m bars."]}
+    window = bars5[-20:-3]
+    hi, lo = max(b["h"] for b in window), min(b["l"] for b in window)
+    last5 = bars5[-1]["c"]
+    breakout = last5 > hi if bias == "bullish" else last5 < lo
+    near = abs(last5 - (hi if bias == "bullish" else lo)) / max(abs(hi), 1e-9) < 0.003
+    setup = "aligned" if breakout else "mixed" if near else "invalid"
+    prev2, last2 = bars2[-2], bars2[-1]
+    trigger = (last2["c"] > prev2["h"]) if bias == "bullish" else (last2["c"] < prev2["l"])
+    if setup == "invalid":
+        return {"status": "BLOCK", "bias": bias, "setup": setup, "trigger": trigger, "reasons": ["5m setup is invalid (no range break)."]}
+    if setup == "mixed" or not trigger:
+        reasons.append("Partial 2/5/15 alignment; caution only.")
+        return {"status": "CAUTION", "bias": bias, "setup": setup, "trigger": trigger, "reasons": reasons}
+    return {"status": "PASS", "bias": bias, "setup": setup, "trigger": trigger, "reasons": ["2/5/15 alignment confirmed."]}
+
+
+def ma20_reclaim_quality(bars: list[dict[str, Any]], direction: str) -> dict[str, Any]:
+    """Quality of the latest 20 SMA reclaim: FIRST_CLEAN_RECLAIM, RETEST_HOLD, LATE_RECLAIM or FAILED_RETEST."""
+    long = _norm_side(direction) == "long"
+    closes = [b["c"] for b in bars]
+    line = [sma(closes[: i + 1], SMA_FAST) for i in range(len(closes))]
+    last = len(closes) - 1
+    reclaim = -1
+    for i in range(last, 0, -1):
+        if line[i - 1] is None or line[i] is None:
+            continue
+        crossed = (closes[i - 1] <= line[i - 1] and closes[i] > line[i]) if long else (closes[i - 1] >= line[i - 1] and closes[i] < line[i])
+        if crossed:
+            reclaim = i
+            break
+    if last < 0 or line[last] is None:
+        return {"state": "LATE_RECLAIM", "bars_since": None, "held": False}
+    on_side = closes[last] > line[last] if long else closes[last] < line[last]
+    if reclaim == -1:
+        return {"state": "LATE_RECLAIM" if on_side else "FAILED_RETEST", "bars_since": None, "held": False}
+    held = all(
+        (closes[i] > line[i]) if long else (closes[i] < line[i])
+        for i in range(reclaim, last + 1) if line[i] is not None
+    )
+    since = last - reclaim
+    if not held:
+        state = "FAILED_RETEST"
+    elif since <= 2:
+        state = "FIRST_CLEAN_RECLAIM"
+    elif since <= 8:
+        state = "RETEST_HOLD"
+    else:
+        state = "LATE_RECLAIM"
+    return {"state": state, "bars_since": since, "held": held}
+
+
+def gap_open_check(
+    gap_pct: float,
+    minutes_since_open: float,
+    reclaim_or_hold: bool,
+    chase_from_open_pct: float,
+) -> dict[str, Any]:
+    """Gap-at-open discipline: a real gap, wait for the opening range, a reclaim/hold, and no chasing the open."""
+    if abs(gap_pct) < 1.0:
+        return {"status": "NOT_APPLICABLE", "reason": "Gap under 1%: no gap edge."}
+    if minutes_since_open < 5:
+        return {"status": "BLOCK", "reason": "Wait for the opening range (at least the first 5 minutes / first 2-minute bars)."}
+    if not reclaim_or_hold:
+        return {"status": "BLOCK", "reason": "No reclaim/hold confirmation for the gap."}
+    if chase_from_open_pct > 2.5:
+        return {"status": "BLOCK", "reason": "More than 2.5% from the open: that's a chase."}
+    if chase_from_open_pct > 1.5:
+        return {"status": "CAUTION", "reason": "Extended from the open; tight execution only."}
+    return {"status": "PASS", "reason": "Opening range respected, reclaim/hold confirmed, no chase."}
+
+
+PULLBACK_SCALP_STARTER_FRACTION = 0.25
+
+EIGHT_STEPS = (
+    "market_context", "qualified_setup", "trigger", "initial_stop",
+    "position_size", "trail_plan", "exit_and_review", "add_on_plan",
+)
+
+
+def eight_step_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    """Every trade needs all eight steps written down before entry (the add-on plan may follow for a first entry)."""
+    missing = [step for step in EIGHT_STEPS[:-1] if not plan.get(step)]
+    if missing:
+        return {"status": "BLOCK", "missing": missing}
+    if not plan.get("add_on_plan"):
+        return {"status": "CAUTION", "missing": ["add_on_plan"]}
+    return {"status": "PASS", "missing": []}
 
 
 def _derive_prior_close(bars: list[dict[str, Any]]) -> Optional[float]:
@@ -599,6 +820,19 @@ def checklist(
     add("not_in_trap_zone", ms["fab4"]["territory"] != "trap_zone" or family == "reversal", False,
         f"Fab 4 territory: {ms['fab4']['territory']}.")
 
+    # Three-finger spread, measured where the setup starts (the event bar's open)
+    # so an igniting elephant's own body never makes it look like a chase.
+    ext, ext_side = extension_atr(bars[-1]["o"], ms["sma20"], ms["atr"])
+    reversal_event = bool(events & ({"bottoming_tail", "bull_180", "bull_elephant"} if long else {"topping_tail", "bear_180", "bear_elephant"}))
+    tfs = three_finger_spread(side, ext, ext_side, family, reversal_event)
+    if family == "continuation":
+        add("three_finger_spread", tfs["status"] != "block", True, tfs["reason"])
+        if tfs["status"] == "caution":
+            add("not_stretched", False, False, tfs["reason"])
+    else:
+        add("spread_qualifies_reversal", tfs["status"] == "ok", False, tfs["reason"])
+    position = trend_position(ext, breakout=bool(matched), follow_through=family == "continuation")
+
     tod = _time_of_day(bars[-1]["t"])
     if tod is not None:
         add("time_of_day", tod["ok"], False, tod["detail"])
@@ -625,6 +859,10 @@ def checklist(
         "checks": checks,
         "failed_required": [c["check"] for c in required_fail],
         "event": event, "market_state": ms, "plan": plan,
+        "extension_atr": ext, "extension_side": ext_side,
+        "three_finger_spread": tfs["status"],
+        "trend_position": position, "add_allowed": add_allowed(position),
+        "first_color_change": first_color_change(bars, side),
     }
 
 
@@ -693,6 +931,7 @@ def trade_plan(
     max_loss_per_trade: Optional[float] = None,
     lots: int = 3,
     aggressive_entry: bool = False,
+    pullback_scalp: bool = False,
 ) -> dict[str, Any]:
     side = _norm_side(side)
     long = side == "long"
@@ -713,6 +952,9 @@ def trade_plan(
     elif account_equity:
         budget = float(account_equity) * float(risk_pct)
     shares = int(budget // risk) if budget and risk > 0 else None
+    if shares and pullback_scalp:
+        # Pullback scalps start at 25% of normal size; adds still need reconfirmation.
+        shares = int(shares * PULLBACK_SCALP_STARTER_FRACTION)
     lot_size = shares // lots if shares else None
 
     return {
@@ -735,6 +977,17 @@ def trade_plan(
         "invalidation": f"Trade is wrong if price trades {'below' if long else 'above'} {_r(stop)} — one tick beyond the event bar.",
         "mlpt_note": "If the event stop is too wide for your budget, size down (MLPT) rather than tighten the stop inside the bar.",
         "three_bar_rule": "If it is not working within 3 bars, get out or reduce.",
+        "pullback_scalp_starter": PULLBACK_SCALP_STARTER_FRACTION if pullback_scalp else None,
+        "eight_step_plan": {
+            "market_context": "Read the 20/200, market state and Fab 4 box (velez_market_state).",
+            "qualified_setup": "Checklist grade A or B (velez_checklist).",
+            "trigger": "Break of the event bar.",
+            "initial_stop": "One tick beyond the event bar.",
+            "position_size": "Sized to the event stop (MLPT if too wide).",
+            "trail_plan": "Breakeven at 1R, then bar-by-bar after two closes in favor.",
+            "exit_and_review": "Lots at 1R / 2R / runner; journal the trade.",
+            "add_on_plan": "First color change only, in P1/P2, max 50% of size.",
+        },
     }
 
 
