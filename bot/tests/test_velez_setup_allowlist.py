@@ -26,6 +26,10 @@ ALL_PLAYS = {play.value for play in VelezPlay}
 
 def cfg(**overrides):
     base = {
+        # Detector-layer tests: they assert what each play detects on its own
+        # bar. The doctrine layer (break-of-bar entries, 200 veto, wide-state
+        # and exhaustion blocks) is locked in by test_velez_doctrine.py.
+        "doctrine": {"enabled": False},
         "sma_fast": 20,
         "sma_slow": 50,
         "atr_period": 5,

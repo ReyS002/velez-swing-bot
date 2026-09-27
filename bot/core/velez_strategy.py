@@ -11,6 +11,7 @@ try:
 except Exception:  # pragma: no cover - keeps the strategy portable if zoneinfo is unavailable.
     ZoneInfo = None
 
+from . import velez_doctrine as doctrine
 from .indicators import RollingATR, RollingSMA, RollingSlope
 from .types import Bar, OrderType, Signal, Side
 from .utils import safe_div
@@ -105,6 +106,11 @@ class VelezContext:
     last_vwap: Optional[VWAPContext] = None
     color_add_used: Dict[str, bool] = field(default_factory=lambda: {"buy": False, "sell": False})
     opening_gap: OpeningGapState = field(default_factory=OpeningGapState)
+    # 20 SMA history for the doctrine's slant read (now / 5 bars ago / 10 bars ago).
+    sma20_hist: Deque[Optional[float]] = field(default_factory=lambda: deque(maxlen=2 * doctrine.SLOPE_LOOKBACK + 1))
+    # Event-bar setups waiting for a later bar to break them, keyed by side.
+    armed: Dict[str, dict] = field(default_factory=dict)
+    last_market_state: Optional[dict] = None
 
 
 @dataclass(frozen=True)
@@ -177,6 +183,7 @@ class VelezInstitutionalStrategy:
         ctx.last_vwap = vwap
         location = self._assess_location(bar, sma20, sma200, slope20, slope200, atr)
         ctx.last_location = location
+        ctx.sma20_hist.append(sma20)
         self._update_opening_gap_state(ctx, bar)
 
         signals: List[Signal] = []
@@ -201,6 +208,8 @@ class VelezInstitutionalStrategy:
         ]
         for signal in signals:
             attach_vwap_metadata(signal.metadata, vwap, signal.side, self.config.get("vwap", {}))
+        if self._doctrine_enabled():
+            signals = self._apply_doctrine(symbol, bar, ctx, location, atr, signals)
 
         ctx.prev_close = bar.close
         ctx.prev_sma20 = sma20
@@ -220,7 +229,235 @@ class VelezInstitutionalStrategy:
             "atr": ctx.atr.atr,
             "location": ctx.last_location,
             "vwap": ctx.last_vwap.as_dict() if ctx.last_vwap is not None else {},
+            "market_state": ctx.last_market_state,
         }
+
+    # ---- Velez doctrine: the rules every entry must pass ----
+    #
+    # These are the owner's non-negotiables (see CLAUDE.md). They run after the
+    # play detectors, so a detector can never trade around them:
+    #   * the 200 SMA is a veto, never a trigger;
+    #   * no trend (continuation) entries in the wide state -- the climax;
+    #   * exhausting elephants are exits, not entries;
+    #   * event-bar plays enter on the BREAK of the event bar, never its close.
+
+    def _doctrine_cfg(self) -> dict:
+        return self.config.get("doctrine") or {}
+
+    def _doctrine_enabled(self) -> bool:
+        return bool(self._doctrine_cfg().get("enabled", True))
+
+    def _slope_label(self, slope: Optional[float]) -> Optional[str]:
+        if slope is None:
+            return None
+        if self._slope_is_rising(slope):
+            return "rising"
+        if self._slope_is_declining(slope):
+            return "falling"
+        return "flat"
+
+    def _doctrine_market_state(self, ctx: VelezContext, bar: Bar, location: LocationAssessment, atr: Optional[float]) -> dict:
+        cfg = self._doctrine_cfg()
+        hist = list(ctx.sma20_hist)
+        lb = doctrine.SLOPE_LOOKBACK
+        now = hist[-1] if hist else None
+        mid = hist[-1 - lb] if len(hist) > lb else None
+        old = hist[-1 - 2 * lb] if len(hist) > 2 * lb else None
+        slant = doctrine.slant_from_smas(now, mid, old, atr)
+        state = None
+        spread_pct = None
+        if location.sma20 is not None and location.sma200 is not None:
+            spread_pct = abs(location.sma20 - location.sma200) / max(bar.close, 1e-9)
+            state = doctrine.classify_state(
+                spread_pct,
+                slant,
+                narrow_pct=float(cfg.get("narrow_state_pct", doctrine.NARROW_STATE_PCT)),
+                wide_pct=float(cfg.get("wide_state_pct", doctrine.WIDE_STATE_PCT)),
+            )
+        result = {
+            "state": state,
+            "state_rule": doctrine.MARKET_STATES.get(state or "", {}).get("velez_action_rule"),
+            "sma_spread_pct": spread_pct,
+            "sma20_slant": slant,
+        }
+        ctx.last_market_state = result
+        return result
+
+    def _doctrine_gate(self, signal: Signal, bar: Bar, location: LocationAssessment, market: dict) -> dict:
+        play = str(signal.metadata.get("play") or signal.reason)
+        return doctrine.entry_gate(
+            "long" if signal.side == Side.BUY else "short",
+            play,
+            price=bar.close,
+            sma200=location.sma200,
+            sma200_slope=self._slope_label(location.sma200_slope),
+            state=market.get("state"),
+            near_200=location.near_200,
+            elephant_origin=signal.metadata.get("elephant_origin_class"),
+            metadata=signal.metadata,
+        )
+
+    def _needs_break(self, signal: Signal) -> bool:
+        """Event-bar plays at MARKET wait for the break. A Velez 50% limit entry is already a planned entry."""
+        if not self._doctrine_cfg().get("break_of_event_bar", True):
+            return False
+        play = str(signal.metadata.get("play") or signal.reason)
+        order_type = str(signal.metadata.get("order_type") or OrderType.MARKET.value)
+        return play in doctrine.EVENT_BAR_PLAYS and order_type == OrderType.MARKET.value
+
+    def admit_external(self, symbol: str, signals: List[Signal], bar: Optional[Bar] = None) -> List[Signal]:
+        """Run signals produced outside on_bar (extensions, TradingView alerts) through the same doctrine.
+
+        With `bar` (the event bar just processed by on_bar), event-bar plays are
+        armed for the break exactly like engine signals. Without it (a bare
+        alert), the hard gates still apply whenever this engine has seen the
+        symbol; otherwise the signal is tagged unverified.
+        """
+        if not signals or not self._doctrine_enabled():
+            return signals
+        ctx = self.symbols.get(symbol)
+        if ctx is None or ctx.last_location is None or not ctx.bars:
+            for signal in signals:
+                signal.metadata["doctrine"] = {"version": doctrine.DOCTRINE_VERSION, "verified": False,
+                                               "reason": "no_bar_context_for_symbol"}
+            return signals
+        location = ctx.last_location
+        market = ctx.last_market_state or {}
+        price_bar = bar or ctx.bars[-1]
+        out: List[Signal] = []
+        for signal in signals:
+            gate = self._doctrine_gate(signal, price_bar, location, market)
+            signal.metadata["doctrine"] = {"version": doctrine.DOCTRINE_VERSION, "verified": True, **gate,
+                                           "market_state": market}
+            if not gate["allowed"]:
+                self._log_doctrine("doctrine_entry_blocked", signal, gate["reasons"])
+                continue
+            if bar is not None and self._needs_break(signal) and signal.metadata.get("stop_price") is not None:
+                side = signal.side.value
+                ctx.armed[side] = {
+                    "signal": signal,
+                    "trigger": doctrine.break_trigger(
+                        "long" if signal.side == Side.BUY else "short", bar.high, bar.low, self._tick_size(symbol)
+                    ),
+                    "event_high": bar.high,
+                    "event_low": bar.low,
+                    "bars_left": int(self._doctrine_cfg().get("trigger_window_bars", 1)),
+                    "armed_at": bar.timestamp,
+                }
+                self._log_doctrine("doctrine_setup_armed", signal, [f"trigger={ctx.armed[side]['trigger']}"])
+                continue
+            out.append(signal)
+        return out
+
+    def _apply_doctrine(
+        self,
+        symbol: str,
+        bar: Bar,
+        ctx: VelezContext,
+        location: LocationAssessment,
+        atr: Optional[float],
+        signals: List[Signal],
+    ) -> List[Signal]:
+        market = self._doctrine_market_state(ctx, bar, location, atr)
+        out = self._fire_armed(symbol, bar, ctx, location, market, atr)
+        for signal in signals:
+            gate = self._doctrine_gate(signal, bar, location, market)
+            signal.metadata["doctrine"] = {"version": doctrine.DOCTRINE_VERSION, **gate, "market_state": market}
+            if not gate["allowed"]:
+                self._log_doctrine("doctrine_entry_blocked", signal, gate["reasons"])
+                continue
+            if self._needs_break(signal):
+                side = signal.side.value
+                ctx.armed[side] = {
+                    "signal": signal,
+                    "trigger": doctrine.break_trigger(
+                        "long" if signal.side == Side.BUY else "short", bar.high, bar.low, self._tick_size(symbol)
+                    ),
+                    "event_high": bar.high,
+                    "event_low": bar.low,
+                    "bars_left": int(self._doctrine_cfg().get("trigger_window_bars", 1)),
+                    "armed_at": bar.timestamp,
+                }
+                self._log_doctrine("doctrine_setup_armed", signal, [f"trigger={ctx.armed[side]['trigger']}"])
+                continue
+            out.append(signal)
+        return self._prioritized_signals(out)
+
+    def _fire_armed(
+        self,
+        symbol: str,
+        bar: Bar,
+        ctx: VelezContext,
+        location: LocationAssessment,
+        market: dict,
+        atr: Optional[float],
+    ) -> List[Signal]:
+        fired: List[Signal] = []
+        for side_key, armed in list(ctx.armed.items()):
+            original: Signal = armed["signal"]
+            long = original.side == Side.BUY
+            stop = float(original.metadata["stop_price"])
+            trigger = float(armed["trigger"])
+            broke = bar.high >= trigger if long else bar.low <= trigger
+            invalidated = bar.low <= stop if long else bar.high >= stop
+            if invalidated:
+                # Stop traded before (or with) the break: the setup failed. No entry.
+                del ctx.armed[side_key]
+                self._log_doctrine("doctrine_setup_invalidated", original, ["stop_traded_before_break"])
+                continue
+            if not broke:
+                armed["bars_left"] -= 1
+                if armed["bars_left"] <= 0:
+                    del ctx.armed[side_key]
+                    self._log_doctrine("doctrine_setup_expired", original, ["no_break_within_window"])
+                continue
+            del ctx.armed[side_key]
+            gate = self._doctrine_gate(original, bar, location, market)
+            if not gate["allowed"]:
+                self._log_doctrine("doctrine_entry_blocked", original, gate["reasons"])
+                continue
+            max_chase = float(self._doctrine_cfg().get("max_chase_atr", 0.25)) * float(atr or 0.0)
+            chase = abs(bar.close - trigger)
+            metadata = dict(original.metadata)
+            if chase <= max(max_chase, self._tick_size(symbol)):
+                order_type, entry_price, limit_price = OrderType.MARKET, bar.close, None
+            else:
+                # Price already ran past the break: don't chase, bid the breakout level.
+                order_type, entry_price, limit_price = OrderType.LIMIT, trigger, trigger
+            metadata.update(
+                {
+                    "entry_type": "break_of_event_bar",
+                    "event_bar_high": armed["event_high"],
+                    "event_bar_low": armed["event_low"],
+                    "event_bar_timestamp": armed["armed_at"],
+                    "trigger_price": trigger,
+                    "order_type": order_type.value,
+                    "entry_price": entry_price,
+                    "limit_price": limit_price,
+                    "chased": chase > max_chase,
+                    "close": bar.close,
+                    "timestamp": bar.timestamp,
+                    "management_plan": self._management_plan(original.side, entry_price, stop),
+                    "doctrine": {"version": doctrine.DOCTRINE_VERSION, **gate, "market_state": market},
+                }
+            )
+            fired.append(Signal(symbol=symbol, side=original.side, reason=original.reason, metadata=metadata))
+        return fired
+
+    def _log_doctrine(self, event: str, signal: Signal, reasons: List[str]) -> None:
+        if self.logger is None:
+            return
+        try:
+            from .utils import log_event
+
+            log_event(self.logger, event, {
+                "symbol": signal.symbol,
+                "side": signal.side.value,
+                "play": signal.metadata.get("play") or signal.reason,
+                "reasons": reasons,
+            })
+        except Exception:  # pragma: no cover - logging must never break signal flow.
+            pass
 
     def _assess_location(
         self,
@@ -481,6 +718,10 @@ class VelezInstitutionalStrategy:
             return []
 
         lookback = cfg.get("body_lookback", 5)
+        # Velez classifies elephant bars by where they ORIGINATE relative to the
+        # 20 SMA, and only some of those classes are entries. See
+        # _elephant_origin_class(). Default "any" preserves live behaviour.
+        location_mode = str(cfg.get("location_mode", "any"))
         if len(ctx.bodies) < lookback or len(ctx.bars) < lookback:
             return []
         avg_body = sum(list(ctx.bodies)[-lookback:]) / lookback
@@ -503,6 +744,12 @@ class VelezInstitutionalStrategy:
         bullish_cross = self._crosses_ma_up(bar, ctx, location)
         bearish_cross = self._crosses_ma_down(bar, ctx, location)
 
+        origin_class = self._elephant_origin_class(bar, shape, ctx, location, atr, cfg)
+        if location_mode == "igniting" and origin_class != "igniting":
+            return []
+        if location_mode == "exclude_exhaustion" and origin_class == "exhausting":
+            return []
+
         if shape.bullish and (bar.close > prior_high or bullish_cross):
             return [
                 self._build_signal(
@@ -520,6 +767,7 @@ class VelezInstitutionalStrategy:
                         "body_mult": safe_div(shape.body, avg_body),
                         "prior_high": prior_high,
                         "prior_low": prior_low,
+                        "elephant_origin_class": origin_class,
                         "atr": atr,
                     },
                 )
@@ -542,6 +790,7 @@ class VelezInstitutionalStrategy:
                         "body_mult": safe_div(shape.body, avg_body),
                         "prior_high": prior_high,
                         "prior_low": prior_low,
+                        "elephant_origin_class": origin_class,
                         "atr": atr,
                     },
                 )
@@ -561,8 +810,30 @@ class VelezInstitutionalStrategy:
         cfg = self.config.get("one_eighty", {})
         if not cfg.get("enabled", True) or len(ctx.bars) < 1:
             return []
-        if not (location.near_20 or location.near_200):
-            return []
+
+        # A 180 is an exhaustion reversal. Velez puts reversals where price is
+        # *extended away* from the 20 SMA, or rejecting a major average like the
+        # 200 -- not sitting in the trap zone on the 20, which is where a
+        # pullback continuation (Location 1) belongs. Firing both from the same
+        # near-MA gate makes the two setups the same trade wearing two names.
+        #
+        # "near_ma" is the shipped behaviour and stays the default.
+        mode = str(cfg.get("location_mode", "near_ma"))
+        if mode == "near_ma":
+            if not (location.near_20 or location.near_200):
+                return []
+        elif mode == "extended":
+            if not (location.extended_above_20 or location.extended_below_20):
+                return []
+        elif mode == "extended_or_200":
+            if not (
+                location.extended_above_20
+                or location.extended_below_20
+                or location.near_200
+            ):
+                return []
+        else:
+            raise ValueError(f"unknown one_eighty.location_mode: {mode!r}")
 
         prev = ctx.bars[-1]
         prev_shape = candle_shape(prev)
@@ -576,7 +847,7 @@ class VelezInstitutionalStrategy:
         if prev_shape.bearish and shape.bullish:
             recovery_mark = prev.close + (prev.open - prev.close) * recover_pct
             actual_recovery = safe_div(bar.close - prev.close, prev.open - prev.close)
-            if bar.close >= recovery_mark and self._bullish_ma_context(location):
+            if bar.close >= recovery_mark and self._one_eighty_context(location, Side.BUY, mode):
                 return [
                     self._build_signal(
                         symbol=symbol,
@@ -600,7 +871,7 @@ class VelezInstitutionalStrategy:
         if prev_shape.bullish and shape.bearish:
             recovery_mark = prev.close - (prev.close - prev.open) * recover_pct
             actual_recovery = safe_div(prev.close - bar.close, prev.close - prev.open)
-            if bar.close <= recovery_mark and self._bearish_ma_context(location):
+            if bar.close <= recovery_mark and self._one_eighty_context(location, Side.SELL, mode):
                 return [
                     self._build_signal(
                         symbol=symbol,
@@ -640,10 +911,29 @@ class VelezInstitutionalStrategy:
         declined = self._multi_bar_decline(ctx, cfg.get("trend_bars", 3))
         rallied = self._multi_bar_rally(ctx, cfg.get("trend_bars", 3))
 
+        continuation_ok = bool(cfg.get("continuation_at_20", True))
         if shape.lower_wick / shape.range >= tail_pct:
             valid_location = (declined and location.extended_below_20) or (
                 location.near_200 and self._slope_is_rising(location.sma200_slope)
             )
+            if not valid_location and continuation_ok and location.near_20 and self._bull_trend(location) and self._slope_is_rising(location.sma20_slope):
+                # Velez's bread-and-butter tail: a pullback rejected at a rising 20.
+                return [
+                    self._build_signal(
+                        symbol=symbol,
+                        side=Side.BUY,
+                        play=VelezPlay.BOTTOMING_TAIL,
+                        bar=bar,
+                        shape=shape,
+                        location=location,
+                        stop_price=self._stop_below(symbol, bar.low),
+                        trigger_price=bar.high,
+                        force_limit=cfg.get("prefer_tail_limit", True),
+                        limit_price=bar.low + shape.lower_wick * 0.5,
+                        metadata={"tail_pct": shape.lower_wick / shape.range, "atr": atr,
+                                  "setup_family": "continuation", "tail_context": "pullback_to_rising_20"},
+                    )
+                ]
             if valid_location:
                 limit_price = bar.low + shape.lower_wick * 0.5
                 return [
@@ -666,6 +956,23 @@ class VelezInstitutionalStrategy:
             valid_location = (rallied and location.extended_above_20) or (
                 location.near_200 and self._slope_is_declining(location.sma200_slope)
             )
+            if not valid_location and continuation_ok and location.near_20 and self._bear_trend(location) and self._slope_is_declining(location.sma20_slope):
+                return [
+                    self._build_signal(
+                        symbol=symbol,
+                        side=Side.SELL,
+                        play=VelezPlay.TOPPING_TAIL,
+                        bar=bar,
+                        shape=shape,
+                        location=location,
+                        stop_price=self._stop_above(symbol, bar.high),
+                        trigger_price=bar.low,
+                        force_limit=cfg.get("prefer_tail_limit", True),
+                        limit_price=bar.high - shape.upper_wick * 0.5,
+                        metadata={"tail_pct": shape.upper_wick / shape.range, "atr": atr,
+                                  "setup_family": "continuation", "tail_context": "rally_to_falling_20"},
+                    )
+                ]
             if valid_location:
                 limit_price = bar.high - shape.upper_wick * 0.5
                 return [
@@ -1279,6 +1586,56 @@ class VelezInstitutionalStrategy:
         )
         return crossed20 or crossed200
 
+    def _elephant_origin_class(
+        self,
+        bar: Bar,
+        shape: CandleShape,
+        ctx: VelezContext,
+        location: LocationAssessment,
+        atr: Optional[float],
+        cfg: dict,
+    ) -> str:
+        """Classify an elephant bar the way Velez does: by where it BEGINS.
+
+        Velez splits wide-range bars into three kinds, and they are not the
+        same trade:
+
+        * **igniting** -- originates at or near the 20 SMA and starts a new
+          move. This is the one he takes; follow-through is expected.
+        * **continuation** -- originates away from the 20 SMA but early, after
+          an igniting bar. Momentum continues.
+        * **exhausting** -- originates far from the 20 SMA *after a move that
+          has already been underway*. This is the final push and it commonly
+          precedes a reversal. Buying it is taking the wrong side.
+
+        The distinction is the bar's ORIGIN, not its close. That matters here
+        because ``_assess_location`` measures ``bar.close``: a textbook igniting
+        elephant opens on the average and closes far above it, so the shared
+        location assessment labels it ``extended_above_20`` -- the exhaustion
+        signature -- purely because of its own body. Measuring the open (and
+        allowing a bar whose range straddles the average) restores the
+        distinction Velez actually draws.
+        """
+        sma20 = location.sma20
+        if sma20 is None:
+            return "unknown"
+
+        near_mult = float(cfg.get("origin_near_atr_mult", 0.5))
+        band = near_mult * atr if atr is not None else abs(sma20) * float(
+            self.config.get("near_sma_pct", 0.0025)
+        )
+        origin = bar.open
+        straddles = bar.low <= sma20 <= bar.high
+        if straddles or abs(origin - sma20) <= band:
+            return "igniting"
+
+        run_bars = int(cfg.get("exhaustion_run_bars", 3))
+        if shape.bullish and origin > sma20 and self._multi_bar_rally(ctx, run_bars):
+            return "exhausting"
+        if shape.bearish and origin < sma20 and self._multi_bar_decline(ctx, run_bars):
+            return "exhausting"
+        return "continuation"
+
     def _is_climactic(self, shape: CandleShape, avg_body: float, atr: Optional[float], cfg: dict) -> bool:
         if avg_body > 0 and shape.body >= cfg.get("climactic_body_mult", 3.0) * avg_body:
             return True
@@ -1293,6 +1650,37 @@ class VelezInstitutionalStrategy:
         if location.near_20 and self._slope_is_flat_or_declining(location.sma20_slope):
             return True
         return location.near_200 and self._slope_is_flat_or_declining(location.sma200_slope)
+
+    def _one_eighty_context(
+        self, location: LocationAssessment, side: Side, mode: str
+    ) -> bool:
+        """Directional context for a 180 reversal under the selected location mode.
+
+        In ``near_ma`` this is the shipped behaviour verbatim. In the extended
+        modes the direction check inverts, and has to: a reversal *up* is taken
+        when price is stretched **below** the average and exhausting, not when
+        it is stretched above it. Reusing ``_bullish_ma_context`` there would
+        also never fire, because that helper itself requires a near-MA location.
+        """
+        if mode == "near_ma":
+            return (
+                self._bullish_ma_context(location)
+                if side == Side.BUY
+                else self._bearish_ma_context(location)
+            )
+
+        if side == Side.BUY:
+            if location.extended_below_20:
+                return True
+            return mode == "extended_or_200" and location.near_200 and self._slope_is_flat_or_rising(
+                location.sma200_slope
+            )
+
+        if location.extended_above_20:
+            return True
+        return mode == "extended_or_200" and location.near_200 and self._slope_is_flat_or_declining(
+            location.sma200_slope
+        )
 
     def _bull_trend(self, location: LocationAssessment) -> bool:
         if location.sma20 is None:
@@ -1352,6 +1740,79 @@ class VelezInstitutionalStrategy:
             "bar_by_bar_trailing_after_bars": cfg.get("trail_after_bars", 3),
             "momentum_exhaustion_bars": cfg.get("momentum_exhaustion_bars", 5),
         }
+
+    def _prioritized_signals(self, signals: List[Signal]) -> List[Signal]:
+        if not signals:
+            return []
+        priority = {
+            VelezPlay.OPENING_GAP_GO.value: 5,
+            VelezPlay.OPENING_GAP_FADE.value: 6,
+            VelezPlay.TIME_SPACE_BREAKOUT.value: 7,
+            VelezPlay.BULL_180.value: 10,
+            VelezPlay.BEAR_180.value: 10,
+            VelezPlay.ELEPHANT.value: 20,
+            VelezPlay.BOTTOMING_TAIL.value: 30,
+            VelezPlay.TOPPING_TAIL.value: 30,
+            VelezPlay.FAILED_NEW_HIGH.value: 40,
+            VelezPlay.FAILED_NEW_LOW.value: 40,
+            VelezPlay.COLOR_CHANGE_ADD.value: 50,
+            VelezPlay.BUY_SETUP.value: 60,
+            VelezPlay.SELL_SETUP.value: 60,
+            VelezPlay.NRB_ACORN.value: 70,
+            VelezPlay.FAB4_TRAP_BREAKOUT.value: 80,
+        }
+        selected: Dict[Side, Signal] = {}
+        for signal in sorted(signals, key=lambda item: priority.get(str(item.metadata.get("play") or item.reason), 999)):
+            if signal.side not in selected:
+                selected[signal.side] = signal
+        return list(selected.values())
+
+    def _slope_tolerance(self) -> float:
+        return self.config.get("slope_tolerance", 1e-9)
+
+    def _slope_is_rising(self, slope: Optional[float]) -> bool:
+        return slope is not None and slope > self._slope_tolerance()
+
+    def _slope_is_declining(self, slope: Optional[float]) -> bool:
+        return slope is not None and slope < -self._slope_tolerance()
+
+    def _slope_is_flat_or_rising(self, slope: Optional[float]) -> bool:
+        return slope is None or slope >= -self._slope_tolerance()
+
+    def _slope_is_flat_or_declining(self, slope: Optional[float]) -> bool:
+        return slope is None or slope <= self._slope_tolerance()
+
+    def _multi_bar_decline(self, ctx: VelezContext, count: int) -> bool:
+        if len(ctx.bars) < count:
+            return False
+        bars = list(ctx.bars)[-count:]
+        return all(bars[i].close < bars[i - 1].close for i in range(1, len(bars)))
+
+    def _multi_bar_rally(self, ctx: VelezContext, count: int) -> bool:
+        if len(ctx.bars) < count:
+            return False
+        bars = list(ctx.bars)[-count:]
+        return all(bars[i].close > bars[i - 1].close for i in range(1, len(bars)))
+
+    def _tick_size(self, symbol: str) -> float:
+        tick_cfg = self.config.get("tick_size", {})
+        if isinstance(tick_cfg, dict):
+            return float(tick_cfg.get(symbol, tick_cfg.get("default", 0.01)))
+        return float(tick_cfg or 0.01)
+
+    def _stop_below(self, symbol: str, price: float) -> float:
+        return self._round_to_tick(symbol, price - self._tick_size(symbol))
+
+    def _stop_above(self, symbol: str, price: float) -> float:
+        return self._round_to_tick(symbol, price + self._tick_size(symbol))
+
+    def _round_to_tick(self, symbol: str, price: float) -> float:
+        tick = self._tick_size(symbol)
+        if tick <= 0:
+            return price
+        rounded = round(price / tick) * tick
+        decimals = max(0, len(f"{tick:.10f}".rstrip("0").split(".")[-1]))
+        return round(rounded, decimals)
 
     # ---- setup allowlist: one source of truth for what is live ----
 
@@ -1446,79 +1907,6 @@ class VelezInstitutionalStrategy:
                 continue
             kept.append(signal)
         return kept
-
-    def _prioritized_signals(self, signals: List[Signal]) -> List[Signal]:
-        if not signals:
-            return []
-        priority = {
-            VelezPlay.OPENING_GAP_GO.value: 5,
-            VelezPlay.OPENING_GAP_FADE.value: 6,
-            VelezPlay.TIME_SPACE_BREAKOUT.value: 7,
-            VelezPlay.BULL_180.value: 10,
-            VelezPlay.BEAR_180.value: 10,
-            VelezPlay.ELEPHANT.value: 20,
-            VelezPlay.BOTTOMING_TAIL.value: 30,
-            VelezPlay.TOPPING_TAIL.value: 30,
-            VelezPlay.FAILED_NEW_HIGH.value: 40,
-            VelezPlay.FAILED_NEW_LOW.value: 40,
-            VelezPlay.COLOR_CHANGE_ADD.value: 50,
-            VelezPlay.BUY_SETUP.value: 60,
-            VelezPlay.SELL_SETUP.value: 60,
-            VelezPlay.NRB_ACORN.value: 70,
-            VelezPlay.FAB4_TRAP_BREAKOUT.value: 80,
-        }
-        selected: Dict[Side, Signal] = {}
-        for signal in sorted(signals, key=lambda item: priority.get(str(item.metadata.get("play") or item.reason), 999)):
-            if signal.side not in selected:
-                selected[signal.side] = signal
-        return list(selected.values())
-
-    def _slope_tolerance(self) -> float:
-        return self.config.get("slope_tolerance", 1e-9)
-
-    def _slope_is_rising(self, slope: Optional[float]) -> bool:
-        return slope is not None and slope > self._slope_tolerance()
-
-    def _slope_is_declining(self, slope: Optional[float]) -> bool:
-        return slope is not None and slope < -self._slope_tolerance()
-
-    def _slope_is_flat_or_rising(self, slope: Optional[float]) -> bool:
-        return slope is None or slope >= -self._slope_tolerance()
-
-    def _slope_is_flat_or_declining(self, slope: Optional[float]) -> bool:
-        return slope is None or slope <= self._slope_tolerance()
-
-    def _multi_bar_decline(self, ctx: VelezContext, count: int) -> bool:
-        if len(ctx.bars) < count:
-            return False
-        bars = list(ctx.bars)[-count:]
-        return all(bars[i].close < bars[i - 1].close for i in range(1, len(bars)))
-
-    def _multi_bar_rally(self, ctx: VelezContext, count: int) -> bool:
-        if len(ctx.bars) < count:
-            return False
-        bars = list(ctx.bars)[-count:]
-        return all(bars[i].close > bars[i - 1].close for i in range(1, len(bars)))
-
-    def _tick_size(self, symbol: str) -> float:
-        tick_cfg = self.config.get("tick_size", {})
-        if isinstance(tick_cfg, dict):
-            return float(tick_cfg.get(symbol, tick_cfg.get("default", 0.01)))
-        return float(tick_cfg or 0.01)
-
-    def _stop_below(self, symbol: str, price: float) -> float:
-        return self._round_to_tick(symbol, price - self._tick_size(symbol))
-
-    def _stop_above(self, symbol: str, price: float) -> float:
-        return self._round_to_tick(symbol, price + self._tick_size(symbol))
-
-    def _round_to_tick(self, symbol: str, price: float) -> float:
-        tick = self._tick_size(symbol)
-        if tick <= 0:
-            return price
-        rounded = round(price / tick) * tick
-        decimals = max(0, len(f"{tick:.10f}".rstrip("0").split(".")[-1]))
-        return round(rounded, decimals)
 
 
 def calculate_core_position_size(
