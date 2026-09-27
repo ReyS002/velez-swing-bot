@@ -41,6 +41,7 @@ from .brokers.tradovate import TradovateBroker
 from .core.prop_manager import PropProfileManager
 from .calendar_feeds import CalendarFeedService
 from .core.risk import RiskManager
+from .core import velez_doctrine
 from .core.bullwarden import BullWardenClient
 from .core.types import Bar, OrderType, Side, Signal
 from .core.utils import get_logger, log_event
@@ -2695,10 +2696,11 @@ class TradingViewWebhookEngine:
                 strategy_symbols = getattr(self.scanner_strategy, "symbols", {})
                 ctx = strategy_symbols.get(symbol) if isinstance(strategy_symbols, dict) else None
                 if ctx is not None:
-                    signals.extend(run_extensions(
+                    extension_signals = run_extensions(
                         symbol, bar, list(ctx.bars), list(ctx.bodies),
                         ctx.prev_sma20, ctx.atr.atr, self.config,
-                    ))
+                    )
+                    signals.extend(self._admit_external(self.scanner_strategy, symbol, extension_signals, bar))
                 for signal in signals:
                     cooldown = self._scanner_symbol_cooldown(symbol, now)
                     if cooldown:
@@ -9029,10 +9031,11 @@ class TradingViewWebhookEngine:
         signals = self.strategy.on_bar(symbol, bar)
         ctx = self.strategy.symbols.get(symbol)
         if ctx is not None:
-            signals.extend(run_extensions(
+            extension_signals = run_extensions(
                 symbol, bar, list(ctx.bars), list(ctx.bodies),
                 ctx.prev_sma20, ctx.atr.atr, self.config,
-            ))
+            )
+            signals.extend(self._admit_external(self.strategy, symbol, extension_signals, bar))
         if not signals:
             return [WebhookDecision(status="ignored", reason="no_qualified_velez_signal", symbol=symbol)]
         return [self._build_order_decision(signal, alert_id) for signal in signals]
@@ -9042,7 +9045,24 @@ class TradingViewWebhookEngine:
             signal = self._signal_from_payload(payload)
         except Exception as exc:
             return WebhookDecision(status="rejected", reason=str(exc))
+        admitted = self._admit_external(self.strategy, signal.symbol, [signal], None)
+        if not admitted:
+            doctrine_meta = signal.metadata.get("doctrine") or {}
+            return WebhookDecision(
+                status="rejected",
+                reason="doctrine_blocked:" + ",".join(doctrine_meta.get("reasons") or []),
+                symbol=signal.symbol,
+                side=signal.side.value,
+                play=str(signal.metadata.get("play", signal.reason)),
+                metadata={"doctrine": doctrine_meta},
+            )
         return self._build_order_decision(signal, alert_id, dry_run=dry_run)
+
+    @staticmethod
+    def _admit_external(strategy: Any, symbol: str, signals: List[Signal], bar: Optional[Bar]) -> List[Signal]:
+        """Owner doctrine applies to every entry source, not just engine plays (see CLAUDE.md)."""
+        admit = getattr(strategy, "admit_external", None)
+        return admit(symbol, signals, bar) if callable(admit) else signals
 
     def _validate_lower_timeframe_signal(self, symbol: str, timeframe: str, side: str, metadata: dict) -> Optional[WebhookDecision]:
         """Gate 2m/5m signals with volume, trend, and bar-size checks.
@@ -10423,6 +10443,50 @@ class TradingViewWebhookEngine:
                 candidates = side_matches
         return candidates
 
+    def _velez_live_management(self, position: dict) -> Optional[dict]:
+        """Run the shared Velez management rules on a live position using scanner-timeframe bars.
+
+        Returns None when the doctrine's live exits are off or there is not
+        enough information (no journaled entry time or stop, no bars) -- the
+        existing breakeven/partials/time-stop logic then applies unchanged.
+        """
+        cfg = (self.config.get("velez_strategy") or self.config.get("strategy") or {}).get("doctrine") or {}
+        if not cfg.get("enabled", True) or not cfg.get("live_exits", True):
+            return None
+        symbol = str(position.get("symbol") or "").upper()
+        linked = position.get("linked_decision") or {}
+        entry_price = self._float(position.get("entry_price"))
+        initial_stop = self._float(linked.get("stop_price")) or self._float(position.get("stop_price"))
+        current_stop = self._float(position.get("stop_price"))
+        entered_at = linked.get("timestamp")
+        if not symbol or entry_price is None or initial_stop is None or not entered_at:
+            return None
+        try:
+            entry_ts = self._timestamp(entered_at)
+            asset_type = str((self.symbol_config.get(symbol) or {}).get("type") or "equity").lower()
+            bars = self._fetch_scanner_bars(symbol=symbol, asset_type=asset_type)
+        except Exception as exc:
+            log_event(self.logger, "velez_live_management_skipped", {"symbol": symbol, "reason": str(exc)})
+            return None
+        now = datetime.now(timezone.utc)
+        closed = [bar for bar in bars if self._scanner_bar_is_closed(bar, now)]
+        since = [bar for bar in closed if bar.timestamp >= entry_ts]
+        if not since:
+            return None
+        before = [bar for bar in closed if bar.timestamp < entry_ts][-40:]
+        try:
+            return velez_doctrine.manage_position(
+                str(position.get("side") or "long"),
+                entry_price,
+                initial_stop,
+                [velez_doctrine.bar_dict(bar) for bar in since],
+                current_stop=current_stop,
+                context_bars=[velez_doctrine.bar_dict(bar) for bar in before],
+            )
+        except ValueError as exc:
+            log_event(self.logger, "velez_live_management_skipped", {"symbol": symbol, "reason": str(exc)})
+            return None
+
     def _auto_lifecycle_actions(
         self,
         *,
@@ -10542,6 +10606,50 @@ class TradingViewWebhookEngine:
                         log_event(self.logger, "auto_emergency_stop", {"symbol": symbol, "stop_price": emergency_stop, "result": repair})
                     except Exception as exc:
                         results.append({"action": "emergency_stop_repair", "symbol": symbol, "status": "failed", "error": str(exc)})
+
+            # V0: Velez bar-by-bar management (owner doctrine, see CLAUDE.md):
+            # 1R -> breakeven, trail one tick behind the prior bar once two bars
+            # close in favor, 3-bar rule, tighten on an opposing tail/180/elephant.
+            velez = self._velez_live_management(position) if entry_price is not None and qty else None
+            if velez is not None:
+                if velez["action"] == "exit_or_reduce":
+                    self._cancel_symbol_stop_orders(position)
+                    exit_payload = {
+                        "symbol": symbol,
+                        "qty": qty,
+                        "side": "sell" if side == "long" else "buy",
+                        "type": "market",
+                        "time_in_force": self.webhook_config.get("time_in_force", "day"),
+                        "client_order_id": f"velez-3bar-exit-{symbol.lower()}-{secrets.token_hex(6)}",
+                    }
+                    try:
+                        self.broker.submit_order_payload(exit_payload)
+                        results.append({"action": "velez_3_bar_exit", "symbol": symbol, "status": "submitted", "reasons": velez["reasons"]})
+                        log_event(self.logger, "auto_velez_3_bar_exit", {"symbol": symbol, "decision": velez})
+                    except Exception as exc:
+                        results.append({"action": "velez_3_bar_exit", "symbol": symbol, "status": "failed", "error": str(exc)})
+                    continue
+                new_stop = velez.get("stop")
+                tighter = (
+                    new_stop is not None
+                    and stop_price is not None
+                    and ((side == "long" and new_stop > stop_price) or (side == "short" and new_stop < stop_price))
+                )
+                if tighter:
+                    self._cancel_symbol_stop_orders(position)
+                    try:
+                        repair = self._submit_verified_protective_stop(
+                            symbol=symbol,
+                            qty=qty,
+                            entry_side="buy" if side == "long" else "sell",
+                            stop_price=new_stop,
+                            client_order_id=f"velez-trail-stop-{symbol.lower()}-{secrets.token_hex(6)}",
+                        )
+                        results.append({"action": "velez_stop_move", "symbol": symbol, "stop_price": new_stop, "status": repair.get("status", "submitted"), "reasons": velez["reasons"]})
+                        log_event(self.logger, "auto_velez_stop_move", {"symbol": symbol, "from": stop_price, "to": new_stop, "decision": velez})
+                        stop_price = new_stop
+                    except Exception as exc:
+                        results.append({"action": "velez_stop_move", "symbol": symbol, "status": "failed", "error": str(exc)})
 
             # V1: Auto-move stop to breakeven at >= 1R
             if current_r is not None and current_r >= 1.0 and entry_price is not None and qty:

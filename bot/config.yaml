@@ -313,6 +313,24 @@ velez_strategy:
       slope_flat_atr_fraction: 0.02
       slope_flat_price_pct: 0.0001
   history_bars: 240
+  # Owner doctrine (see CLAUDE.md and core/velez_doctrine.py). Locked in by
+  # bot/tests/test_velez_doctrine.py -- do not switch off to "get more trades".
+  doctrine:
+    enabled: true
+    # Event-bar plays (elephant, 180, tails, failed highs/lows) enter on the
+    # break of the event bar, within this many following bars (daily bars here).
+    break_of_event_bar: true
+    trigger_window_bars: 1
+    # Past this many ATRs beyond the trigger, bid the breakout level instead of chasing.
+    max_chase_atr: 0.25
+    # Market-state gap thresholds for DAILY bars (20 vs 200 SMA, % of price).
+    # Daily 20/200 sit much further apart than intraday, so these are wider
+    # than the intraday bot's 0.4% / 0.8%.
+    narrow_state_pct: 0.02
+    wide_state_pct: 0.10
+    # Velez management: 1R -> breakeven, bar-by-bar trail, 3-bar rule.
+    exits: true        # backtest / replay engine
+    live_exits: true   # live lifecycle (still gated by VELEZ_LIFECYCLE_AUTO_EXECUTE)
   near_sma_pct: 0.0025
   near_sma_atr_mult: 0.35
   extended_sma_pct: 0.012
@@ -331,14 +349,20 @@ velez_strategy:
     max_total_wick_pct: 0.35
     climactic_body_mult: 3.0
     climactic_atr_mult: 2.2
+    # Velez: exhausting elephants (born far from the 20 after a run) are exits.
+    location_mode: exclude_exhaustion
   one_eighty:
     enabled: true
     recover_pct: 0.8
+    # Velez: a 180 is strongest far from the 20 or at the 200, not on the 20.
+    location_mode: extended_or_200
   tail:
     enabled: true
     min_tail_pct: 0.66
     trend_bars: 3
     prefer_tail_limit: true
+    # Tails at a rising (falling) 20 on a pullback are continuation buys (sells).
+    continuation_at_20: true
   lower_tf_filters:
     enabled: true
     volume_mult: 1.5

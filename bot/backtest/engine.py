@@ -11,6 +11,7 @@ from ..core.execution import ExecutionSimulator
 from ..core.portfolio import Portfolio
 from ..core.risk import RiskManager
 from ..core.strategy import NarrowToWideStrategy
+from ..core import velez_doctrine as doctrine
 from ..core.velez_strategy import VelezInstitutionalStrategy
 from ..core.structure_strategy import StructureBreakRetestStrategy
 from ..core.types import Bar, Order, OrderType, Side, TradeRecord, Signal, DecisionTrace, Regime, NarrowWideState
@@ -316,9 +317,59 @@ class BacktestEngine:
     def _exits_config(self) -> dict:
         return self.config.get("strategy", {}).get("exits", self.config.get("exits", {}))
 
+    def _velez_exits_enabled(self) -> bool:
+        if not self._velez_mode:
+            return False
+        cfg = self.config.get("velez_strategy", {}).get("doctrine") or {}
+        return bool(cfg.get("enabled", True)) and bool(cfg.get("exits", True))
+
+    def _velez_manage(self, symbol: str, bar: Bar) -> None:
+        """Velez position management: 1R→breakeven, bar-by-bar trail, 3-bar rule, opposing events."""
+        position = self.portfolio.get_position(symbol)
+        if position is None:
+            return
+        ctx = getattr(self.strategy, "symbols", {}).get(symbol)
+        history = list(ctx.bars) if ctx is not None else []
+        since = [b for b in history if b.timestamp >= position.entry_time]
+        if not since:
+            return
+        before = [b for b in history if b.timestamp < position.entry_time][-40:]
+        decision = doctrine.manage_position(
+            "long" if position.qty > 0 else "short",
+            position.entry_price,
+            position.initial_stop,
+            [doctrine.bar_dict(b) for b in since],
+            current_stop=position.stop_price,
+            tick=self.strategy._tick_size(symbol),
+            context_bars=[doctrine.bar_dict(b) for b in before],
+        )
+        if decision["action"] == "exit_or_reduce":
+            self.pending_orders.setdefault(symbol, []).append(
+                Order(
+                    symbol=symbol,
+                    side=Side.SELL if position.qty > 0 else Side.BUY,
+                    qty=abs(position.qty),
+                    order_type=OrderType.MARKET,
+                    limit_price=None,
+                    timestamp=bar.timestamp,
+                    reason="velez_3_bar_rule",
+                    metadata={"entry_time": position.entry_time, "entry_price": position.entry_price},
+                )
+            )
+            return
+        new_stop = decision.get("stop")
+        if new_stop is None:
+            return
+        tighter = new_stop > position.stop_price if position.qty > 0 else new_stop < position.stop_price
+        if tighter:
+            position.stop_price = new_stop
+
     def _update_trailing_stop(self, symbol: str, bar: Bar) -> None:
         position = self.portfolio.get_position(symbol)
         if position is None:
+            return
+        if self._velez_exits_enabled():
+            self._velez_manage(symbol, bar)
             return
         exits_cfg = self._exits_config()
         if not exits_cfg:
@@ -367,6 +418,12 @@ class BacktestEngine:
         if self.config.get("strategy", {}).get("entry", {}).get("use_limit", False):
             order_type = OrderType.LIMIT
             limit_price = entry_price
+        signal_limit = signal.metadata.get("limit_price")
+        if self._velez_mode and str(signal.metadata.get("order_type")) == OrderType.LIMIT.value and signal_limit is not None:
+            # Honor the engine's planned entry (breakout level / 50% retrace), don't buy the close.
+            order_type = OrderType.LIMIT
+            limit_price = float(signal_limit)
+            entry_price = limit_price
 
         return Order(
             symbol=signal.symbol,
