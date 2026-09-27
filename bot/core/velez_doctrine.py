@@ -33,7 +33,7 @@ try:
 except Exception:  # pragma: no cover
     ZoneInfo = None
 
-DOCTRINE_VERSION = "2026.09.3"
+DOCTRINE_VERSION = "2026.09.4"
 
 # ── Defaults (mirror bot/config.yaml → velez_strategy where one exists) ──
 
@@ -494,8 +494,10 @@ def entry_gate(
         tfs = three_finger_spread("long" if long else "short", extension_atr, extension_side or "at")
         if tfs["status"] == "block":
             reasons.append("three_finger_spread_chase")
-        if str(play).lower() == "color_change_add" and not add_allowed(trend_position(extension_atr)):
-            reasons.append("add_outside_p1_p2")
+    # A caller that measures the extension (side given) opts in to the add rule: an add whose
+    # trend position can't be read (no 20 SMA / ATR yet) is not a verified P1/P2 add.
+    if extension_side is not None and str(play).lower() == "color_change_add" and not add_allowed(trend_position(extension_atr)):
+        reasons.append("add_outside_p1_p2")
     if sma200 is not None:
         vetoed = (price < sma200 and sma200_slope != "rising") if long else (price > sma200 and sma200_slope != "falling")
         if vetoed and not (family == "reversal" and near_200):
@@ -604,7 +606,8 @@ def first_color_change(bars: list[dict[str, Any]], direction: str, min_push: int
             if (long and closes[j] < line) or (not long and closes[j] > line):
                 move_start = j
                 break
-        first_in_move = all(not is_counter(b) for b in bars[move_start + 1: idx]) if move_start >= 0 else True
+        # No close on the other side of the 20 in view: the whole history is the move.
+        first_in_move = all(not is_counter(b) for b in bars[move_start + 1: idx])
         if small and holds and no_second and first_in_move:
             return True
     return False
@@ -663,15 +666,21 @@ def ma20_reclaim_quality(bars: list[dict[str, Any]], direction: str) -> dict[str
         for i in range(reclaim, last + 1) if line[i] is not None
     )
     since = last - reclaim
+    # A retest means a post-reclaim bar came back to (or within a quarter ATR of) the 20.
+    tolerance = 0.25 * (atr(bars) or 0.0)
+    retested = any(
+        (bars[i]["l"] <= line[i] + tolerance) if long else (bars[i]["h"] >= line[i] - tolerance)
+        for i in range(reclaim + 1, last + 1) if line[i] is not None
+    )
     if not held:
         state = "FAILED_RETEST"
     elif since <= 2:
         state = "FIRST_CLEAN_RECLAIM"
-    elif since <= 8:
+    elif since <= 8 and retested:
         state = "RETEST_HOLD"
     else:
         state = "LATE_RECLAIM"
-    return {"state": state, "bars_since": since, "held": held}
+    return {"state": state, "bars_since": since, "held": held, "retested": retested}
 
 
 def gap_open_check(
@@ -955,6 +964,8 @@ def trade_plan(
     if shares and pullback_scalp:
         # Pullback scalps start at 25% of normal size; adds still need reconfirmation.
         shares = int(shares * PULLBACK_SCALP_STARTER_FRACTION)
+    if shares:
+        lots = min(lots, shares)  # never plan more exit lots than shares
     lot_size = shares // lots if shares else None
 
     return {
