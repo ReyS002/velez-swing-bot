@@ -288,11 +288,16 @@ class VelezInstitutionalStrategy:
         self, signal: Signal, bar: Bar, location: LocationAssessment, market: dict, event_open: Optional[float] = None
     ) -> dict:
         play = str(signal.metadata.get("play") or signal.reason)
-        # Three-finger spread: stretch from the 20 SMA in ATR, measured from the event bar's open
-        # so an igniting elephant leaving the 20 is not mistaken for a chase.
-        ext, ext_side = doctrine.extension_atr(
-            bar.open if event_open is None else event_open, location.sma20, market.get("atr")
-        )
+        # Three-finger spread: stretch from the 20 SMA in ATR. Event-bar plays are measured from the
+        # event bar's open (an igniting elephant leaving the 20 is not a chase); plays that fire
+        # immediately are measured where they fill, at the bar's close.
+        if event_open is not None:
+            ref = event_open
+        elif play in doctrine.EVENT_BAR_PLAYS:
+            ref = bar.open
+        else:
+            ref = bar.close
+        ext, ext_side = doctrine.extension_atr(ref, location.sma20, market.get("atr"))
         return doctrine.entry_gate(
             "long" if signal.side == Side.BUY else "short",
             play,

@@ -23,7 +23,7 @@ T0 = datetime(2026, 6, 1, 14, 0, tzinfo=timezone.utc)
 
 # sha256 of core/velez_doctrine.py. Changing the rulebook is a deliberate act:
 # update velez-mcp/velez.py, re-copy it, and update this hash in the same commit.
-DOCTRINE_SHA256 = "ae89a8c60275cddcde4e71ea02f67bc8fb76b9d4c685b25aae9b0c840049e3e7"
+DOCTRINE_SHA256 = "94ca54fe2af9af841eed94798b95f03c71c67fd6e9f3bcbfc38c59500b86ded7"
 
 
 def cfg(**overrides):
@@ -335,3 +335,18 @@ def test_color_change_adds_only_in_p1_or_p2():
     assert "add_outside_p1_p2" in sig.metadata["doctrine"]["reasons"]
     _, _, early = _stretched_external("color_change_add", 0.5)
     assert "add_outside_p1_p2" not in early.metadata["doctrine"]["reasons"]
+
+
+def test_immediate_plays_are_measured_where_they_fill():
+    """An add that opens at the 20 but closes far from it fills late (P3/P4): not an add."""
+    from bot.core.types import Signal
+
+    strategy = VelezInstitutionalStrategy(cfg())
+    rows = uptrend()
+    run(strategy, rows)
+    ctx = strategy.symbols["TEST"]
+    atr, sma20 = ctx.last_market_state["atr"], ctx.last_location.sma20
+    event = bar(len(rows), sma20, sma20 + 4 * atr, sma20 - 0.01, sma20 + 3.9 * atr)
+    sig = Signal("TEST", Side.BUY, "color_change_add", {"play": "color_change_add", "stop_price": event.low - 0.01})
+    assert strategy.admit_external("TEST", [sig], event) == []
+    assert "add_outside_p1_p2" in sig.metadata["doctrine"]["reasons"]
