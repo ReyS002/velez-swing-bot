@@ -326,8 +326,8 @@ velez_strategy:
     # Market-state gap thresholds for DAILY bars (20 vs 200 SMA, % of price).
     # Daily 20/200 sit much further apart than intraday, so these are wider
     # than the intraday bot's 0.4% / 0.8%.
-    narrow_state_pct: 0.02
-    wide_state_pct: 0.10
+    narrow_state_pct: 0.0596
+    wide_state_pct: 0.2493
     # Velez management: 1R -> breakeven, bar-by-bar trail, 3-bar rule.
     exits: true        # backtest / replay engine
     live_exits: true   # live lifecycle (still gated by VELEZ_LIFECYCLE_AUTO_EXECUTE)
