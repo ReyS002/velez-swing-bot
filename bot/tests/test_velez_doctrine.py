@@ -23,7 +23,7 @@ T0 = datetime(2026, 6, 1, 14, 0, tzinfo=timezone.utc)
 
 # sha256 of core/velez_doctrine.py. Changing the rulebook is a deliberate act:
 # update velez-mcp/velez.py, re-copy it, and update this hash in the same commit.
-DOCTRINE_SHA256 = "03ae615a66695570960cbcaf09523cc4b941dac2714c5e74f81772373b7c7b4f"
+DOCTRINE_SHA256 = "43a031045bbb09b7a210f3feed045c89dc80fd14d0bc6c21de38318e94db590b"
 
 
 def cfg(**overrides):

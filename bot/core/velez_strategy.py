@@ -406,11 +406,9 @@ class VelezInstitutionalStrategy:
         if not self._session_applies(symbol):
             return None
         ctx = self.symbols.get(symbol)
-        stamps = [b.timestamp for b in list(ctx.bars)[-6:]] if ctx is not None else []
-        gaps = [(b - a).total_seconds() / 60 for a, b in zip(stamps, stamps[1:]) if (b - a).total_seconds() > 0]
-        if not gaps or min(gaps) >= 390:
-            return None
-        return bar.timestamp + timedelta(minutes=min(gaps))
+        history = [b for b in list(ctx.bars)[-6:] if b.timestamp < bar.timestamp] if ctx is not None else []
+        # The rulebook's decision_time: bar close from the spacing, capped at the 16:00 bell.
+        return doctrine.decision_time([doctrine.bar_dict(b) for b in history + [bar]])
 
     def _needs_break(self, signal: Signal) -> bool:
         """Event-bar plays at MARKET wait for the break. A Velez 50% limit entry is already a planned entry."""

@@ -33,7 +33,7 @@ try:
 except Exception:  # pragma: no cover
     ZoneInfo = None
 
-DOCTRINE_VERSION = "2026.10.3"
+DOCTRINE_VERSION = "2026.10.4"
 
 # ── Defaults (mirror bot/config.yaml → velez_strategy where one exists) ──
 
@@ -970,6 +970,8 @@ def decision_time(bars: list[dict[str, Any]]) -> Optional[datetime]:
     None for daily or longer bars (session windows are intraday) or when the
     bar timestamps can't say.
     """
+    if not bars or bars[-1].get("t") is None:
+        return None
     stamps = [b.get("t") for b in bars[-6:] if b.get("t") is not None]
     try:
         gaps = [(b - a).total_seconds() / 60 for a, b in zip(stamps, stamps[1:]) if (b - a).total_seconds() > 0]
@@ -977,7 +979,15 @@ def decision_time(bars: list[dict[str, Any]]) -> Optional[datetime]:
         return None
     if not gaps or min(gaps) >= 390:
         return None
-    return bars[-1]["t"] + timedelta(minutes=min(gaps))
+    start = bars[-1]["t"]
+    close = start + timedelta(minutes=min(gaps))
+    # A regular-hours bar cut short by the 16:00 bell closes at the bell, not an hour later.
+    local_start, local_close = _local(start), _local(close)
+    if local_start is not None and local_close is not None and local_start.time() < SESSION_CLOSE:
+        bell = local_start.replace(hour=SESSION_CLOSE.hour, minute=SESSION_CLOSE.minute, second=0, microsecond=0)
+        if local_close > bell:
+            return bell
+    return close
 
 
 def index_bias(bars: list[dict[str, Any]]) -> str:
