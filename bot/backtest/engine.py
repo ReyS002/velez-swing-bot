@@ -84,6 +84,32 @@ class BacktestEngine:
             data[sym["symbol"]] = df.sort_values("timestamp")
         return data
 
+    def _market_index_data(self, symbols: List[dict], start: datetime, end: datetime, timeframe: str) -> Dict[str, pd.DataFrame]:
+        """Load SPY/QQQ for the Velez market-bias rule when they aren't already in the run (never traded)."""
+        strategy = self.strategy
+        if not hasattr(strategy, "update_market_index") or not strategy._doctrine_cfg().get("market_bias", False):
+            return {}
+        have = {str(item.get("symbol") or "").upper() for item in symbols}
+        wanted = [{"symbol": index, "type": "equity"} for index in strategy._market_indexes() if index not in have]
+        if not wanted:
+            return {}
+        try:
+            return self._load_data(wanted, start, end, timeframe)
+        except Exception as exc:  # no index data: the market rule is simply not enforced
+            self.logger.warning("market_index_load_failed: %s", exc)
+            return {}
+
+    def _preload_market_indexes(self, data: Dict[str, pd.DataFrame]) -> None:
+        """Hand the whole SPY/QQQ series to the strategy up front. It only reads index bars at or
+        before each signal bar, so there is no look-ahead and no dependence on symbol order."""
+        strategy = self.strategy
+        if not hasattr(strategy, "update_market_index"):
+            return
+        for index in strategy._market_indexes():
+            frame = data.get(index)
+            if frame is not None and not frame.empty:
+                strategy.update_market_index(index, [self._to_bar(row) for _, row in frame.iterrows()])
+
     def _to_bar(self, row: pd.Series) -> Bar:
         return Bar(
             timestamp=row["timestamp"],
@@ -442,6 +468,7 @@ class BacktestEngine:
         )
 
     def _run_loop(self, data: Dict[str, pd.DataFrame]) -> BacktestResult:
+        self._preload_market_indexes(data)
         guardrails_enabled = self.config.get("risk", {}).get("guardrails_enabled", True)
         all_times = sorted({ts for df in data.values() for ts in df["timestamp"]})
         for ts in all_times:
@@ -547,6 +574,9 @@ class BacktestEngine:
         data = self._load_data(symbols, start, end, timeframe)
         if not data:
             return BacktestResult(metrics={}, trades=[], decision_traces=[])
+        if hasattr(self.strategy, "set_symbol_types"):
+            self.strategy.set_symbol_types(symbols)
+        self._preload_market_indexes(self._market_index_data(symbols, start, end, timeframe))
         for sym in symbols:
             self.pending_orders[sym["symbol"]] = []
             self.contract_multipliers[sym["symbol"]] = sym.get("contract_multiplier", 1.0)
