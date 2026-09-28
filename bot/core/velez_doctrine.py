@@ -25,7 +25,7 @@ velez-swing-bot, bull-pilot, bull-swarm) vendor it byte-for-byte as
 from __future__ import annotations
 
 import json
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any, Iterable, Optional
 
 try:
@@ -33,7 +33,7 @@ try:
 except Exception:  # pragma: no cover
     ZoneInfo = None
 
-DOCTRINE_VERSION = "2026.10.1"
+DOCTRINE_VERSION = "2026.10.2"
 
 # ── Defaults (mirror bot/config.yaml → velez_strategy where one exists) ──
 
@@ -795,7 +795,10 @@ def checklist(
     play: str = "",
     prior_close: Optional[float] = None,
     tick: float = 0.01,
+    market_bias: Optional[str] = None,
 ) -> dict[str, Any]:
+    """Grade an idea on the last bar. `market_bias` ("long"/"short"/"none" from
+    market_bias()) adds the trade-with-the-market check the bots enforce."""
     side = _norm_side(side)
     if len(bars) < 2:
         raise ValueError("checklist needs the event bar plus history")
@@ -870,8 +873,9 @@ def checklist(
         add("spread_qualifies_reversal", tfs["status"] == "ok", False, tfs["reason"])
     position = trend_position(ext, breakout=bool(matched), follow_through=family == "continuation")
 
-    # Session windows: the same rule the bots enforce (a failure here is a no-trade).
-    window = session_window(bars[-1]["t"], play, family)
+    # Session windows: the same rule the bots enforce (a failure here is a no-trade),
+    # read at the entry decision time (the event bar's close); daily+ bars have none.
+    window = session_window(decision_time(bars), play, family)
     if window["window"] != "unknown":
         details = {
             "opening_range_wait": "Amateur hour: let the first 15 minutes settle (5 for gap plays) before a new entry.",
@@ -883,6 +887,16 @@ def checklist(
         else:
             add("time_of_day", window["allow"], True,
                 details.get(window["reason"], f"{window['window'].replace('_', ' ')} window: new entries allowed."))
+
+    if market_bias is not None and market_bias != "unknown":
+        wanted = "long" if long else "short"
+        if market_bias in ("long", "short"):
+            ok = market_bias == wanted or (family == "reversal" and "near_200" in ms["location"])
+            add("with_the_market", ok, True,
+                f"SPY/QQQ lean {market_bias}." + ("" if ok else " Don't fight the market: trend entries go with it; reversals against it only at the 200."))
+        else:
+            add("with_the_market", family == "reversal", True,
+                "SPY/QQQ have no side: no trend entries." if family == "continuation" else "SPY/QQQ have no side; a reversal may still trade.")
 
     plan = trade_plan(side, bars[-1]["h"], bars[-1]["l"], tick=tick)
     room = _room(bars[:-1], side, plan["entry"], plan["risk_per_share"])
@@ -951,6 +965,22 @@ def session_window(ts: Optional[datetime], play: str = "", family: Optional[str]
     if t >= time(15, 0):
         return {"window": "power_hour", "allow": True, "reason": None}
     return {"window": "prime", "allow": True, "reason": None}
+
+
+def decision_time(bars: list[dict[str, Any]]) -> Optional[datetime]:
+    """When an entry off the last bar is taken: its close (start + bar spacing).
+
+    None for daily or longer bars (session windows are intraday) or when the
+    bar timestamps can't say.
+    """
+    stamps = [b.get("t") for b in bars[-6:] if b.get("t") is not None]
+    try:
+        gaps = [(b - a).total_seconds() / 60 for a, b in zip(stamps, stamps[1:]) if (b - a).total_seconds() > 0]
+    except TypeError:
+        return None
+    if not gaps or min(gaps) >= 390:
+        return None
+    return bars[-1]["t"] + timedelta(minutes=min(gaps))
 
 
 def index_bias(bars: list[dict[str, Any]]) -> str:

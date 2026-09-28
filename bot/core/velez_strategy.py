@@ -146,6 +146,8 @@ class VelezInstitutionalStrategy:
         self.symbols: Dict[str, VelezContext] = {}
         # Index bars (SPY/QQQ) for the market-bias rule; fed by the scanner, never traded.
         self.market_bars: Dict[str, List[dict]] = {}
+        # Configured futures/FX/crypto symbols: the equity session windows don't apply.
+        self.non_equity_symbols: set = set()
         self._validate_setup_allowlist()
 
     def _get_context(self, symbol: str) -> VelezContext:
@@ -320,7 +322,15 @@ class VelezInstitutionalStrategy:
 
     def update_market_index(self, symbol: str, bars: List[Bar]) -> None:
         """Feed index bars (SPY/QQQ) used only for the market bias. They never generate signals."""
-        self.market_bars[str(symbol).upper()] = [doctrine.bar_dict(b) for b in bars][-300:]
+        self.market_bars[str(symbol).upper()] = [doctrine.bar_dict(b) for b in bars]
+
+    def set_symbol_types(self, symbols: List[dict]) -> None:
+        """Record which configured symbols are not equities (type future/forex/crypto/...)."""
+        self.non_equity_symbols = {
+            str(item.get("symbol") or "").upper()
+            for item in symbols or []
+            if str(item.get("type") or item.get("asset_type") or "equity").lower() not in {"equity", "stock", "etf"}
+        }
 
     def _market_indexes(self) -> List[str]:
         return [str(s).upper() for s in self._doctrine_cfg().get("market_indexes", ["SPY", "QQQ"])]
@@ -344,7 +354,7 @@ class VelezInstitutionalStrategy:
                     bars = [b for b in bars if b["t"] is None or b["t"] <= as_of]
                 except TypeError:  # naive vs aware timestamps: use what we have
                     pass
-            series.append(bars)
+            series.append(bars[-300:])
         return doctrine.market_bias(*series)["bias"]
 
     def _decision_time(self, symbol: str, bar: Bar) -> Optional[datetime]:
@@ -356,7 +366,8 @@ class VelezInstitutionalStrategy:
         if not cfg.get("session_windows", True):
             return None
         sym = str(symbol).upper()
-        if sym in {str(s).upper() for s in cfg.get("non_equity_symbols", [])} or "/" in sym or sym.startswith("^") or sym.endswith(("=F", "=X", "-USD")):
+        configured = {str(s).upper() for s in cfg.get("non_equity_symbols", [])} | self.non_equity_symbols
+        if sym in configured or "/" in sym or sym.startswith("^") or sym.endswith(("=F", "=X", "-USD")):
             return None
         ctx = self.symbols.get(symbol)
         stamps = [b.timestamp for b in list(ctx.bars)[-6:]] if ctx is not None else []

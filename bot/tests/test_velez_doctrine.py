@@ -23,7 +23,7 @@ T0 = datetime(2026, 6, 1, 14, 0, tzinfo=timezone.utc)
 
 # sha256 of core/velez_doctrine.py. Changing the rulebook is a deliberate act:
 # update velez-mcp/velez.py, re-copy it, and update this hash in the same commit.
-DOCTRINE_SHA256 = "590f0e24c46a4297e85a8184c5ea11c5e93ad25044e8851815949cf51a7c2926"
+DOCTRINE_SHA256 = "f0b592d9f78166d9d95d7cb7e94c64b6655b804fd56d3cf426b1b13905d86cbb"
 
 
 def cfg(**overrides):
@@ -402,3 +402,32 @@ def test_trend_entries_only_with_the_market():
     assert "against_market" in _external_elephant(15, spy_rows=down)
     assert "against_market" not in _external_elephant(15, spy_rows=uptrend())
     assert "against_market" not in _external_elephant(15)  # no index data: not enforced
+
+
+def test_configured_non_equities_skip_the_equity_session_windows():
+    strategy = VelezInstitutionalStrategy(cfg(doctrine=dict(LIVE_DOCTRINE)))
+    strategy.set_symbol_types([{"symbol": "ES", "type": "future"}, {"symbol": "TEST", "type": "equity"}])
+    run(strategy, uptrend())
+    last = bar(80, 100, 101, 99, 100.5)
+    assert strategy._decision_time("ES", last) is None
+    assert strategy._decision_time("TEST", last) is not None
+
+
+def test_backtest_preloads_the_market_indexes():
+    import pandas as pd
+
+    from bot.backtest.engine import BacktestEngine
+
+    def frame(rows, start=0):
+        return pd.DataFrame([
+            {"timestamp": T0 + timedelta(minutes=2 * (start + i)), "open": o, "high": h, "low": l, "close": c, "volume": 1000}
+            for i, (o, h, l, c) in enumerate(rows)
+        ])
+
+    engine = BacktestEngine.__new__(BacktestEngine)
+    engine.strategy = VelezInstitutionalStrategy(cfg(doctrine=dict(LIVE_DOCTRINE)))
+    engine._preload_market_indexes({"SPY": frame(uptrend()), "TEST": frame(uptrend())})
+    assert len(engine.strategy.market_bars["SPY"]) == 80
+    # Only index bars at or before the signal bar are read: no look-ahead.
+    assert engine.strategy._market_bias("TEST", T0 + timedelta(minutes=10)) == "unknown"
+    assert engine.strategy._market_bias("TEST", T0 + timedelta(minutes=2 * 79)) == "long"

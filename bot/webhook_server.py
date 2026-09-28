@@ -1565,6 +1565,7 @@ class TradingViewWebhookEngine:
                 "automatic stop repair/breakeven/time-stop/force-close actions are OFF"
             )
         self.strategy = VelezInstitutionalStrategy(config.get("velez_strategy", config.get("strategy", {})), self.logger)
+        self.strategy.set_symbol_types(config.get("symbols", []))
         self.regime_cache: Dict[str, Any] = {"label": "unknown", "confidence": 0.0}
         self.top_down_cache: Dict[str, Any] = {}
         self.top_down_lock = threading.Lock()
@@ -1603,6 +1604,7 @@ class TradingViewWebhookEngine:
         self.winston = WinstonAIService(self)
         self.calendar = CalendarFeedService(self.broker, self.config, self.recent_decisions, journal=self.journal)
         self.scanner_strategy = VelezInstitutionalStrategy(config.get("velez_strategy", config.get("strategy", {})), self.logger)
+        self.scanner_strategy.set_symbol_types(config.get("symbols", []))
         self.scanner_last_bar: Dict[str, datetime] = {}
         self.scanner_seen_alerts: Deque[str] = deque(maxlen=int(self.scanner_config.get("dedupe_cache_size", 1000) or 1000))
         self.scanner_symbol_cooldowns: Dict[str, datetime] = {}
