@@ -503,19 +503,19 @@ symbols:
 - symbol: ES
   type: future
   contract_multiplier: 50
-  data_source: polygon
+  data_source: yfinance
   timezone: US/Eastern
   session: full
 - symbol: NQ
   type: future
   contract_multiplier: 20
-  data_source: polygon
+  data_source: yfinance
   timezone: US/Eastern
   session: full
 - symbol: YM
   type: future
   contract_multiplier: 5
-  data_source: polygon
+  data_source: yfinance
   timezone: US/Eastern
   session: full
 - symbol: EURUSD
@@ -629,25 +629,25 @@ symbols:
 - symbol: MES
   type: future
   contract_multiplier: 5
-  data_source: polygon
+  data_source: yfinance
   timezone: US/Eastern
   session: full
 - symbol: MNQ
   type: future
   contract_multiplier: 2
-  data_source: polygon
+  data_source: yfinance
   timezone: US/Eastern
   session: full
 - symbol: GC
   type: future
   contract_multiplier: 100
-  data_source: polygon
+  data_source: yfinance
   timezone: US/Eastern
   session: full
 - symbol: SI
   type: future
   contract_multiplier: 5000
-  data_source: polygon
+  data_source: yfinance
   timezone: US/Eastern
   session: full
 optimize:

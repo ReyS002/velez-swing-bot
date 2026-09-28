@@ -3417,18 +3417,53 @@ class TradingViewWebhookEngine:
             raise RuntimeError(f"alpaca_data_{response.status_code}:{response.text[:160]}")
         return response.json() if response.text else {}
 
+    def _quote_asset_config(self, symbol: str) -> dict:
+        cleaned = self._clean_quote_symbol(symbol)
+        candidates = [cleaned, cleaned.replace("-", "/"), cleaned.replace("/", "")]
+        if "/" in cleaned:
+            candidates.append(cleaned.split("/", 1)[0])
+        elif cleaned.endswith("USD"):
+            candidates.extend([f"{cleaned[:-3]}/USD", cleaned[:-3]])
+        seen = set()
+        for candidate in candidates:
+            candidate = str(candidate or "").upper().strip()
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            configured = self.symbol_config.get(candidate)
+            if configured:
+                return configured
+            watchlist = getattr(self, "journal", None)
+            if watchlist and hasattr(watchlist, "get_watchlist_symbol"):
+                stored = watchlist.get_watchlist_symbol(candidate)
+                if stored:
+                    return stored
+        return {}
+
+    def _quote_asset_type(self, symbol: str) -> str:
+        details = self._quote_asset_config(symbol)
+        return str(details.get("type") or details.get("asset_type") or "equity").lower()
+
     def market_quote_payload(self, symbol: str) -> dict:
         cleaned = self._clean_quote_symbol(symbol)
         if not cleaned:
             return {"ok": False, "reason": "missing_symbol"}
+        if self._quote_asset_type(cleaned) == "crypto":
+            sources = (
+                ("alpaca_crypto_latest_quote", self._alpaca_latest_crypto_quote),
+                ("coinbase_exchange_ticker", self._coinbase_crypto_quote),
+                ("kraken_public_ticker", self._kraken_crypto_quote),
+            )
+        else:
+            sources = (
+                ("alpaca_latest_trade", self._alpaca_latest_trade_quote),
+                ("alpaca_latest_quote", self._alpaca_latest_bid_ask_quote),
+                ("broker_position_mark", self._broker_position_quote),
+                ("scanner_latest_bar", self._scanner_latest_bar_quote),
+                ("yfinance_latest_bar", self._yfinance_latest_quote),
+            )
         checked = []
-        for source, fetcher in (
-            ("alpaca_latest_trade", self._alpaca_latest_trade_quote),
-            ("alpaca_latest_quote", self._alpaca_latest_bid_ask_quote),
-            ("broker_position_mark", self._broker_position_quote),
-            ("scanner_latest_bar", self._scanner_latest_bar_quote),
-            ("yfinance_latest_bar", self._yfinance_latest_quote),
-        ):
+        for source, fetcher in sources:
             try:
                 quote = fetcher(cleaned)
             except Exception as exc:
@@ -3729,6 +3764,95 @@ class TradingViewWebhookEngine:
             "source": "yfinance_daily_bar",
             "source_label": "yfinance daily bar",
         }
+
+    def _crypto_quote_payload(self, *, symbol: str, bid: object, ask: object, asof: object, source: str, source_label: str, received_at: object = None) -> dict:
+        parsed_bid = self._float(bid)
+        parsed_ask = self._float(ask)
+        if parsed_bid is None or parsed_ask is None or parsed_bid <= 0 or parsed_ask <= 0:
+            raise RuntimeError("crypto_quote_missing_bid_or_ask")
+        if parsed_bid > parsed_ask:
+            raise RuntimeError("crypto_quote_crossed_bid_ask")
+        midpoint = (parsed_bid + parsed_ask) / 2
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "price": round(midpoint, 8),
+            "bid": round(parsed_bid, 8),
+            "ask": round(parsed_ask, 8),
+            "spread_bps": round(((parsed_ask - parsed_bid) / midpoint) * 10000, 4),
+            "asof": asof,
+            "received_at": received_at,
+            "source": source,
+            "source_label": source_label,
+        }
+
+    def _alpaca_latest_crypto_quote(self, symbol: str) -> dict:
+        if not self.broker.is_configured():
+            raise RuntimeError("alpaca_not_configured")
+        alpaca_symbol = self._alpaca_crypto_symbol(symbol)
+        data = self._alpaca_data_request(
+            "/v1beta3/crypto/us/latest/quotes",
+            params={"symbols": alpaca_symbol},
+        )
+        quotes = data.get("quotes") or {}
+        quote = quotes.get(alpaca_symbol) or quotes.get(symbol) or data.get("quote") or {}
+        if not quote:
+            normalized = alpaca_symbol.replace("/", "")
+            quote = next((item for key, item in quotes.items() if str(key).replace("/", "") == normalized), {})
+        return self._crypto_quote_payload(
+            symbol=symbol,
+            bid=quote.get("bp") or quote.get("bid_price"),
+            ask=quote.get("ap") or quote.get("ask_price"),
+            asof=quote.get("t") or quote.get("timestamp"),
+            source="alpaca_crypto_latest_quote",
+            source_label="Alpaca crypto bid/ask",
+        )
+
+    def _coinbase_crypto_quote(self, symbol: str) -> dict:
+        product = self._alpaca_crypto_symbol(symbol).replace("/", "-")
+        response = requests.get(
+            f"https://api.exchange.coinbase.com/products/{product}/ticker",
+            headers={"Accept": "application/json", "User-Agent": "Trading-Bull-Desk/1.0"},
+            timeout=min(8, int(self.scanner_config.get("timeout_seconds", 20) or 20)),
+        )
+        if response.status_code >= 300:
+            raise RuntimeError(f"coinbase_ticker_{response.status_code}")
+        quote = response.json() if response.text else {}
+        return self._crypto_quote_payload(
+            symbol=symbol,
+            bid=quote.get("bid"),
+            ask=quote.get("ask"),
+            asof=quote.get("time"),
+            source="coinbase_exchange_ticker",
+            source_label="Coinbase Exchange ticker",
+        )
+
+    def _kraken_crypto_quote(self, symbol: str) -> dict:
+        base = self._alpaca_crypto_symbol(symbol).split("/", 1)[0]
+        kraken_base = "XBT" if base == "BTC" else base
+        response = requests.get(
+            "https://api.kraken.com/0/public/Ticker",
+            params={"pair": f"{kraken_base}USD"},
+            headers={"Accept": "application/json", "User-Agent": "Trading-Bull-Desk/1.0"},
+            timeout=min(8, int(self.scanner_config.get("timeout_seconds", 20) or 20)),
+        )
+        if response.status_code >= 300:
+            raise RuntimeError(f"kraken_ticker_{response.status_code}")
+        payload = response.json() if response.text else {}
+        if payload.get("error"):
+            raise RuntimeError(f"kraken_ticker_error:{','.join(map(str, payload.get('error') or []))[:120]}")
+        result = payload.get("result") or {}
+        quote = next(iter(result.values()), {})
+        received_at = datetime.now(timezone.utc).isoformat()
+        return self._crypto_quote_payload(
+            symbol=symbol,
+            bid=(quote.get("b") or [None])[0],
+            ask=(quote.get("a") or [None])[0],
+            asof=received_at,
+            received_at=received_at,
+            source="kraken_public_ticker",
+            source_label="Kraken public ticker",
+        )
 
     def _alpaca_latest_trade_quote(self, symbol: str) -> dict:
         if not self.broker.is_configured():
