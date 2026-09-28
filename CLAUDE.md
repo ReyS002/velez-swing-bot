@@ -44,6 +44,9 @@ need that, stop and ask the owner.
 9. This bot trades **daily bars**. Bar-count rules are counted in days here: the
    break window is the next day, and the 3-bar rule means 3 days. The market-state gap
    thresholds are set for daily charts (`narrow_state_pct: 0.02`, `wide_state_pct: 0.10`).
+10. **Trade with the market.** SPY/QQQ above a rising 20 = longs only; below a falling 20 =
+   shorts only; mixed or flat = no trend entries. A reversal may go against the market only
+   at the stock's 200. (Intraday session windows don't apply to this daily-bar bot.)
 
 ## Where it's enforced
 

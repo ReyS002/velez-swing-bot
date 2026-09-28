@@ -87,7 +87,7 @@ class BacktestEngine:
     def _market_index_data(self, symbols: List[dict], start: datetime, end: datetime, timeframe: str) -> Dict[str, pd.DataFrame]:
         """Load SPY/QQQ for the Velez market-bias rule when they aren't already in the run (never traded)."""
         strategy = self.strategy
-        if not hasattr(strategy, "update_market_index") or not strategy._doctrine_cfg().get("market_bias", True):
+        if not hasattr(strategy, "update_market_index") or not strategy._doctrine_cfg().get("market_bias", False):
             return {}
         have = {str(item.get("symbol") or "").upper() for item in symbols}
         wanted = [{"symbol": index, "type": "equity"} for index in strategy._market_indexes() if index not in have]

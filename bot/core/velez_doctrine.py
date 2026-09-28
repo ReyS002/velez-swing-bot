@@ -33,7 +33,7 @@ try:
 except Exception:  # pragma: no cover
     ZoneInfo = None
 
-DOCTRINE_VERSION = "2026.10.2"
+DOCTRINE_VERSION = "2026.10.3"
 
 # ── Defaults (mirror bot/config.yaml → velez_strategy where one exists) ──
 
@@ -70,7 +70,7 @@ MIDDAY_END = time(13, 30)
 SESSION_OPEN = time(9, 30)
 MARKET_TZ = "America/New_York"
 # Session discipline for new entries (US equities, ET). Velez: let amateur hour
-# settle, skip the midday chop, and don't open new trades into the close.
+# settle, stay out of the midday chop, and don't open new trades into the close.
 OPENING_WAIT_MIN = 15          # no new entries in the first 15 minutes
 GAP_OPENING_WAIT_MIN = 5       # opening-gap plays may act after the first 5 minutes
 LAST_ENTRY = time(15, 45)      # no new entries in the last 15 minutes
@@ -498,7 +498,7 @@ def entry_gate(
 
     With `decision_time` (when the entry would be taken; US equities only) the
     session windows apply: no new entries in the first 15 minutes (5 for gap
-    plays), no trend entries in the midday chop, none in the last 15 minutes.
+    plays), none in the midday chop, none in the last 15 minutes.
 
     With `market_bias` ("long"/"short"/"none" from market_bias()), trade with
     the market: no trend entries against it or when it has no side, and no
@@ -879,7 +879,7 @@ def checklist(
     if window["window"] != "unknown":
         details = {
             "opening_range_wait": "Amateur hour: let the first 15 minutes settle (5 for gap plays) before a new entry.",
-            "midday_chop": "The midday chop (11:30–13:30 ET): no trend entries.",
+            "midday_chop": "The midday chop (11:30–13:30 ET): no new entries.",
             "too_late_in_session": "Last 15 minutes: no new entries into the close.",
         }
         if window["window"] == "extended_hours":
@@ -948,7 +948,6 @@ def session_window(ts: Optional[datetime], play: str = "", family: Optional[str]
     local = _local(ts)
     if local is None:
         return {"window": "unknown", "allow": True, "reason": None}
-    fam = family or play_family(play)
     t = local.time()
     if t < SESSION_OPEN or t > SESSION_CLOSE:
         return {"window": "extended_hours", "allow": True, "reason": None}
@@ -959,9 +958,7 @@ def session_window(ts: Optional[datetime], play: str = "", family: Optional[str]
     if t >= LAST_ENTRY:
         return {"window": "closing", "allow": False, "reason": "too_late_in_session"}
     if MIDDAY_START <= t < MIDDAY_END:
-        if fam == "continuation":
-            return {"window": "midday", "allow": False, "reason": "midday_chop"}
-        return {"window": "midday", "allow": True, "reason": None}
+        return {"window": "midday", "allow": False, "reason": "midday_chop"}
     if t >= time(15, 0):
         return {"window": "power_hour", "allow": True, "reason": None}
     return {"window": "prime", "allow": True, "reason": None}
@@ -1228,7 +1225,7 @@ PRINCIPLES = [
     "Never let a winner turn into a loser: 1R → stop to breakeven.",
     "If it isn't working in 3 bars, it probably isn't going to. Get out or reduce.",
     "Add to winners on the first color change, never to losers.",
-    "Let the first 15 minutes settle (5 for gap plays), skip trend entries in the 11:30–1:30 midday chop, no new trades in the last 15 minutes, and trade with the market (SPY/QQQ).",
+    "Let the first 15 minutes settle (5 for gap plays), stay out of the 11:30–1:30 midday chop, no new trades in the last 15 minutes, and trade with the market (SPY/QQQ).",
     "Trading is mostly psychological. The rules exist so you don't have to decide under pressure.",
 ]
 

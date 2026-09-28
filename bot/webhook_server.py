@@ -2762,22 +2762,41 @@ class TradingViewWebhookEngine:
             self.scanner_stop.wait(interval)
         self._update_scanner_status(running=False)
 
-    def _feed_market_indexes(self, now: datetime) -> None:
-        """SPY/QQQ bars for the Velez market-bias rule (rulebook 2026.10.1). Never traded."""
-        scanner = getattr(self, "scanner_strategy", None)
-        if scanner is None or not hasattr(scanner, "update_market_index"):
+    def _feed_market_indexes(self, now: datetime, *, min_interval_seconds: float = 0.0, source: str = "scanner") -> None:
+        """SPY/QQQ bars for the Velez market-bias rule (rulebook 2026.10.1). Never traded.
+
+        Called by every scan and, throttled, by the TradingView webhook path so the rule
+        holds even when the scanner worker is off. A failed fetch drops that index's
+        series (the rule then reads "unknown") rather than steering on stale bars.
+        """
+        primary = getattr(self, "scanner_strategy", None) if source == "scanner" else getattr(self, "strategy", None)
+        if primary is None or not hasattr(primary, "update_market_index"):
             return
-        strategies = [scanner] + [s for s in (getattr(self, "strategy", None),)
-                                  if s is not None and s is not scanner and hasattr(s, "update_market_index")]
-        for index in strategies[0]._market_indexes():
+        if not primary._doctrine_cfg().get("market_bias", False):
+            return
+        last = getattr(self, "_market_indexes_fed_at", None)
+        if min_interval_seconds and last is not None and (now - last).total_seconds() < min_interval_seconds:
+            return
+        self._market_indexes_fed_at = now
+        strategies = [primary] + [s for s in (getattr(self, "strategy", None), getattr(self, "scanner_strategy", None))
+                                  if s is not None and s is not primary and hasattr(s, "update_market_index")]
+        for index in primary._market_indexes():
             try:
                 bars = [bar for bar in self._fetch_scanner_bars(symbol=index, asset_type="equity")
                         if self._scanner_bar_is_closed(bar, now)]
             except Exception as exc:
                 log_event(self.logger, "market_index_fetch_failed", {"symbol": index, "error": str(exc)})
+                for strategy in strategies:
+                    strategy.market_bars.pop(index, None)
                 continue
             for strategy in strategies:
                 strategy.update_market_index(index, bars)
+
+    def _feed_market_indexes_for_webhook(self) -> None:
+        try:
+            self._feed_market_indexes(datetime.now(timezone.utc), min_interval_seconds=300, source="webhook")
+        except Exception as exc:  # never let the index feed break alert handling
+            log_event(self.logger, "market_index_feed_failed", {"error": str(exc)})
 
     def _scanner_symbols(self) -> List[dict]:
         configured = self.watchlist_symbols()
@@ -9172,6 +9191,7 @@ class TradingViewWebhookEngine:
         except Exception as exc:
             return [WebhookDecision(status="rejected", reason=str(exc))]
 
+        self._feed_market_indexes_for_webhook()
         signals = self.strategy.on_bar(symbol, bar)
         ctx = self.strategy.symbols.get(symbol)
         if ctx is not None:
@@ -9189,6 +9209,7 @@ class TradingViewWebhookEngine:
             signal = self._signal_from_payload(payload)
         except Exception as exc:
             return WebhookDecision(status="rejected", reason=str(exc))
+        self._feed_market_indexes_for_webhook()
         admitted = self._admit_external(self.strategy, signal.symbol, [signal], None)
         if not admitted:
             doctrine_meta = signal.metadata.get("doctrine") or {}

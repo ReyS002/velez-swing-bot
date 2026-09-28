@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Deque, Dict, List, Optional
 
@@ -289,8 +289,15 @@ class VelezInstitutionalStrategy:
         return result
 
     def _doctrine_gate(
-        self, signal: Signal, bar: Bar, location: LocationAssessment, market: dict, event_open: Optional[float] = None
+        self,
+        signal: Signal,
+        bar: Bar,
+        location: LocationAssessment,
+        market: dict,
+        event_open: Optional[float] = None,
+        decision_at: Optional[datetime] = None,
     ) -> dict:
+        """`decision_at` overrides the entry time (a bare alert is judged when it arrives, not at the cached bar)."""
         play = str(signal.metadata.get("play") or signal.reason)
         # Three-finger spread: stretch from the 20 SMA in ATR. Event-bar plays are measured from the
         # event bar's open (an igniting elephant leaving the 20 is not a chase); plays that fire
@@ -314,8 +321,11 @@ class VelezInstitutionalStrategy:
             metadata=signal.metadata,
             extension_atr=ext,
             extension_side=ext_side,
-            decision_time=self._decision_time(signal.symbol, bar),
-            market_bias=self._market_bias(signal.symbol, bar.timestamp),
+            decision_time=(
+                (decision_at if self._session_applies(signal.symbol) else None)
+                if decision_at is not None else self._decision_time(signal.symbol, bar)
+            ),
+            market_bias=self._market_bias(signal.symbol, decision_at or bar.timestamp),
         )
 
     # ── Session windows and trading with the market (rulebook 2026.10.1) ──
@@ -341,7 +351,7 @@ class VelezInstitutionalStrategy:
         None (rule off, or the symbol is itself an index) and "unknown" (no index data)
         are not enforced by the gate.
         """
-        if not self._doctrine_cfg().get("market_bias", True) or str(symbol).upper() in self._market_indexes():
+        if not self._doctrine_cfg().get("market_bias", False) or str(symbol).upper() in self._market_indexes():
             return None
         series = []
         for index in self._market_indexes():
@@ -354,20 +364,46 @@ class VelezInstitutionalStrategy:
                     bars = [b for b in bars if b["t"] is None or b["t"] <= as_of]
                 except TypeError:  # naive vs aware timestamps: use what we have
                     pass
+                # A stale series (a feed outage) must not keep steering entries: treat it as missing.
+                try:
+                    if bars and bars[-1]["t"] is not None and as_of - bars[-1]["t"] > timedelta(days=4):
+                        bars = []
+                except TypeError:
+                    pass
             series.append(bars[-300:])
         return doctrine.market_bias(*series)["bias"]
+
+    def _context_free_gate(self, signal: Signal, at: datetime) -> dict:
+        """Session windows and market bias for a signal on a symbol with no bar context."""
+        play = str(signal.metadata.get("play") or signal.reason)
+        return doctrine.entry_gate(
+            "long" if signal.side == Side.BUY else "short",
+            play,
+            price=0.0,
+            sma200=None,
+            sma200_slope=None,
+            state=None,
+            near_200=False,
+            metadata=signal.metadata,
+            decision_time=at if self._session_applies(signal.symbol) else None,
+            market_bias=self._market_bias(signal.symbol, at),
+        )
+
+    def _session_applies(self, symbol: str) -> bool:
+        """Session windows are for equities; configured futures/FX/crypto are exempt."""
+        cfg = self._doctrine_cfg()
+        if not cfg.get("session_windows", False):
+            return False
+        sym = str(symbol).upper()
+        configured = {str(s).upper() for s in cfg.get("non_equity_symbols", [])} | self.non_equity_symbols
+        return not (sym in configured or "/" in sym or sym.startswith("^") or sym.endswith(("=F", "=X", "-USD")))
 
     def _decision_time(self, symbol: str, bar: Bar) -> Optional[datetime]:
         """When an entry off this bar would be taken (its close), for the session windows.
 
         None (not enforced) for non-equities and for daily or longer bars.
         """
-        cfg = self._doctrine_cfg()
-        if not cfg.get("session_windows", True):
-            return None
-        sym = str(symbol).upper()
-        configured = {str(s).upper() for s in cfg.get("non_equity_symbols", [])} | self.non_equity_symbols
-        if sym in configured or "/" in sym or sym.startswith("^") or sym.endswith(("=F", "=X", "-USD")):
+        if not self._session_applies(symbol):
             return None
         ctx = self.symbols.get(symbol)
         stamps = [b.timestamp for b in list(ctx.bars)[-6:]] if ctx is not None else []
@@ -395,17 +431,27 @@ class VelezInstitutionalStrategy:
         if not signals or not self._doctrine_enabled():
             return signals
         ctx = self.symbols.get(symbol)
+        # A bare alert (no bar) is judged at the moment it arrives.
+        received = None if bar is not None else datetime.now(timezone.utc)
         if ctx is None or ctx.last_location is None or not ctx.bars:
+            # No chart context: the 200/state/spread gates can't run, but the session
+            # windows and the market bias don't need the stock's bars.
+            kept: List[Signal] = []
             for signal in signals:
+                gate = self._context_free_gate(signal, received or bar.timestamp)
                 signal.metadata["doctrine"] = {"version": doctrine.DOCTRINE_VERSION, "verified": False,
-                                               "reason": "no_bar_context_for_symbol"}
-            return signals
+                                               "reason": "no_bar_context_for_symbol", **gate}
+                if not gate["allowed"]:
+                    self._log_doctrine("doctrine_entry_blocked", signal, gate["reasons"])
+                    continue
+                kept.append(signal)
+            return kept
         location = ctx.last_location
         market = ctx.last_market_state or {}
         price_bar = bar or ctx.bars[-1]
         out: List[Signal] = []
         for signal in signals:
-            gate = self._doctrine_gate(signal, price_bar, location, market)
+            gate = self._doctrine_gate(signal, price_bar, location, market, decision_at=received)
             signal.metadata["doctrine"] = {"version": doctrine.DOCTRINE_VERSION, "verified": True, **gate,
                                            "market_state": market}
             if not gate["allowed"]:

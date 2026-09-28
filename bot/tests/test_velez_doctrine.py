@@ -23,7 +23,7 @@ T0 = datetime(2026, 6, 1, 14, 0, tzinfo=timezone.utc)
 
 # sha256 of core/velez_doctrine.py. Changing the rulebook is a deliberate act:
 # update velez-mcp/velez.py, re-copy it, and update this hash in the same commit.
-DOCTRINE_SHA256 = "f0b592d9f78166d9d95d7cb7e94c64b6655b804fd56d3cf426b1b13905d86cbb"
+DOCTRINE_SHA256 = "03ae615a66695570960cbcaf09523cc4b941dac2714c5e74f81772373b7c7b4f"
 
 
 def cfg(**overrides):
@@ -354,15 +354,16 @@ def test_immediate_plays_are_measured_where_they_fill():
 
 # ── Session windows and trading with the market (2026.10.1) ──
 
-LIVE_DOCTRINE = {"enabled": True, "narrow_state_pct": 0.001, "wide_state_pct": 0.03}
+LIVE_DOCTRINE = {"enabled": True, "narrow_state_pct": 0.001, "wide_state_pct": 0.03,
+                 "session_windows": True, "market_bias": True}
 
 
 def test_shipped_config_keeps_session_and_market_rules_on():
     d = yaml.safe_load((ROOT / "config.yaml").read_text())
     section = d.get("velez_strategy") or d.get("bullpilot_strategy") or {}
     doctrine_cfg = section.get("doctrine", {})
-    assert doctrine_cfg.get("session_windows", True) is True
-    assert doctrine_cfg.get("market_bias", True) is True
+    assert doctrine_cfg.get("session_windows") is False  # daily-bar bot: intraday windows don't apply
+    assert doctrine_cfg.get("market_bias") is True
 
 
 def _external_elephant(event_index, spy_rows=None):
@@ -431,3 +432,48 @@ def test_backtest_preloads_the_market_indexes():
     # Only index bars at or before the signal bar are read: no look-ahead.
     assert engine.strategy._market_bias("TEST", T0 + timedelta(minutes=10)) == "unknown"
     assert engine.strategy._market_bias("TEST", T0 + timedelta(minutes=2 * 79)) == "long"
+
+
+def _fixed_clock(monkeypatch, when):
+    import importlib
+
+    module = importlib.import_module(VelezInstitutionalStrategy.__module__)
+
+    class Fixed(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return when
+
+    monkeypatch.setattr(module, "datetime", Fixed)
+
+
+def test_bare_alerts_are_judged_when_they_arrive(monkeypatch):
+    from bot.core.types import Signal
+
+    live = dict(LIVE_DOCTRINE, session_windows=True)
+    strategy = VelezInstitutionalStrategy(cfg(doctrine=live))
+    rows = uptrend()
+    run(strategy, rows, start=15 - len(rows))  # cached context ends at 10:30 ET
+    _fixed_clock(monkeypatch, datetime(2026, 6, 1, 19, 50, tzinfo=timezone.utc))  # alert at 15:50 ET
+    sig = Signal("TEST", Side.BUY, "elephant_bar", {"play": "elephant_bar", "stop_price": 1.0})
+    assert strategy.admit_external("TEST", [sig]) == []
+    assert "too_late_in_session" in sig.metadata["doctrine"]["reasons"]
+
+
+def test_context_free_alerts_still_get_session_and_market_rules(monkeypatch):
+    from bot.core.types import Signal
+
+    strategy = VelezInstitutionalStrategy(cfg(doctrine=dict(LIVE_DOCTRINE, session_windows=True)))
+    _fixed_clock(monkeypatch, datetime(2026, 6, 1, 16, 0, tzinfo=timezone.utc))  # 12:00 ET
+    rev = Signal("NEW", Side.BUY, "bull_180", {"play": "bull_180", "stop_price": 1.0})
+    assert strategy.admit_external("NEW", [rev]) == []  # the midday chop blocks reversals too
+    assert "midday_chop" in rev.metadata["doctrine"]["reasons"]
+    assert rev.metadata["doctrine"]["verified"] is False
+
+
+def test_stale_index_series_is_not_enforced():
+    strategy = VelezInstitutionalStrategy(cfg(doctrine=dict(LIVE_DOCTRINE)))
+    strategy.update_market_index("SPY", [bar(i, *r) for i, r in enumerate(uptrend())])
+    fresh = T0 + timedelta(minutes=2 * 79)
+    assert strategy._market_bias("TEST", fresh) == "long"
+    assert strategy._market_bias("TEST", fresh + timedelta(days=10)) == "unknown"

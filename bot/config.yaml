@@ -329,7 +329,7 @@ velez_strategy:
     narrow_state_pct: 0.0596
     wide_state_pct: 0.2493
     # Rulebook 2026.10.1: session windows (equities, intraday bars) and trade with the market.
-    session_windows: true
+    session_windows: false  # daily-bar bot: the intraday session windows don't apply
     market_bias: true
     market_indexes: [SPY, QQQ]
     # Velez management: 1R -> breakeven, bar-by-bar trail, 3-bar rule.
