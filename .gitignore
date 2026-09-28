@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.env
+*.sqlite3
+data/
+*.log
+.DS_Store
+.env.bak*
+node_modules/
+playwright-report/
+test-results/
+.pytest_cache/

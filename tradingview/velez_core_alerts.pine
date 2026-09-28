@@ -1,0 +1,98 @@
+//@version=6
+indicator("Velez Core Institutional Alerts", overlay = true, max_labels_count = 200)
+
+brokerSymbol = input.string("", "Broker symbol override")
+nearPct = input.float(0.0025, "Near SMA percent", minval = 0.0, step = 0.0001)
+extendedPct = input.float(0.012, "Extended from 20 SMA percent", minval = 0.0, step = 0.0005)
+bodyLookback = input.int(5, "Elephant body lookback", minval = 3, maxval = 20)
+structureLookback = input.int(5, "Structure lookback", minval = 3, maxval = 20)
+minBodyMult = input.float(1.8, "Elephant body multiplier", minval = 1.0, step = 0.1)
+wickPct = input.float(0.20, "Max single wick percent", minval = 0.0, maxval = 0.5, step = 0.01)
+recoverPct = input.float(0.80, "180 recovery percent", minval = 0.5, maxval = 1.0, step = 0.01)
+tailPct = input.float(0.66, "Tail minimum percent", minval = 0.5, maxval = 0.9, step = 0.01)
+trendBars = input.int(3, "Tail trend bars", minval = 2, maxval = 10)
+noChaseBodyPct = input.float(0.05, "No-chase body percent", minval = 0.0, maxval = 0.5, step = 0.01)
+tickSize = input.float(0.01, "Stop tick size", minval = 0.00000001)
+
+sma20 = ta.sma(close, 20)
+sma200 = ta.sma(close, 200)
+body = math.abs(close - open)
+barRange = math.max(high - low, syminfo.mintick)
+upperWick = high - math.max(open, close)
+lowerWick = math.min(open, close) - low
+bodyMid = (open + close) / 2.0
+avgPrevBody = ta.sma(body[1], bodyLookback)
+priorHigh = ta.highest(high[1], structureLookback)
+priorLow = ta.lowest(low[1], structureLookback)
+
+near20 = not na(sma20) and (math.abs(close - sma20) / close <= nearPct or (low <= sma20 and high >= sma20))
+near200 = not na(sma200) and (math.abs(close - sma200) / close <= nearPct or (low <= sma200 and high >= sma200))
+extendedAbove20 = not na(sma20) and (close - sma20) / sma20 >= extendedPct
+extendedBelow20 = not na(sma20) and (sma20 - close) / sma20 >= extendedPct
+
+isElephant = not na(avgPrevBody) and body >= minBodyMult * avgPrevBody and upperWick / barRange <= wickPct and lowerWick / barRange <= wickPct
+bullCross = not na(sma20) and close > sma20 and close[1] <= sma20[1] and sma20 >= sma20[1]
+bearCross = not na(sma20) and close < sma20 and close[1] >= sma20[1] and sma20 <= sma20[1]
+bullElephant = close > open and isElephant and (close > priorHigh or bullCross) and (near20 or near200)
+bearElephant = close < open and isElephant and (close < priorLow or bearCross) and (near20 or near200)
+
+prevRed = close[1] < open[1]
+prevGreen = close[1] > open[1]
+bull180Mark = close[1] + (open[1] - close[1]) * recoverPct
+bear180Mark = close[1] - (close[1] - open[1]) * recoverPct
+bull180 = prevRed and close > open and close >= bull180Mark and (near20 or near200)
+bear180 = prevGreen and close < open and close <= bear180Mark and (near20 or near200)
+
+priorDecline = ta.falling(close[1], trendBars)
+priorRally = ta.rising(close[1], trendBars)
+bottomingTail = lowerWick / barRange >= tailPct and ((priorDecline and extendedBelow20) or (near200 and sma200 > sma200[1]))
+toppingTail = upperWick / barRange >= tailPct and ((priorRally and extendedAbove20) or (near200 and sma200 < sma200[1]))
+
+locationText = near200 ? "location_3_near_200_sma" : near20 ? "location_1_near_20_sma" : extendedAbove20 or extendedBelow20 ? "location_2_extended_from_20_sma" : "none"
+symbolOut = brokerSymbol == "" ? syminfo.ticker : brokerSymbol
+
+jsonMsg(play, side, entry, stop, orderType) =>
+    "{" +
+    "\"mode\":\"signal\"," +
+    "\"source\":\"tradingview_pine\"," +
+    "\"symbol\":\"" + symbolOut + "\"," +
+    "\"timeframe\":\"" + timeframe.period + "\"," +
+    "\"timestamp\":\"" + str.tostring(time) + "\"," +
+    "\"play\":\"" + play + "\"," +
+    "\"side\":\"" + side + "\"," +
+    "\"order_type\":\"" + orderType + "\"," +
+    "\"entry_price\":" + str.tostring(entry) + "," +
+    "\"stop_price\":" + str.tostring(stop) + "," +
+    "\"close\":" + str.tostring(close) + "," +
+    "\"location\":\"" + locationText + "\"" +
+    "}"
+
+longPlay = bullElephant ? "elephant_bar" : bull180 ? "bull_180" : bottomingTail ? "bottoming_tail" : ""
+shortPlay = bearElephant ? "elephant_bar" : bear180 ? "bear_180" : toppingTail ? "topping_tail" : ""
+
+longStop = bullElephant ? low - tickSize : bull180 ? math.min(low, low[1]) - tickSize : low - tickSize
+shortStop = bearElephant ? high + tickSize : bear180 ? math.max(high, high[1]) + tickSize : high + tickSize
+
+longTrigger = bullElephant ? priorHigh : bull180 ? bull180Mark : close
+shortTrigger = bearElephant ? priorLow : bear180 ? bear180Mark : close
+longChased = body > 0 and math.abs(close - longTrigger) > noChaseBodyPct * body
+shortChased = body > 0 and math.abs(close - shortTrigger) > noChaseBodyPct * body
+
+longOrderType = bottomingTail or longChased ? "limit" : "market"
+shortOrderType = toppingTail or shortChased ? "limit" : "market"
+longEntry = longOrderType == "limit" ? (bottomingTail ? low + lowerWick * 0.5 : bodyMid) : close
+shortEntry = shortOrderType == "limit" ? (toppingTail ? high - upperWick * 0.5 : bodyMid) : close
+
+longSignal = longPlay != ""
+shortSignal = shortPlay != ""
+
+if barstate.isconfirmed and longSignal
+    alert(jsonMsg(longPlay, "buy", longEntry, longStop, longOrderType), alert.freq_once_per_bar_close)
+
+if barstate.isconfirmed and shortSignal
+    alert(jsonMsg(shortPlay, "sell", shortEntry, shortStop, shortOrderType), alert.freq_once_per_bar_close)
+
+plot(sma20, "20 SMA", color = color.new(color.yellow, 0), linewidth = 2)
+plot(sma200, "200 SMA", color = color.new(color.blue, 0), linewidth = 2)
+plotshape(longSignal, title = "Velez long", style = shape.triangleup, color = color.lime, location = location.belowbar, size = size.tiny)
+plotshape(shortSignal, title = "Velez short", style = shape.triangledown, color = color.red, location = location.abovebar, size = size.tiny)

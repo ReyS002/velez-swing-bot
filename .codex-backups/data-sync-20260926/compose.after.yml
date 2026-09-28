@@ -1,0 +1,74 @@
+services:
+  webhook:
+    build:
+      context: .
+      dockerfile: bot/deploy/Dockerfile.webhook
+    image: velez-swing-bot-webhook:latest
+    container_name: velez-swing-bot-webhook
+    networks:
+      - default
+      - paper-order-bridge_default
+      - dendrix-ai_default
+      - bullwarden
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health/live', timeout=4)); raise SystemExit(0 if data.get('ok') is True else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    env_file:
+      - .env
+    environment:
+      BLS_SHARED_CACHE_FILE: /app/data/shared-calendar/bls-calendar.json
+      BLS_SHARED_CACHE_SECONDS: "43200"
+      BLS_FETCH_RETRY_DELAYS_SECONDS: "0,2,5"
+    volumes:
+      - ./secrets:/opt/stacks/velez-swing-bot/secrets:ro
+      - ./data:/app/data
+      - /opt/stacks/trading_bull_settings.json:/app/data/trading_bull_settings.json
+      - ./bot/config.yaml:/app/bot/config.yaml:ro
+      - ./bot/core/trifecta.py:/app/bot/core/trifecta.py:ro
+      - /opt/stacks/tba-repo/scripts/data/capitol_trades.db:/app/data/capitol_trades.db:ro
+      - /opt/stacks/trading-bull-shared/calendar:/app/data/shared-calendar
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.velez-swing-bot.entrypoints=websecure
+      - traefik.http.routers.velez-swing-bot.rule=Host(`${VELEZ_PUBLIC_HOST}`)
+      - traefik.http.routers.velez-swing-bot.tls.certresolver=letsencrypt
+      - traefik.http.services.velez-swing-bot.loadbalancer.server.port=8080
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: velez-swing-bot-ollama
+    restart: unless-stopped
+    profiles:
+      - ai
+    volumes:
+      - ollama:/root/.ollama
+
+  pockettts:
+    build:
+      context: ./pockettts-agent-bridge
+    image: trading-bull-pockettts:latest
+    container_name: trading-bull-pockettts
+    networks:
+      - default
+    restart: unless-stopped
+    profiles:
+      - voice
+    env_file:
+      - .env.pockettts
+    volumes:
+      - ./pockettts-agent-bridge/data:/app/data
+
+volumes:
+  ollama:
+
+networks:
+  paper-order-bridge_default:
+    external: true
+  dendrix-ai_default:
+    external: true
+  bullwarden:
+    external: true

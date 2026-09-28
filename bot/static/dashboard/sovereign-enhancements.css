@@ -1,0 +1,95 @@
+/* Physical instruments share the room's contain transform, never viewport percentages. */
+.desk-enhancements{position:fixed;inset:0;z-index:2;pointer-events:none}
+.desk-enhancements .desk-instrument,.desk-regional-accent,.desk-weather,.desk-projection,.desk-shelf-light{position:fixed;box-sizing:border-box}
+.desk-instrument{pointer-events:auto;border:0;padding:0;background:none;color:#f8e7c6;cursor:pointer}
+.desk-instrument:focus-visible{outline:2px solid #edd6a8;outline-offset:5px}
+.desk-regional-accent svg{width:100%;height:100%;display:block}
+/* Machined brass case, recessed enamel dials and a restrained glass reflection. */
+.desk-session-clock{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3%;padding:calc(4px * var(--instrument-scale));border-radius:calc(4px * var(--instrument-scale));background:linear-gradient(135deg,#f2dca6 0%,#a57c42 5%,#392a18 12%,#c1a06b 17%,#51412a 90%,#201c15 96%);box-shadow:inset 0 1px 0 #fff0bd99,inset 0 -2px 1px #140f09,1px 2px 2px #0008;isolation:isolate}
+.desk-session-clock:before{content:"";position:absolute;inset:5%;border:1px solid #b08e534d;border-radius:2px;background:linear-gradient(125deg,#3a3930,#111613 45%,#292a22);box-shadow:inset 1px 2px 4px #000c;z-index:-1}
+.desk-session-clock button{min-width:0;min-height:0;border:0;background:none;color:#f3dcaa;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0;cursor:pointer;border-radius:2px}
+.desk-session-clock button:focus-visible{outline:1px solid #ffe2a1;outline-offset:2px}
+.desk-session-clock button:hover .clock-face{filter:brightness(1.18)}
+.clock-face{position:relative;display:block;aspect-ratio:1;height:72%;border:calc(1.5px * var(--instrument-scale)) solid #b49a67;border-radius:50%;background:repeating-conic-gradient(from -1deg,#ddcaa0 0deg 2deg,transparent 2deg 30deg),radial-gradient(circle,#151b19 59%,#433f30 63%,#0b0e0c 70%);box-shadow:0 0 0 1px #161710,inset 0 1px 2px #000,0 1px 1px #dec99a66}
+.clock-face:before{content:"";position:absolute;inset:17%;background:radial-gradient(circle at 30% 15%,#34382c,#101813 70%);border-radius:50%}
+.clock-face:after{content:"";position:absolute;inset:0;border-radius:50%;background:linear-gradient(145deg,#fff1c42b,transparent 48%,#0003 75%);pointer-events:none}
+.clock-face i{position:absolute;left:calc(50% - .5px);bottom:50%;width:1px;height:34%;background:#f7e5b7;transform-origin:50% 100%;box-shadow:0 1px 1px #000}
+.clock-face .clock-hour{height:23%;width:1.5px}.clock-face b{position:absolute;left:45%;top:45%;width:10%;height:10%;border-radius:50%;background:linear-gradient(120deg,#fff2cc,#b39151);box-shadow:0 1px 1px #000}
+.clock-city{font:500 calc(4.5px * var(--instrument-scale))/1.3 Georgia,serif;white-space:nowrap;margin-top:1px;text-shadow:0 1px 1px #000}
+.desk-enhancements[data-room=media] .desk-session-clock,.desk-enhancements[data-room=pacific] .desk-session-clock{grid-template-columns:repeat(4,minmax(0,1fr));padding:calc(2px * var(--instrument-scale))}
+.desk-regional-accent{pointer-events:auto;filter:drop-shadow(0 1px 1px #0005)}
+.desk-weather{pointer-events:none;overflow:hidden;z-index:-1;isolation:isolate}
+.desk-clouds{position:absolute;left:28%;top:5%;width:85%;height:19%;background:radial-gradient(ellipse at 30% 65%,#f5ede623,transparent 35%),radial-gradient(ellipse at 72% 45%,#f0efe81c,transparent 38%);filter:blur(12px);animation:desk-cloud-drift 160s ease-in-out infinite alternate}
+.desk-aircraft{position:absolute;left:32%;top:27%;width:24px;height:7.2px;color:#dcd9cb;opacity:0;animation:desk-flight 130s linear infinite}
+.desk-rain{position:absolute;inset:0;background:repeating-linear-gradient(104deg,transparent 0 60px,#dce6ef1b 61px,transparent 62px 153px);opacity:0;animation:desk-rain-fall 3s linear infinite}
+.desk-enhancements[data-rain=on] .desk-rain{opacity:.45}
+.desk-city-glints{position:absolute;left:36%;top:43%;width:1px;height:1px;background:#ffe5b0;box-shadow:115px 18px #ffd692,241px 8px #ffe6b9,330px 24px #fff1c0,495px -7px #ffc37a,610px 27px #ffeccc;animation:desk-city-light 27s ease-in-out infinite;opacity:.1}
+.desk-enhancements[data-theme=day] .desk-city-glints,.desk-enhancements[data-room=pacific] .desk-city-glints{display:none}
+.desk-shelf-light{background:radial-gradient(ellipse at 50% 0,#ffe0a466,transparent 75%);mix-blend-mode:screen;opacity:0;transition:opacity 240ms ease;pointer-events:none}.desk-shelf-light.lit{opacity:.3}
+.desk-projection{background:radial-gradient(ellipse,#b6ded95c,transparent 70%),repeating-linear-gradient(90deg,transparent 0 25px,#c7dcd655 26px 27px),repeating-linear-gradient(0deg,transparent 0 11px,#c7dcd655 12px 13px);mask-image:radial-gradient(ellipse,#000c,transparent 75%);transform:perspective(400px) rotateX(55deg);opacity:0;transition:opacity 250ms ease;pointer-events:none}
+.sovereign-chart-expanded .desk-projection{opacity:.7}
+.sovereign-chart-expanded .desk-enhancements{z-index:66}.sovereign-chart-expanded .desk-enhancements :is(.desk-instrument,.desk-regional-accent,.desk-weather){visibility:hidden}
+.sovereign:not([data-room-asset]) .desk-enhancements,.sovereign[data-room-asset=unavailable] .desk-enhancements{visibility:hidden}
+.desk-enhancements[data-ready=false]{visibility:hidden}.desk-enhancements[data-ready=false] *{animation-play-state:paused!important}
+.sovereign.panel-open .desk-enhancements .desk-instrument{pointer-events:none}
+.desk-enhancements[data-ambience=off] .desk-weather{visibility:hidden}
+.desk-enhancements[data-ambience=off] .desk-weather *,.desk-enhancements[data-room=media] .desk-weather *{animation-play-state:paused!important}
+.pro-console-open .desk-enhancements{visibility:hidden}
+.pro-console-open .desk-enhancements *,.sovereign-chart-expanded .desk-weather *,.sovereign:not([data-room-asset]) .desk-enhancements *{animation-play-state:paused!important}
+.desk-enhancements[data-room=tokyo] .desk-weather{mask-image:linear-gradient(90deg,#000 37.2%,transparent 37.3% 37.8%,#000 37.9% 50.9%,transparent 51% 51.5%,#000 51.6% 88.7%,transparent 88.8% 89.3%,#000 89.4%)}
+.desk-enhancements[data-room=pacific] .desk-weather{mask-image:linear-gradient(90deg,#000 39.9%,transparent 40% 41.6%,#000 41.7% 50.8%,transparent 50.9% 52.6%,#000 52.7% 75.8%,transparent 75.9% 77.2%,#000 77.3% 91.1%,transparent 91.2% 92.5%,#000 92.6%)}
+.desk-enhancements[data-paused=true] *{animation-play-state:paused!important;transition:none!important}
+/* Desk-awareness stays absent until a real state requires a small, direct cue. */
+.desk-awareness{position:fixed;inset:0;z-index:8;pointer-events:none}
+.desk-awareness-cue{position:fixed;display:block;padding:0;opacity:0;pointer-events:none;cursor:pointer;transition:opacity 180ms ease;isolation:isolate}
+.desk-awareness-cue:not([hidden]){opacity:1;pointer-events:auto}
+.desk-awareness-cue.mission{border:0;border-left:2px solid #e6bb67;border-bottom:1px solid #e6bb67;background:linear-gradient(90deg,#e6bb6733,transparent 28%);box-shadow:0 0 10px #e6bb6740}
+.desk-awareness-cue.approval{border:0;border-radius:50%;background:radial-gradient(circle,#fff3ca 0 15%,#e6bb67 28%,#b87824 48%,transparent 70%);box-shadow:0 0 12px #e6bb67a8}
+.desk-awareness-cue.connection{border:1px solid #ff9a96;border-radius:50%;background:radial-gradient(circle,#ffdad4 0 12%,#d8524c 36%,#7c1718 58%,transparent 70%);box-shadow:0 0 10px #e35955b3}
+.desk-awareness-cue:focus-visible{outline:2px solid #fff3cf;outline-offset:4px}
+.desk-awareness-cue.is-new{animation:desk-attention-arrive 3.2s ease-out 1}
+.sovereign.panel-open .desk-awareness{pointer-events:none}.sovereign.panel-open .desk-awareness-cue{pointer-events:none}
+@keyframes desk-attention-arrive{0%,18%,36%{filter:brightness(1.7);opacity:1}9%,27%{filter:brightness(.8);opacity:.48}100%{filter:none;opacity:1}}
+/* A tiny contact shadow stays at the base; no translation or floating handset. */
+.sovereign[data-object-motion=on] .room-hotspot[data-object-id=journal]:is(:hover,:focus-visible) .journal-art{filter:drop-shadow(0 2px 1px #0006);transform:none}
+@keyframes desk-cloud-drift{from{transform:translateX(-3%)}to{transform:translateX(4%)}}
+@keyframes desk-flight{0%,64%{opacity:0;transform:translate(0,0) scale(1)}66%{opacity:.5}92%{opacity:.5}95%,100%{opacity:0;transform:translate(780px,-38px) scale(1)}}
+@keyframes desk-rain-fall{from{transform:translate(0,-35px)}to{transform:translate(-8px,35px)}}
+@keyframes desk-city-light{0%,100%{opacity:.08}40%{opacity:.3}65%{opacity:.14}}
+@media(prefers-reduced-motion:reduce){.desk-enhancements *{animation:none!important;transition:none!important}.desk-weather,.desk-shelf-light{display:none!important}}
+@media(max-width:760px){.desk-enhancements{display:none}.desk-enhancements *{animation-play-state:paused!important}}
+.desk-enhancements[data-room=pacific] .desk-session-clock{transform:skewY(5deg)}
+.desk-enhancements[data-room=tokyo] .desk-session-clock{transform:skewY(9deg)}
+.desk-enhancements[data-room=manhattan] .desk-session-clock{transform:skewY(3deg)}
+.desk-enhancements[data-room=dubai] .desk-session-clock{transform:skewY(7deg)}
+.desk-regional-accent[hidden]{display:none!important}
+
+.desk-session-clock[hidden]{display:none!important}
+
+/* Thin cloud veils stay above Fuji and within the window masks. */
+.desk-enhancements[data-room=tokyo] .desk-clouds{left:29%;top:16%;width:68%;height:17%;filter:blur(8px);background:radial-gradient(ellipse at 18% 50%,#ebedf23d,transparent 30%),radial-gradient(ellipse at 52% 38%,#e3e8f035,transparent 37%),radial-gradient(ellipse at 81% 67%,#eaf0f02b,transparent 30%)}
+.desk-enhancements[data-room=tokyo][data-theme=day] .desk-clouds{opacity:.9}
+.desk-enhancements[data-room=tokyo][data-theme=night] .desk-clouds{opacity:.45}
+.desk-rain-beads{position:absolute;inset:0;display:none;pointer-events:none}
+.desk-enhancements[data-rain=on] .desk-rain-beads{display:block}
+.desk-rain-beads i{position:absolute;border-radius:45% 48% 52% 46%;background:radial-gradient(ellipse at 30% 20%,#ffffff85,transparent 40%),radial-gradient(ellipse at 60% 80%,#adc2ce30,#152a351a 65%);box-shadow:inset -.4px -.7px .6px #d7e9f075,.5px .8px .7px #07162355;animation:desk-bead-slide var(--bead-duration) ease-in infinite;animation-delay:var(--bead-delay)}
+@keyframes desk-bead-slide{0%,70%{transform:translateY(0);opacity:.65}95%{opacity:.45}100%{transform:translateY(35px);opacity:0}}
+
+.desk-rain,.desk-rain-beads{display:none!important}
+.desk-water{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.desk-records{min-width:0}
+.desk-records h3,.desk-records p,.desk-records summary,.saved-research-text{overflow-wrap:anywhere;white-space:normal}
+.records-controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:12px 0}
+.records-controls input{flex:1 1 180px;min-width:0;padding:10px}
+.records-controls button,.records-controls select{padding:9px 12px}
+.saved-research-text{white-space:pre-wrap;line-height:1.65;margin-top:16px}
+.desk-records summary{cursor:pointer;padding:12px 0}
+.desk-records summary .decision-meta{display:block;margin-top:6px}
+.desk-records .metric-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.desk-records .metric{display:flex;flex-direction:column;gap:8px;min-width:0}
+.desk-records .metric strong{font-size:clamp(20px,2vw,28px);overflow-wrap:anywhere}
+.records-table{overflow-x:auto}
+.records-table table{width:100%;border-collapse:collapse}
+.records-table th,.records-table td{text-align:left;padding:10px 8px;border-bottom:1px solid #9d8d7440;white-space:normal;overflow-wrap:anywhere}
+.records-table small{display:block}
+@media(max-width:520px){.desk-records .metric-grid{grid-template-columns:1fr}}

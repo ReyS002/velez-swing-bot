@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Trading Bull Desk</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/dashboard/assets/styles.css?v=6.21" />
+    <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
+  </head>
+  <body>
+    <main id="app-shell">
+      <div class="photo-room" aria-hidden="true"></div>
+      <div id="screen-terminal" class="screen-terminal" role="button" tabindex="0" aria-label="Trading screen">
+        <div id="tradingview-screen" class="tradingview-screen" aria-label="TradingView chart"></div>
+        <canvas id="chart-screen" aria-label="Live Velez trading chart"></canvas>
+      </div>
+      <div id="room-hotspots" class="room-hotspots" aria-label="Photoreal room objects"></div>
+
+      <header class="topbar" aria-label="Bot status">
+        <div class="brand-lockup">
+          <span class="brand-mark" aria-hidden="true">
+            <img src="/dashboard/assets/trading-bull-logo.png?v=6.21" alt="" />
+          </span>
+          <div>
+            <p class="eyebrow">Live trading workspace</p>
+            <h1>Trading Bull Desk</h1>
+          </div>
+        </div>
+        <div class="status-strip" aria-live="polite">
+          <span class="status-pill" id="execution-pill">Execution</span>
+          <span class="status-pill" id="broker-pill">Broker</span>
+          <span class="status-pill" id="positions-pill">Positions</span>
+          <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch to day room" aria-pressed="false">
+            <i data-lucide="sun"></i>
+            <span>Day</span>
+          </button>
+        </div>
+      </header>
+
+      <div class="nav-reveal-zone" id="nav-reveal-zone" role="button" tabindex="0" aria-label="Show room menu"></div>
+      <nav class="object-nav" aria-label="Room objects">
+        <button class="object-button active" type="button" data-panel="tv" title="Trading screen">
+          <i data-lucide="monitor"></i>
+          <span>TV</span>
+        </button>
+        <button class="object-button" type="button" data-panel="laptop" title="Command center">
+          <i data-lucide="laptop"></i>
+          <span>Command</span>
+        </button>
+        <button class="object-button" type="button" data-panel="mission" title="Daily mission">
+          <i data-lucide="target"></i>
+          <span>Mission</span>
+        </button>
+        <button class="object-button" type="button" data-panel="journal" title="Trade journal">
+          <i data-lucide="book-open"></i>
+          <span>Journal</span>
+        </button>
+        <button class="object-button" type="button" data-panel="calendar" title="Calendar and P/L">
+          <i data-lucide="calendar-days"></i>
+          <span>Calendar</span>
+        </button>
+        <button class="object-button" type="button" data-panel="safe" title="Credential safe">
+          <i data-lucide="shield-check"></i>
+          <span>Safe</span>
+        </button>
+        <button class="object-button" type="button" data-panel="music" title="Music">
+          <i data-lucide="music"></i>
+          <span>Music</span>
+        </button>
+        <button class="object-button" type="button" data-panel="phone" title="Call Winston">
+          <i data-lucide="phone-call"></i>
+          <span>Phone</span>
+        </button>
+        <button class="object-button" type="button" data-panel="bookshelf" title="Strategy library">
+          <i data-lucide="library"></i>
+          <span>Library</span>
+        </button>
+        <button class="object-button" type="button" data-panel="clock" title="Market sessions">
+          <i data-lucide="clock"></i>
+          <span>Clock</span>
+        </button>
+        <button class="object-button" type="button" data-panel="window" title="Market weather">
+          <i data-lucide="cloud-sun"></i>
+          <span>Window</span>
+        </button>
+        <button class="object-button" type="button" data-panel="lamp" title="Risk mood light">
+          <i data-lucide="lamp"></i>
+          <span>Lamp</span>
+        </button>
+        <button class="object-button" type="button" data-panel="drawer" title="Backtest drawer">
+          <i data-lucide="archive"></i>
+          <span>Drawer</span>
+        </button>
+        <button class="object-button" type="button" data-panel="notes" title="Bull Report">
+          <i data-lucide="file-text"></i>
+          <span>Bull</span>
+        </button>
+      </nav>
+
+      <section class="detail-panel" id="detail-panel" aria-live="polite">
+        <div class="panel-heading">
+          <div>
+            <p id="panel-kicker">Live state</p>
+            <h2 id="panel-title">Trading Screen</h2>
+          </div>
+          <button class="panel-close" id="panel-close" type="button" aria-label="Close panel">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <div id="panel-body" class="panel-body"></div>
+      </section>
+
+      <div class="hover-tag" id="hover-tag" hidden></div>
+    </main>
+
+    <script type="module" src="/dashboard/assets/app.js?v=6.21"></script>
+  </body>
+</html>

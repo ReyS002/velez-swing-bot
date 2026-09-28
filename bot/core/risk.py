@@ -1,0 +1,353 @@
+from __future__ import annotations
+
+from collections import deque
+from dataclasses import dataclass
+from datetime import date
+import math
+from typing import Deque, Optional
+
+from .types import Position, Side
+from .utils import safe_div
+
+
+@dataclass
+class RiskStatus:
+    allowed: bool
+    reason: str
+
+
+class RiskManager:
+    def __init__(self, config: dict) -> None:
+        self.config = config
+        self.current_day: Optional[date] = None
+        self.daily_loss: float = 0.0
+        self.consecutive_losses: int = 0
+        self.api_errors: int = 0
+        self.kill_switch: bool = False
+
+        # Cross-day losing-streak protection. Deliberately separate state from
+        # consecutive_losses/kill_switch above, which reset_day() zeroes every
+        # calendar day by design (a same-day circuit breaker). This tracker
+        # persists across day boundaries and is only touched by the methods
+        # below, so it is additive and inert unless explicitly enabled in config.
+        cross_day_window = (config.get("cross_day_streak_protection", {}) or {}).get("rolling_window", 30)
+        self.cross_day_losses: int = 0
+        self.cross_day_outcomes: Deque[bool] = deque(maxlen=cross_day_window)
+        self.cross_day_streak_active: bool = False
+        self.cross_day_streak_flagged_date: Optional[date] = None
+
+    def reset_day(self, new_day: date) -> None:
+        self.current_day = new_day
+        self.daily_loss = 0.0
+        self.consecutive_losses = 0
+        self.kill_switch = False
+
+    def update_after_trade(self, pnl: float) -> None:
+        if pnl < 0:
+            self.consecutive_losses += 1
+        else:
+            self.consecutive_losses = 0
+        self.daily_loss += pnl
+        if self.consecutive_losses >= self.config["max_consecutive_losses"]:
+            self.kill_switch = True
+
+    def _cross_day_config(self) -> dict:
+        return self.config.get("cross_day_streak_protection", {}) or {}
+
+    def _cross_day_threshold(self) -> Optional[int]:
+        """Streak length statistically improbable given the strategy's win rate.
+
+        Uses a rolling observed win rate once enough trades have accumulated;
+        otherwise falls back to the configured prior (e.g. from a backtest).
+        A lower win rate naturally tolerates a longer normal losing streak
+        before it's flagged, so this doesn't fire on ordinary variance for a
+        near-coinflip strategy the way a fixed universal count would.
+        """
+        cfg = self._cross_day_config()
+        if not cfg.get("enabled", False):
+            return None
+        win_rate = cfg.get("expected_win_rate", 0.5)
+        min_samples = cfg.get("min_samples_for_adaptive", 20)
+        if len(self.cross_day_outcomes) >= min_samples:
+            win_rate = sum(self.cross_day_outcomes) / len(self.cross_day_outcomes)
+        win_rate = min(max(win_rate, 0.01), 0.99)
+        significance = cfg.get("significance_level", 0.05)
+        threshold = math.ceil(math.log(significance) / math.log(1 - win_rate))
+        min_threshold = cfg.get("min_threshold", 3)
+        max_threshold = cfg.get("max_threshold", 15)
+        return max(min_threshold, min(threshold, max_threshold))
+
+    def update_after_trade_cross_day(self, pnl: float, *, today: Optional[date] = None) -> None:
+        """Persistent-across-days companion to update_after_trade(). Call this
+        alongside (not instead of) update_after_trade() at every trade-close site.
+
+        `today` should be the bar/trade date for backtests (simulated time) or
+        is left to default to the real wall-clock date for live trading --
+        self.current_day is backtest-only bookkeeping (set by reset_day(), which
+        the live webhook path never calls), so it can't be relied on here.
+        """
+        cfg = self._cross_day_config()
+        if not cfg.get("enabled", False):
+            return
+        won = pnl > 0
+        self.cross_day_outcomes.append(won)
+        if won:
+            self.cross_day_losses = 0
+            self.cross_day_streak_active = False
+            self.cross_day_streak_flagged_date = None
+            return
+        self.cross_day_losses += 1
+        threshold = self._cross_day_threshold()
+        if threshold is not None and self.cross_day_losses >= threshold and not self.cross_day_streak_active:
+            self.cross_day_streak_active = True
+            self.cross_day_streak_flagged_date = today if today is not None else (self.current_day or date.today())
+
+    def check_cross_day_resume(self, today: date) -> None:
+        """Auto-resume valve: clears the flagged streak after N calendar days
+        even without a win, so a quiet strategy doesn't stay throttled forever
+        waiting for a trade that may not come soon."""
+        cfg = self._cross_day_config()
+        if not cfg.get("enabled", False) or not self.cross_day_streak_active:
+            return
+        if self.cross_day_streak_flagged_date is None:
+            return
+        resume_after_days = cfg.get("resume_after_days", 5)
+        if (today - self.cross_day_streak_flagged_date).days >= resume_after_days:
+            self.cross_day_streak_active = False
+            self.cross_day_losses = 0
+            self.cross_day_streak_flagged_date = None
+
+    def cross_day_size_multiplier(self) -> float:
+        """1.0 normally; reduced (not zeroed) while a cross-day losing streak
+        is flagged, so a subsequent winner isn't fully missed while capping
+        damage from a real edge/regime breakdown."""
+        cfg = self._cross_day_config()
+        if not cfg.get("enabled", False) or not self.cross_day_streak_active:
+            return 1.0
+        return cfg.get("size_multiplier", 0.5)
+
+    def sync_broker_daily_pnl(self, account: dict) -> dict:
+        """Use the broker's day-start equity as the live daily-loss source.
+
+        Live webhook processes are short lived and order responses do not carry
+        complete realized P/L.  Alpaca's account snapshot is therefore the
+        source of truth; keeping this state in memory is only a cache for the
+        existing risk interface, never the accounting record.
+        """
+        try:
+            equity = float(account.get("equity") or account.get("portfolio_value"))
+        except (TypeError, ValueError):
+            return {"available": False, "reason": "broker_equity_missing"}
+        try:
+            day_start_equity = float(account.get("last_equity"))
+        except (TypeError, ValueError):
+            return {"available": False, "reason": "broker_last_equity_missing", "equity": equity}
+        if day_start_equity <= 0:
+            return {"available": False, "reason": "broker_last_equity_invalid", "equity": equity}
+        self.daily_loss = equity - day_start_equity
+        return {
+            "available": True,
+            "equity": equity,
+            "day_start_equity": day_start_equity,
+            "daily_pnl": self.daily_loss,
+            "daily_pnl_pct": self.daily_loss / day_start_equity,
+        }
+
+    def register_api_error(self) -> None:
+        self.api_errors += 1
+        max_errors = self.config.get("max_api_errors", 5)
+        if self.api_errors >= max_errors:
+            self.kill_switch = True
+
+    def check_limits(
+        self,
+        equity: float,
+        open_positions: int,
+        *,
+        daily_loss_limit_equity: Optional[float] = None,
+    ) -> RiskStatus:
+        if self.kill_switch:
+            return RiskStatus(False, "kill_switch")
+        if open_positions >= self.config["max_open_positions"]:
+            return RiskStatus(False, "max_open_positions")
+        reference_equity = daily_loss_limit_equity or equity
+        max_daily_loss = -reference_equity * self.config["max_daily_loss_pct"]
+        if self.daily_loss <= max_daily_loss:
+            return RiskStatus(False, "max_daily_loss")
+        return RiskStatus(True, "ok")
+
+    def check_circuit_breaker(self, atr_percent: Optional[float]) -> bool:
+        if atr_percent is None:
+            return False
+        return atr_percent >= self.config.get("circuit_breaker_atr_pct", 1.0)
+
+    def calculate_position_size(
+        self,
+        *,
+        equity: float,
+        entry_price: float,
+        stop_price: float,
+        contract_multiplier: float,
+        max_order_qty: int,
+        max_leverage: float,
+    ) -> int:
+        risk_per_trade = equity * self.config["risk_per_trade"]
+        stop_distance = abs(entry_price - stop_price)
+        risk_per_unit = stop_distance * contract_multiplier
+        if risk_per_unit <= 0:
+            return 0
+        raw_qty = int(risk_per_trade / risk_per_unit)
+        if raw_qty <= 0:
+            return 0
+        position_value = raw_qty * entry_price * contract_multiplier
+        max_value = equity * max_leverage
+        if position_value > max_value:
+            raw_qty = int(max_value / (entry_price * contract_multiplier))
+        return max(0, min(raw_qty, max_order_qty))
+
+    def calculate_fixed_risk_position_size(
+        self,
+        *,
+        max_dollar_risk: float,
+        entry_price: float,
+        stop_price: float,
+        contract_multiplier: float,
+        max_order_qty: int,
+        equity: Optional[float] = None,
+        max_leverage: Optional[float] = None,
+    ) -> int:
+        stop_distance = abs(entry_price - stop_price)
+        risk_per_unit = stop_distance * contract_multiplier
+        if max_dollar_risk <= 0 or risk_per_unit <= 0:
+            return 0
+
+        raw_qty = int(max_dollar_risk / risk_per_unit)
+        if raw_qty <= 0:
+            return 0
+
+        if equity is not None and max_leverage is not None:
+            max_value = equity * max_leverage
+            position_value = raw_qty * entry_price * contract_multiplier
+            if position_value > max_value:
+                raw_qty = int(max_value / (entry_price * contract_multiplier))
+
+        return max(0, min(raw_qty, max_order_qty))
+
+    def calculate_fixed_risk_fractional_size(
+        self,
+        *,
+        max_dollar_risk: float,
+        entry_price: float,
+        stop_price: float,
+        contract_multiplier: float,
+        max_order_qty: int,
+        equity: Optional[float] = None,
+        max_leverage: Optional[float] = None,
+        precision: int = 4,
+    ) -> float:
+        """Return a downward-rounded fractional estimate for advisory planning.
+
+        Execution sizing continues to call ``calculate_fixed_risk_position_size``
+        and therefore remains integer and behaviorally unchanged.  This method
+        exists for the non-submitting planner and uses the same risk, leverage,
+        multiplier, and max-quantity authorities.
+        """
+
+        stop_distance = abs(entry_price - stop_price)
+        risk_per_unit = stop_distance * contract_multiplier
+        if max_dollar_risk <= 0 or risk_per_unit <= 0 or entry_price <= 0 or contract_multiplier <= 0:
+            return 0.0
+        raw_qty = max_dollar_risk / risk_per_unit
+        if equity is not None and max_leverage is not None:
+            raw_qty = min(raw_qty, (equity * max_leverage) / (entry_price * contract_multiplier))
+        raw_qty = min(raw_qty, float(max_order_qty))
+        scale = 10 ** max(0, min(int(precision), 8))
+        return max(0.0, math.floor(raw_qty * scale) / scale)
+
+    def calculate_pyramid_add_size(self, *, current_qty: int, original_core_qty: Optional[int] = None) -> int:
+        add_qty = int(abs(current_qty) * self.config.get("pyramid_add_fraction", 0.5))
+        if original_core_qty is not None:
+            add_qty = min(add_qty, max(0, original_core_qty - abs(current_qty)))
+        return max(0, add_qty)
+
+    def initial_stop(
+        self,
+        *,
+        side: Side,
+        entry_price: float,
+        atr: Optional[float],
+        swing_level: Optional[float],
+        config: dict,
+    ) -> Optional[float]:
+        stop_type = config.get("stop_type", "atr")
+        atr_mult = config.get("stop_atr_mult", 2.0)
+        if stop_type == "structure" and swing_level is not None:
+            return swing_level
+        if atr is None:
+            return None
+        if side == Side.BUY:
+            return entry_price - atr_mult * atr
+        return entry_price + atr_mult * atr
+
+    def update_trailing_stop(
+        self,
+        *,
+        position: Position,
+        close: float,
+        sma20: Optional[float],
+        atr: Optional[float],
+        config: dict,
+    ) -> Optional[float]:
+        trail_type = config.get("trail_type", "atr")
+        trail_atr_mult = config.get("trail_atr_mult", 2.5)
+        debounce = config.get("trail_debounce", 2)
+
+        if trail_type == "atr" and atr is not None:
+            if position.qty > 0:
+                new_stop = close - trail_atr_mult * atr
+                return max(position.stop_price, new_stop)
+            new_stop = close + trail_atr_mult * atr
+            return min(position.stop_price, new_stop)
+
+        if trail_type == "sma20" and sma20 is not None:
+            if position.qty > 0:
+                if close < sma20:
+                    position.trail_breach_count += 1
+                else:
+                    position.trail_breach_count = 0
+                if position.trail_breach_count >= debounce:
+                    return close
+            else:
+                if close > sma20:
+                    position.trail_breach_count += 1
+                else:
+                    position.trail_breach_count = 0
+                if position.trail_breach_count >= debounce:
+                    return close
+
+        return position.stop_price
+
+    def time_stop_trigger(
+        self,
+        *,
+        position: Position,
+        atr: Optional[float],
+        close: float,
+        config: dict,
+    ) -> bool:
+        if not config.get("enabled", False):
+            return False
+        if atr is None:
+            return False
+        bars = config.get("bars", 0)
+        min_move = config.get("min_move_atr", 1.0)
+        if position.bars_held < bars:
+            return False
+        move = (close - position.entry_price) if position.qty > 0 else (position.entry_price - close)
+        return move < (min_move * atr)
+
+    def position_r_multiple(self, position: Position, price: float) -> float:
+        if position.risk_per_share <= 0:
+            return 0.0
+        move = (price - position.entry_price) if position.qty > 0 else (position.entry_price - price)
+        return safe_div(move, position.risk_per_share)

@@ -1,0 +1,13 @@
+.git
+.github
+.env
+.env.*
+node_modules
+playwright-report
+test-results
+.pytest_cache
+**/__pycache__
+**/*.pyc
+data
+secrets
+backups

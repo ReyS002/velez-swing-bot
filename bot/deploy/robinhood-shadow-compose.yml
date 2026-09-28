@@ -1,0 +1,18 @@
+services:
+  webhook:
+    # Set VELEZ_ROBINHOOD_IMAGE to an immutable commit-derived tag at deploy time.
+    image: ${VELEZ_ROBINHOOD_IMAGE:?set an immutable Velez Robinhood image tag}
+    build:
+      args:
+        VCS_REF: ${VELEZ_ROBINHOOD_REVISION:?set the exact Git revision}
+    env_file:
+      - /root/.config/hermes-os/velez-bullpilot-gateway.env
+      - /root/.config/hermes-os/robinhood-runtime.env
+    environment:
+      VELEZ_BROKER: robinhood
+      VELEZ_EXECUTE_ORDERS: "false"
+      VELEZ_ROBINHOOD_SHADOW_MODE: "true"
+      VELEZ_ROBINHOOD_EXECUTION_ENABLED: "false"
+      VELEZ_ROBINHOOD_PROTECTIVE_STOPS_VERIFIED: "false"
+    volumes:
+      - /run/hermes-trading:/run/hermes-trading:ro
