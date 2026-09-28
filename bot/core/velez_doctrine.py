@@ -33,7 +33,7 @@ try:
 except Exception:  # pragma: no cover
     ZoneInfo = None
 
-DOCTRINE_VERSION = "2026.09.4"
+DOCTRINE_VERSION = "2026.10.1"
 
 # ── Defaults (mirror bot/config.yaml → velez_strategy where one exists) ──
 
@@ -69,6 +69,13 @@ MIDDAY_START = time(11, 30)
 MIDDAY_END = time(13, 30)
 SESSION_OPEN = time(9, 30)
 MARKET_TZ = "America/New_York"
+# Session discipline for new entries (US equities, ET). Velez: let amateur hour
+# settle, skip the midday chop, and don't open new trades into the close.
+OPENING_WAIT_MIN = 15          # no new entries in the first 15 minutes
+GAP_OPENING_WAIT_MIN = 5       # opening-gap plays may act after the first 5 minutes
+LAST_ENTRY = time(15, 45)      # no new entries in the last 15 minutes
+SESSION_CLOSE = time(16, 0)
+GAP_PLAYS = {"opening_gap_go", "opening_gap_fade", "gap_and_go", "gap_fade_to_prior_close", "opening_gap", "opening_gap_time_space"}
 
 CONTINUATION_PLAYS = {
     "velez_buy_setup", "velez_sell_setup", "buy_setup", "sell_setup",
@@ -480,12 +487,22 @@ def entry_gate(
     metadata: Optional[dict[str, Any]] = None,
     extension_atr: Optional[float] = None,
     extension_side: Optional[str] = None,
+    decision_time: Optional[datetime] = None,
+    market_bias: Optional[str] = None,
 ) -> dict[str, Any]:
     """The hard Velez rules every bot applies before an entry. Returns {allowed, reasons, family}.
 
     With `extension_atr`/`extension_side` (price vs the 20 SMA in ATRs), two
     more rules apply: no chasing a three-finger spread in the trend's
     direction, and adds (color_change_add) only early in the move (P1/P2).
+
+    With `decision_time` (when the entry would be taken; US equities only) the
+    session windows apply: no new entries in the first 15 minutes (5 for gap
+    plays), no trend entries in the midday chop, none in the last 15 minutes.
+
+    With `market_bias` ("long"/"short"/"none" from market_bias()), trade with
+    the market: no trend entries against it or when it has no side, and no
+    reversal against it unless the stock is at its 200.
     """
     long = _norm_side(side) == "long"
     family = play_family(play, metadata)
@@ -506,6 +523,17 @@ def entry_gate(
         reasons.append("wide_state_no_trend_entry")
     if elephant_origin == "exhausting":
         reasons.append("exhausting_elephant")
+    if decision_time is not None:
+        window = session_window(decision_time, play, family)
+        if not window["allow"]:
+            reasons.append(window["reason"])
+    if market_bias is not None and market_bias != "unknown":
+        wanted = "long" if long else "short"
+        if market_bias not in ("long", "short"):
+            if family == "continuation":
+                reasons.append("market_no_side")
+        elif market_bias != wanted and not (family == "reversal" and near_200):
+            reasons.append("against_market")
     return {"allowed": not reasons, "reasons": reasons, "family": family}
 
 
@@ -842,9 +870,19 @@ def checklist(
         add("spread_qualifies_reversal", tfs["status"] == "ok", False, tfs["reason"])
     position = trend_position(ext, breakout=bool(matched), follow_through=family == "continuation")
 
-    tod = _time_of_day(bars[-1]["t"])
-    if tod is not None:
-        add("time_of_day", tod["ok"], False, tod["detail"])
+    # Session windows: the same rule the bots enforce (a failure here is a no-trade).
+    window = session_window(bars[-1]["t"], play, family)
+    if window["window"] != "unknown":
+        details = {
+            "opening_range_wait": "Amateur hour: let the first 15 minutes settle (5 for gap plays) before a new entry.",
+            "midday_chop": "The midday chop (11:30–13:30 ET): no trend entries.",
+            "too_late_in_session": "Last 15 minutes: no new entries into the close.",
+        }
+        if window["window"] == "extended_hours":
+            add("time_of_day", False, False, "Outside regular hours: thin liquidity, smaller or no trades.")
+        else:
+            add("time_of_day", window["allow"], True,
+                details.get(window["reason"], f"{window['window'].replace('_', ' ')} window: new entries allowed."))
 
     plan = trade_plan(side, bars[-1]["h"], bars[-1]["l"], tick=tick)
     room = _room(bars[:-1], side, plan["entry"], plan["risk_per_share"])
@@ -887,18 +925,62 @@ def _play_family(play: str, events: set[str], ms: dict[str, Any], side: str) -> 
     return "continuation"
 
 
-def _time_of_day(ts: Optional[datetime]) -> Optional[dict[str, Any]]:
+def session_window(ts: Optional[datetime], play: str = "", family: Optional[str] = None) -> dict[str, Any]:
+    """Whether a NEW entry may be taken at `ts` (the entry decision time, ET).
+
+    Regular hours only; outside them no session rule is applied (the caller
+    decides whether it trades extended hours at all).
+    """
     local = _local(ts)
     if local is None:
-        return None
+        return {"window": "unknown", "allow": True, "reason": None}
+    fam = family or play_family(play)
     t = local.time()
-    if t < SESSION_OPEN or t >= time(16, 0):
-        return {"ok": False, "detail": f"{t:%H:%M} ET is outside regular hours."}
-    if t < time(9, 32):
-        return {"ok": False, "detail": "Let the first 2-minute bar close before acting on the open."}
+    if t < SESSION_OPEN or t > SESSION_CLOSE:
+        return {"window": "extended_hours", "allow": True, "reason": None}
+    minutes = (local.hour * 60 + local.minute) - (SESSION_OPEN.hour * 60 + SESSION_OPEN.minute)
+    wait = GAP_OPENING_WAIT_MIN if str(play).lower() in GAP_PLAYS else OPENING_WAIT_MIN
+    if minutes < wait:
+        return {"window": "opening", "allow": False, "reason": "opening_range_wait"}
+    if t >= LAST_ENTRY:
+        return {"window": "closing", "allow": False, "reason": "too_late_in_session"}
     if MIDDAY_START <= t < MIDDAY_END:
-        return {"ok": False, "detail": f"{t:%H:%M} ET is the midday chop (11:30–13:30). Smaller or no trades."}
-    return {"ok": True, "detail": f"{t:%H:%M} ET is a tradeable window."}
+        if fam == "continuation":
+            return {"window": "midday", "allow": False, "reason": "midday_chop"}
+        return {"window": "midday", "allow": True, "reason": None}
+    if t >= time(15, 0):
+        return {"window": "power_hour", "allow": True, "reason": None}
+    return {"window": "prime", "allow": True, "reason": None}
+
+
+def index_bias(bars: list[dict[str, Any]]) -> str:
+    """One index's side: above a rising 20 = bullish, below a falling 20 = bearish, else neutral."""
+    closes = [b["c"] for b in bars]
+    now, prev = sma(closes, SMA_FAST), sma(closes, SMA_FAST, SLOPE_LOOKBACK)
+    if now is None or prev is None:
+        return "unknown"
+    last = closes[-1]
+    if last > now and now > prev:
+        return "bullish"
+    if last < now and now < prev:
+        return "bearish"
+    return "neutral"
+
+
+def market_bias(*index_bars: list[dict[str, Any]]) -> dict[str, Any]:
+    """Trade with the market (SPY/QQQ). long = at least one index bullish and none bearish;
+    short = the mirror; none = the indexes disagree or are all neutral; unknown = no data."""
+    reads = [index_bias(bars) for bars in index_bars if bars]
+    known = [r for r in reads if r != "unknown"]
+    if not known:
+        side = "unknown"
+    elif "bullish" in known and "bearish" not in known:
+        side = "long"
+    elif "bearish" in known and "bullish" not in known:
+        side = "short"
+    else:
+        side = "none"
+    return {"bias": side, "indexes": reads}
 
 
 def _room(prior: list[dict[str, Any]], side: str, entry: float, risk: float) -> Optional[dict[str, Any]]:
@@ -1116,7 +1198,7 @@ PRINCIPLES = [
     "Never let a winner turn into a loser: 1R → stop to breakeven.",
     "If it isn't working in 3 bars, it probably isn't going to. Get out or reduce.",
     "Add to winners on the first color change, never to losers.",
-    "Wait for the first 2-minute bar at the open; avoid the 11:30–1:30 midday chop.",
+    "Let the first 15 minutes settle (5 for gap plays), skip trend entries in the 11:30–1:30 midday chop, no new trades in the last 15 minutes, and trade with the market (SPY/QQQ).",
     "Trading is mostly psychological. The rules exist so you don't have to decide under pressure.",
 ]
 

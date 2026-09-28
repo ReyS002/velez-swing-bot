@@ -23,7 +23,7 @@ T0 = datetime(2026, 6, 1, 14, 0, tzinfo=timezone.utc)
 
 # sha256 of core/velez_doctrine.py. Changing the rulebook is a deliberate act:
 # update velez-mcp/velez.py, re-copy it, and update this hash in the same commit.
-DOCTRINE_SHA256 = "94ca54fe2af9af841eed94798b95f03c71c67fd6e9f3bcbfc38c59500b86ded7"
+DOCTRINE_SHA256 = "590f0e24c46a4297e85a8184c5ea11c5e93ad25044e8851815949cf51a7c2926"
 
 
 def cfg(**overrides):
@@ -42,7 +42,7 @@ def cfg(**overrides):
                      "max_each_wick_pct": 0.2, "max_total_wick_pct": 0.35, "climactic_body_mult": 99.0,
                      "climactic_atr_mult": 99.0},
         "vwap": {"enabled": False},
-        "doctrine": {"enabled": True, "narrow_state_pct": 0.001, "wide_state_pct": 0.03},
+        "doctrine": {"enabled": True, "narrow_state_pct": 0.001, "wide_state_pct": 0.03, "session_windows": False},
     }
     for key in ("one_eighty", "tail", "opening_gap", "time_space", "buy_sell_setup", "nrb_acorn", "fab4",
                 "failed_breakout", "color_change"):
@@ -174,7 +174,7 @@ def test_setup_dies_if_the_stop_trades_first():
 # ── Entries: the hard gates ──
 
 def test_wide_state_refuses_trend_entries():
-    strategy = VelezInstitutionalStrategy(cfg(doctrine={"enabled": True, "narrow_state_pct": 0.0001, "wide_state_pct": 0.001}))
+    strategy = VelezInstitutionalStrategy(cfg(doctrine={"enabled": True, "session_windows": False, "narrow_state_pct": 0.0001, "wide_state_pct": 0.001}))
     fired = run(strategy, with_pullback_and_elephant(uptrend()))
     assert fired[-1] == []
     assert strategy.symbols["TEST"].armed == {}
@@ -269,7 +269,7 @@ def test_live_lifecycle_moves_the_stop_bar_by_bar(monkeypatch):
 def test_external_signals_are_gated_and_armed_like_engine_signals():
     from bot.core.types import Signal
 
-    strategy = VelezInstitutionalStrategy(cfg(doctrine={"enabled": True, "narrow_state_pct": 0.0001, "wide_state_pct": 0.001}))
+    strategy = VelezInstitutionalStrategy(cfg(doctrine={"enabled": True, "session_windows": False, "narrow_state_pct": 0.0001, "wide_state_pct": 0.001}))
     rows = uptrend()
     run(strategy, rows)
     assert strategy.symbols["TEST"].last_market_state["state"] == "wide"
@@ -350,3 +350,55 @@ def test_immediate_plays_are_measured_where_they_fill():
     sig = Signal("TEST", Side.BUY, "color_change_add", {"play": "color_change_add", "stop_price": event.low - 0.01})
     assert strategy.admit_external("TEST", [sig], event) == []
     assert "add_outside_p1_p2" in sig.metadata["doctrine"]["reasons"]
+
+
+# ── Session windows and trading with the market (2026.10.1) ──
+
+LIVE_DOCTRINE = {"enabled": True, "narrow_state_pct": 0.001, "wide_state_pct": 0.03}
+
+
+def test_shipped_config_keeps_session_and_market_rules_on():
+    d = yaml.safe_load((ROOT / "config.yaml").read_text())
+    section = d.get("velez_strategy") or d.get("bullpilot_strategy") or {}
+    doctrine_cfg = section.get("doctrine", {})
+    assert doctrine_cfg.get("session_windows", True) is True
+    assert doctrine_cfg.get("market_bias", True) is True
+
+
+def _external_elephant(event_index, spy_rows=None):
+    """Warm up so the event bar sits at T0 + 2*event_index minutes (T0 = 10:00 ET)."""
+    from bot.core.types import Signal
+
+    strategy = VelezInstitutionalStrategy(cfg(doctrine=dict(LIVE_DOCTRINE)))
+    rows = uptrend()
+    start = event_index - len(rows)
+    run(strategy, rows, start=start)
+    if spy_rows is not None:
+        strategy.update_market_index("SPY", [bar(start + i, *r) for i, r in enumerate(spy_rows)])
+    c = rows[-1][3]
+    event = bar(event_index, c, c + 0.3, c - 0.01, c + 0.28)
+    sig = Signal("TEST", Side.BUY, "elephant_bar", {"play": "elephant_bar", "stop_price": event.low - 0.01})
+    strategy.admit_external("TEST", [sig], event)
+    return sig.metadata["doctrine"]["reasons"]
+
+
+def test_no_trend_entries_in_the_midday_chop():
+    assert "midday_chop" in _external_elephant(80)  # 12:40 ET
+
+
+def test_first_fifteen_minutes_wait_then_prime_time_is_open():
+    assert "opening_range_wait" in _external_elephant(-12)  # event 9:36, decision 9:38 ET
+    reasons = _external_elephant(15)  # 10:30 ET
+    assert not {"midday_chop", "opening_range_wait", "too_late_in_session"} & set(reasons)
+
+
+def test_no_new_entries_into_the_close():
+    assert "too_late_in_session" in _external_elephant(173)  # 15:46 ET
+
+
+def test_trend_entries_only_with_the_market():
+    down = [(200 - h, 200 - l, 200 - o, 200 - c) for o, h, l, c in [(r[0], r[1], r[2], r[3]) for r in uptrend()]]
+    down = [(o, max(o, c) + 0.02, min(o, c) - 0.02, c) for o, _, _, c in down]
+    assert "against_market" in _external_elephant(15, spy_rows=down)
+    assert "against_market" not in _external_elephant(15, spy_rows=uptrend())
+    assert "against_market" not in _external_elephant(15)  # no index data: not enforced

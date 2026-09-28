@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Deque, Dict, List, Optional
 
@@ -144,6 +144,8 @@ class VelezInstitutionalStrategy:
         self.config = config
         self.logger = logger
         self.symbols: Dict[str, VelezContext] = {}
+        # Index bars (SPY/QQQ) for the market-bias rule; fed by the scanner, never traded.
+        self.market_bars: Dict[str, List[dict]] = {}
         self._validate_setup_allowlist()
 
     def _get_context(self, symbol: str) -> VelezContext:
@@ -310,7 +312,58 @@ class VelezInstitutionalStrategy:
             metadata=signal.metadata,
             extension_atr=ext,
             extension_side=ext_side,
+            decision_time=self._decision_time(signal.symbol, bar),
+            market_bias=self._market_bias(signal.symbol, bar.timestamp),
         )
+
+    # ── Session windows and trading with the market (rulebook 2026.10.1) ──
+
+    def update_market_index(self, symbol: str, bars: List[Bar]) -> None:
+        """Feed index bars (SPY/QQQ) used only for the market bias. They never generate signals."""
+        self.market_bars[str(symbol).upper()] = [doctrine.bar_dict(b) for b in bars][-300:]
+
+    def _market_indexes(self) -> List[str]:
+        return [str(s).upper() for s in self._doctrine_cfg().get("market_indexes", ["SPY", "QQQ"])]
+
+    def _market_bias(self, symbol: str, as_of: Optional[datetime]) -> Optional[str]:
+        """long / short / none from SPY/QQQ, using only index bars at or before `as_of`.
+
+        None (rule off, or the symbol is itself an index) and "unknown" (no index data)
+        are not enforced by the gate.
+        """
+        if not self._doctrine_cfg().get("market_bias", True) or str(symbol).upper() in self._market_indexes():
+            return None
+        series = []
+        for index in self._market_indexes():
+            bars = self.market_bars.get(index)
+            if bars is None:
+                ctx = self.symbols.get(index)
+                bars = [doctrine.bar_dict(b) for b in ctx.bars] if ctx is not None else []
+            if as_of is not None:
+                try:
+                    bars = [b for b in bars if b["t"] is None or b["t"] <= as_of]
+                except TypeError:  # naive vs aware timestamps: use what we have
+                    pass
+            series.append(bars)
+        return doctrine.market_bias(*series)["bias"]
+
+    def _decision_time(self, symbol: str, bar: Bar) -> Optional[datetime]:
+        """When an entry off this bar would be taken (its close), for the session windows.
+
+        None (not enforced) for non-equities and for daily or longer bars.
+        """
+        cfg = self._doctrine_cfg()
+        if not cfg.get("session_windows", True):
+            return None
+        sym = str(symbol).upper()
+        if sym in {str(s).upper() for s in cfg.get("non_equity_symbols", [])} or "/" in sym or sym.startswith("^") or sym.endswith(("=F", "=X", "-USD")):
+            return None
+        ctx = self.symbols.get(symbol)
+        stamps = [b.timestamp for b in list(ctx.bars)[-6:]] if ctx is not None else []
+        gaps = [(b - a).total_seconds() / 60 for a, b in zip(stamps, stamps[1:]) if (b - a).total_seconds() > 0]
+        if not gaps or min(gaps) >= 390:
+            return None
+        return bar.timestamp + timedelta(minutes=min(gaps))
 
     def _needs_break(self, signal: Signal) -> bool:
         """Event-bar plays at MARKET wait for the break. A Velez 50% limit entry is already a planned entry."""

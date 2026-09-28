@@ -2579,6 +2579,7 @@ class TradingViewWebhookEngine:
         now = datetime.now(timezone.utc)
         control_mode = self._scanner_control_mode()
         symbols = self._scanner_symbols()
+        self._feed_market_indexes(now)
         symbols_scanned = 0
         signals_found = 0
         decisions_out: List[dict] = []
@@ -2758,6 +2759,23 @@ class TradingViewWebhookEngine:
                 log_event(self.logger, "scanner_scan_failed", {"reason": str(exc)})
             self.scanner_stop.wait(interval)
         self._update_scanner_status(running=False)
+
+    def _feed_market_indexes(self, now: datetime) -> None:
+        """SPY/QQQ bars for the Velez market-bias rule (rulebook 2026.10.1). Never traded."""
+        scanner = getattr(self, "scanner_strategy", None)
+        if scanner is None or not hasattr(scanner, "update_market_index"):
+            return
+        strategies = [scanner] + [s for s in (getattr(self, "strategy", None),)
+                                  if s is not None and s is not scanner and hasattr(s, "update_market_index")]
+        for index in strategies[0]._market_indexes():
+            try:
+                bars = [bar for bar in self._fetch_scanner_bars(symbol=index, asset_type="equity")
+                        if self._scanner_bar_is_closed(bar, now)]
+            except Exception as exc:
+                log_event(self.logger, "market_index_fetch_failed", {"symbol": index, "error": str(exc)})
+                continue
+            for strategy in strategies:
+                strategy.update_market_index(index, bars)
 
     def _scanner_symbols(self) -> List[dict]:
         configured = self.watchlist_symbols()
