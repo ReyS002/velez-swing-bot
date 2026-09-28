@@ -2,15 +2,15 @@
 Trifecta — Multi-timeframe confluency gate.
 
 Before executing any signal, confirms that higher timeframes agree with
-the trade direction.  Uses Tradier (primary, paid, real-time) with
-automatic yfinance fallback (free, 15-min delay).
+the trade direction. Uses Tradier history for daily and larger bars,
+and yfinance for intraday bars or as a calendar-bar fallback.
 
 Rules (auto-derived, config-overridable):
   Intraday:  2m→5m+15m, 5m→15m, 15m+→pass
   Swing:     60m→240m+D, 240m→D, D+→pass
 
-Safety: any data-fetch failure lets the signal through — never block
-a real trade on a transient API error.
+The webhook scorer rejects unavailable or stale signal-timeframe data.
+Legacy callers retain their existing configurable fallback behavior.
 """
 
 from __future__ import annotations
@@ -35,20 +35,21 @@ TF_MINUTES: Dict[str, int] = {
 }
 
 YF_INTERVAL: Dict[str, str] = {
-    "1": "1m", "2": "2m", "5": "5m", "15": "15m", "30": "30m",
-    "60": "60m", "120": "2h", "240": "4h",
+    "1": "1m", "2": "2m", "3": "1m", "5": "5m", "10": "5m",
+    "15": "15m", "30": "30m", "60": "60m", "120": "60m", "240": "60m",
     "D": "1d", "W": "1wk", "M": "1mo",
 }
 
 TRADIER_INTERVAL: Dict[str, str] = {
-    "60": "daily",  # no intraday — use daily as closest
-    "120": "daily",
-    "240": "daily",
     "D": "daily", "W": "weekly", "M": "monthly",
 }
 
-# Intervals that Tradier can actually serve (daily and above)
+# Only /markets/history intervals; never substitute daily bars for intraday.
 TRADIER_SUPPORTED = {"daily", "weekly", "monthly"}
+
+# Yahoo does not natively serve these intervals. Aggregate supported source
+# bars explicitly, retaining their timezone and session-start alignment.
+YF_RESAMPLE_MINUTES = {"3": 3, "10": 10, "120": 120, "240": 240}
 
 
 def _tf_minutes(tf: str) -> int:
@@ -56,12 +57,12 @@ def _tf_minutes(tf: str) -> int:
     return TF_MINUTES.get(str(tf).strip(), 0)
 
 
-def _yf_interval(tf: str) -> str:
-    return YF_INTERVAL.get(str(tf).strip(), "1d")
+def _yf_interval(tf: str) -> Optional[str]:
+    return YF_INTERVAL.get(normalize_timeframe(tf))
 
 
-def _tradier_interval(tf: str) -> str:
-    return TRADIER_INTERVAL.get(str(tf).strip(), "daily")
+def _tradier_interval(tf: str) -> Optional[str]:
+    return TRADIER_INTERVAL.get(normalize_timeframe(tf))
 
 
 # ── Default Trifecta chains ──────────────────────────────────────────────
@@ -121,6 +122,15 @@ def fetch_bars_tradier(symbol: str, interval: str, days_back: int = 60,
     if not token:
         return pd.DataFrame()
 
+    # Tradier's /markets/history has no futures/FX/index coverage and does
+    # NOT fail fast on those symbols -- it hangs to the full read-timeout on
+    # each of the 3 retries (~30s+) before ever falling through to yfinance.
+    # Yahoo-style suffixes (=X FX, =F futures, ^ index) are never valid
+    # Tradier equity tickers, so skip Tradier immediately for them.
+    raw_symbol = str(symbol or "")
+    if raw_symbol.endswith(("=X", "=F")) or raw_symbol.startswith("^"):
+        return pd.DataFrame()
+
     tradier_int = _tradier_interval(interval)
     if tradier_int not in TRADIER_SUPPORTED:
         return pd.DataFrame()  # skip Tradier for intraday — use yfinance
@@ -173,6 +183,26 @@ def fetch_bars_tradier(symbol: str, interval: str, days_back: int = 60,
     return pd.DataFrame()
 
 
+def _resample_intraday(frame: pd.DataFrame, minutes: int) -> pd.DataFrame:
+    """Aggregate within each provider-local date, anchored to its first bar.
+
+    Equity regular sessions therefore start at 09:30, rather than midnight.
+    Never create overnight/weekend bars or combine separate sessions. The
+    last bucket can be partial, as with native provider intraday responses.
+    """
+    if not isinstance(frame.index, pd.DatetimeIndex):
+        return pd.DataFrame()
+    frame = frame.sort_index()
+    frame = frame.loc[~frame.index.duplicated(keep="last")]
+    sessions = []
+    for _, session in frame.groupby(frame.index.normalize()):
+        aggregated = session.resample(
+            f"{minutes}min", origin=session.index[0], closed="left", label="left",
+        ).agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
+        sessions.append(aggregated.dropna(subset=["Open", "High", "Low", "Close"]))
+    return pd.concat(sessions) if sessions else pd.DataFrame()
+
+
 def fetch_bars_yfinance(symbol: str, interval: str, days_back: int = 60) -> pd.DataFrame:
     """Fetch historical bars from yfinance (fallback).
 
@@ -186,6 +216,8 @@ def fetch_bars_yfinance(symbol: str, interval: str, days_back: int = 60) -> pd.D
 
     try:
         yf_int = _yf_interval(interval)
+        if yf_int is None:
+            return pd.DataFrame()  # unknown timeframe must not become daily
 
         # Direct lookup keyed on the bot's OWN interval — do not scan.
         #
@@ -199,10 +231,10 @@ def fetch_bars_yfinance(symbol: str, interval: str, days_back: int = 60) -> pd.D
         # fetch silently failed and returned an empty DataFrame — which is
         # exactly what kept the Arena bots' scanners stuck in "warming"
         # mode with warmed_symbols=0 indefinitely.
-        period_map = {1: "5d", 2: "5d", 5: "5d", 10: "1mo",
+        period_map = {1: "5d", 2: "5d", 3: "5d", 5: "5d", 10: "1mo",
                       15: "1mo", 30: "1mo", 60: "3mo",
                       120: "6mo", 240: "6mo", "D": "1y"}
-        raw = str(interval).strip()
+        raw = normalize_timeframe(interval)
         lookup_key = int(raw) if raw.isdigit() else raw
         period = period_map.get(lookup_key, "3mo")  # safe default for unmapped codes
 
@@ -211,7 +243,10 @@ def fetch_bars_yfinance(symbol: str, interval: str, days_back: int = 60) -> pd.D
             df.columns = df.columns.droplevel(1)
         if df.empty:
             return pd.DataFrame()
-        return df[["Open", "High", "Low", "Close", "Volume"]]
+        df = df[["Open", "High", "Low", "Close", "Volume"]]
+        if raw in YF_RESAMPLE_MINUTES:
+            return _resample_intraday(df, YF_RESAMPLE_MINUTES[raw])
+        return df
     except Exception as exc:
         logger.debug("yfinance_fetch_error: %s", exc)
         return pd.DataFrame()

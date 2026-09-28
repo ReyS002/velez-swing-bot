@@ -28,6 +28,7 @@ services:
       - ./data:/app/data
       - /opt/stacks/trading_bull_settings.json:/app/data/trading_bull_settings.json
       - ./bot/config.yaml:/app/bot/config.yaml:ro
+      - ./bot/core/trifecta.py:/app/bot/core/trifecta.py:ro
       - /opt/stacks/tba-repo/scripts/data/capitol_trades.db:/app/data/capitol_trades.db:ro
       - /opt/stacks/trading-bull-shared/calendar:/app/data/shared-calendar
     labels:

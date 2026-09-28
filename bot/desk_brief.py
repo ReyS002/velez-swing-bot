@@ -74,7 +74,7 @@ def build_brief(daily: dict, market: dict, *, product: str, provider: str) -> di
     state_text = "Execution is armed" if daily.get("execution_armed") else "The desk is in proposal mode"
     risk_value = risk.get("max_dollar_risk_per_trade")
     risk_text = f"The configured risk cap is {float(risk_value):,.0f} dollars per trade. " if isinstance(risk_value, (int, float)) else ""
-    approval_text = f"There are {len(daily.get("pending_approvals", []))} pending approvals to review in Command. "
+    approval_text = f"There are {len(daily.get('pending_approvals', []))} pending approvals to review in Command. "
     if not broker.get("ok"):
         approval_text += "Position coverage may be incomplete until the broker reconnects. "
     section("status", "Readiness", f"{state_text}, and {broker_text}. {risk_text}{approval_text}Display quotes use their own data connections. "
