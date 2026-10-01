@@ -3834,7 +3834,8 @@ class TradingViewWebhookEngine:
         if not symbol or entry_ts is None:
             return None
         timeframe = self._velez_alpaca_timeframe(linked.get("timeframe")) or str(self.scanner_config.get("timeframe", "1Min"))
-        asset_type = str((self.symbol_config.get(symbol) or {}).get("type") or "equity").lower()
+        # Broker symbols can be aliases of the configured ones (BTCUSD for BTC/USD).
+        asset_type = self._quote_asset_type(symbol)
         equity = asset_type in {"equity", "stock", "etf"}
         try:
             bars = self._fetch_scanner_bars(symbol=symbol, asset_type=asset_type, timeframe=timeframe)

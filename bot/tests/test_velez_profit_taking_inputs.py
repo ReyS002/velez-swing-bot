@@ -118,3 +118,16 @@ def test_non_equity_daily_atr_comes_from_its_own_bars(monkeypatch, tmp_path):
     verdict = engine._velez_profit_taking_verdict(pos)
     assert verdict["daily_atr"] is not None
     assert verdict["status"] == "take_profits"
+    assert verdict["status"] == "take_profits"
+
+
+def test_broker_crypto_alias_reads_crypto_bars(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    engine.symbol_config["BTC/USD"] = {"symbol": "BTC/USD", "type": "crypto"}
+    seen = []
+    monkeypatch.setattr(engine, "_fetch_scanner_bars",
+                        lambda symbol, asset_type, timeframe=None: seen.append(asset_type) or [])
+    pos = position(0.5)
+    pos["symbol"] = "BTCUSD"  # how the broker reports the configured BTC/USD
+    engine._velez_profit_taking_verdict(pos)
+    assert seen == ["crypto"]
