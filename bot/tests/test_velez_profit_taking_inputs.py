@@ -1347,3 +1347,61 @@ def test_an_old_lone_decision_is_not_a_manual_positions_opening(monkeypatch, tmp
     pos["linked_decision"] = dict(old)  # the symbol's only decision, months before this manual entry
     engine._velez_record_initial_risk(pos)
     assert engine._velez_recorded_risk(pos) == 5.0  # the live stop, not the old trade's 480
+
+
+def _stop(order_id, side, price, qty="100"):
+    return {"id": order_id, "symbol": "SPY", "type": "stop", "side": side, "qty": qty, "stop_price": price, "status": "new"}
+
+
+def _runner_stops(broker):
+    return [o for o in broker.submitted if str(o.get("client_order_id", "")).startswith("velez-runner-stop-")]
+
+
+def test_a_buy_stop_entry_is_not_taken_for_the_long_positions_protection(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    broker.orders = [_stop("s1", "sell", "495"), _stop("add", "buy", "505", qty="20")]
+    engine._velez_partial_with_stop(position(0.6), 50, lambda: broker.submit_order_payload({"client_order_id": "velez-partial-1r-x"}))
+    assert broker.canceled == ["s1"]
+    assert [(o["qty"], o["stop_price"]) for o in _runner_stops(broker)] == [("50", "495.00")]
+
+
+def test_a_failed_stop_cancel_holds_the_partial(monkeypatch, tmp_path):
+    import pytest
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    broker.orders = [_stop("s1", "sell", "495", qty="60"), _stop("s2", "sell", "496", qty="40")]
+    original = broker.cancel_order
+
+    def cancel(order_id):
+        if order_id == "s2":
+            raise RuntimeError("broker timeout")
+        return original(order_id)
+
+    monkeypatch.setattr(broker, "cancel_order", cancel)
+    sent = []
+    with pytest.raises(RuntimeError):
+        engine._velez_partial_with_stop(position(0.6), 50, lambda: sent.append(1))
+    assert sent == []  # the exit never went out
+    assert [o["qty"] for o in _runner_stops(broker)] == ["60"]  # what was cancelled is put back
+
+
+def test_a_runner_left_without_its_stop_is_a_failed_action(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    monkeypatch.setattr(engine, "_velez_profit_taking_verdict", lambda p: {"status": "take_partial"})
+    broker.orders = [_stop("s1", "sell", "497")]
+    monkeypatch.setattr(engine, "_submit_verified_protective_stop", lambda **kw: (_ for _ in ()).throw(RuntimeError("rejected")))
+    alerts = []
+    monkeypatch.setattr(engine, "_notify_event", lambda **kw: alerts.append(kw))
+    actions = engine._auto_lifecycle_actions(positions=[position(0.6)], open_orders=[], guardrails=[])
+    partial = [a for a in actions if a["action"] == "partial_first_r"]
+    assert partial and partial[0]["status"] == "failed" and "runner stop" in partial[0]["error"]
+    assert alerts and alerts[0]["severity"] == "critical"
+    # The exit itself went out once and is recorded: the next pass doesn't sell again.
+    engine._auto_lifecycle_actions(positions=[position(0.6)], open_orders=[], guardrails=[])
+    assert len(partial_orders(broker)) == 1
+
+
+def test_the_second_partial_waits_for_the_verdicts_first(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    monkeypatch.setattr(engine, "_velez_profit_taking_verdict", lambda p: {"status": "hold"})
+    engine._auto_lifecycle_actions(positions=[position(2.4)], open_orders=[], guardrails=[])
+    assert partial_orders(broker) == []  # past 2R, but the rulebook hasn't called the first partial yet
