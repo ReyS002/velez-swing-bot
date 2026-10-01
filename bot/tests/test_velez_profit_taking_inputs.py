@@ -1217,3 +1217,32 @@ def test_overnight_origin_ignores_after_hours_prints(monkeypatch, tmp_path):
     monkeypatch.setattr(ws.velez_doctrine, "move_origin", capture)
     assert engine._velez_profit_taking_verdict(pos) is not None
     assert seen["low"] >= 99.8
+
+
+def test_an_add_then_an_exit_of_the_old_size_is_not_a_close(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    record = {"seen_at": "2026-06-03T14:00:00+00:00"}
+    add = {"symbol": "SPY", "side": "buy", "qty": "50", "transaction_time": "2026-06-03T14:10:00+00:00"}
+    sell = {"symbol": "SPY", "side": "sell", "qty": "100", "transaction_time": "2026-06-03T14:20:00+00:00"}
+    pos = {"side": "long", "velez_symbol_fills": [sell, add]}
+    assert engine._velez_closed_since(pos, record, 100) is False  # 100 + 50 - 100: still 50 held
+    pos["velez_symbol_fills"] = [{**sell, "transaction_time": "2026-06-03T14:05:00+00:00"}, add]
+    assert engine._velez_closed_since(pos, record, 100) is True  # flat first, then a new 50
+
+
+def test_split_evidence_stops_at_a_half_days_close(monkeypatch, tmp_path):
+    from zoneinfo import ZoneInfo
+    from bot.webhook_server import set_session_close_resolver
+    import bot.webhook_server as ws
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    ny = ZoneInfo("America/New_York")
+    rows = [{**r, "split_adjusted": True} for r in daily_rows(70, last_day=datetime(2026, 6, 4, tzinfo=timezone.utc))]
+    rows[-1]["c"] = 100.0
+    monkeypatch.setattr(engine, "_velez_daily_rows", lambda symbol: rows)
+    monkeypatch.setattr(ws, "datetime", type("FrozenDatetime", (datetime,), {"now": staticmethod(lambda tz=None: datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc))}))
+    since = [hour_bar(12, 100.0, 100.2, 99.8, 100.0, day=4), hour_bar(14, 100.0, 108.0, 100.0, 107.0, day=4)]
+    set_session_close_resolver(lambda day: datetime.combine(day, datetime.min.time(), tzinfo=ny).replace(hour=13))
+    try:
+        assert engine._velez_split_in_hold("SPY", since, False) is False  # the 14:00 print is after the bell
+    finally:
+        set_session_close_resolver(None)

@@ -4125,26 +4125,32 @@ class TradingViewWebhookEngine:
         return None
 
     def _velez_closed_since(self, position: dict, record: dict, last_qty: float) -> bool:
-        """Whether the fills in view show exits since the record was last seen that add up to the whole
-        quantity seen then (the old position closed, whatever was opened after)."""
+        """Whether the fills in view since the record was last seen, replayed in order from the quantity
+        seen then (adds and exits alike), take the position to flat or through it: the old position
+        closed, whatever was opened after."""
         try:
             seen_at = self._timestamp(record.get("seen_at")) if record.get("seen_at") else None
         except Exception:
             seen_at = None
         if seen_at is None:
             return False
-        exit_sides = {"sell"} if str(position.get("side") or "long").lower() == "long" else {"buy"}
-        closed = 0.0
+        entry_side = "buy" if str(position.get("side") or "long").lower() == "long" else "sell"
+        timed = []
         for fill in position.get("velez_symbol_fills") or []:
-            if str(fill.get("side") or "").lower() not in exit_sides:
-                continue
             try:
-                if self._timestamp(fill.get("transaction_time") or fill.get("filled_at")) <= seen_at:
-                    continue
+                at = self._timestamp(fill.get("transaction_time") or fill.get("filled_at"))
             except Exception:
                 continue
-            closed += abs(self._float(fill.get("qty")) or 0.0)
-        return closed >= last_qty - 1e-9
+            if at <= seen_at:
+                continue
+            qty = abs(self._float(fill.get("qty")) or 0.0)
+            timed.append((at, qty if str(fill.get("side") or "").lower() == entry_side else -qty))
+        inventory = abs(last_qty)
+        for _, signed in sorted(timed, key=lambda item: item[0]):
+            inventory += signed
+            if inventory <= 1e-9:
+                return True
+        return False
 
     def _velez_recorded_risk(self, position: dict) -> Optional[float]:
         """The risk recorded for this position: by its opening fill, else the symbol's open-position
@@ -4401,8 +4407,8 @@ class TradingViewWebhookEngine:
                 day = velez_doctrine.daily_bar_date(bar["t"])
             else:
                 local = velez_doctrine._local(bar["t"])
-                if local is None or local.time() >= velez_doctrine.SESSION_CLOSE:
-                    continue  # after-hours prints aren't the day's close
+                if local is None or local >= session_close_on(local.date(), local.tzinfo):
+                    continue  # after-hours prints (after 13:00 on a half day) aren't the day's close
                 day = local.date()
             raw[day] = bar["c"]  # the day's last regular-session close
         for day, close in raw.items():
