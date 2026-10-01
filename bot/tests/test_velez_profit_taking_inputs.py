@@ -121,9 +121,8 @@ def test_pushes_not_counted_when_history_starts_after_entry(monkeypatch, tmp_pat
     monkeypatch.setattr(engine, "_velez_daily_rows", lambda symbol: daily_rows(70, last_day=now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)))
     pos = position(0.5)
     pos["linked_decision"]["timestamp"] = (start - timedelta(days=2)).isoformat()  # entered long before the window
-    verdict = engine._velez_profit_taking_verdict(pos)
-    assert verdict["pushes"] == 0 and verdict["pushes_unavailable"]
-    assert verdict["daily_atr"] == 2.0  # the ATR measure still runs
+    # Earlier pushes and the move's origin are out of view: unreadable, so the R-multiple partial applies.
+    assert engine._velez_profit_taking_verdict(pos) is None
 
 
 def test_verdict_reads_bars_on_the_decision_timeframe(monkeypatch, tmp_path):
@@ -511,7 +510,7 @@ def _two_day_hold(monkeypatch, engine, yesterday_prices, today_prices, adjusted_
     import bot.webhook_server as ws
     monkeypatch.setattr(ws, "datetime", type("FrozenDatetime", (datetime,), {"now": staticmethod(lambda tz=None: datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc))}))
     pos = position(0.5)
-    pos["linked_decision"]["timestamp"] = (y0 - timedelta(minutes=1)).isoformat()
+    pos["linked_decision"]["timestamp"] = (y0 + timedelta(minutes=1)).isoformat()  # filled in the first bar
     return pos
 
 
@@ -604,7 +603,7 @@ def test_one_completed_entry_bar_is_measured_against_the_atrs(monkeypatch, tmp_p
     monkeypatch.setattr(engine, "_velez_daily_rows", lambda symbol: daily_rows(70, last_day=now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)))
     monkeypatch.setattr(engine, "_velez_session_bars", lambda symbol: [])
     pos = position(0.5)
-    pos["linked_decision"]["timestamp"] = (now - timedelta(minutes=21)).isoformat()
+    pos["linked_decision"]["timestamp"] = (now - timedelta(minutes=19)).isoformat()  # filled in the bar
     verdict = engine._velez_profit_taking_verdict(pos)
     assert verdict is not None and verdict["pushes"] == 0 and verdict["daily_atr"] == 2.0
 
@@ -719,9 +718,13 @@ def test_keyless_position_rejects_a_recent_record(monkeypatch, tmp_path):
     first = position(0.2)
     first.update(entry_fill={"side": "buy", "transaction_time": recent})
     engine._velez_record_initial_risk(first)
-    # Same side, no opening fill in the snapshot, but the record is recent: the fills should have
-    # confirmed it, so it may be another trade's. Not inherited.
-    assert engine._velez_open_record(position(0.3)) is None
+    # Same side, no opening fill in the snapshot, the record is recent, and the position isn't the one
+    # last seen (another entry, no split): it may be another trade's. Not inherited.
+    engine._velez_fills_complete = True  # an authoritative fill snapshot that doesn't show the open
+    reopened = position(0.3)
+    reopened.update(entry_price=505.0)
+    assert engine._velez_open_record(reopened) is None
+    assert engine._velez_open_record(position(0.3)) is not None  # the same position as last pass
 
 
 def test_daily_rows_fall_back_to_yahoo_auto_adjusted(monkeypatch, tmp_path):
@@ -765,3 +768,125 @@ def test_unsupported_decision_timeframe_leaves_the_verdict_unreadable(monkeypatc
     pos = position(0.5)
     pos["linked_decision"]["timeframe"] = "1W"
     assert engine._velez_profit_taking_verdict(pos) is None
+
+
+def test_a_recent_split_keeps_the_record_without_an_opening_fill(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    recent = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    first = position(0.2)
+    first.update(entry_fill={"side": "buy", "transaction_time": recent}, current_price=501.0)
+    engine._velez_record_initial_risk(first)  # 100 @ 500, risk 5
+    # A 5-for-4 split: 125 @ 400. No fill, so the opening fill can't be rebuilt any more.
+    after = position(None)
+    after.update(qty="125", entry_price=400.0, stop_price=400.0, current_price=404.0)
+    engine._velez_record_initial_risk(after)
+    assert abs(engine._velez_recorded_risk(after) - 4.0) < 1e-9
+    assert abs(engine._velez_initial_r(after) - 1.0) < 1e-9
+    # The next pass sees the same position as last time: still accepted.
+    engine._velez_record_initial_risk(after)
+    assert engine._velez_open_record(after) is not None
+
+
+def test_a_5_for_4_split_inside_the_hold_is_detected(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    pos = _two_day_hold(monkeypatch, engine, [(125, 126, 124, 125.5), (125.5, 126.5, 125, 126)],
+                        [(100.5, 101, 100, 100.8), (100.8, 101.4, 100.6, 101.2)], adjusted_yesterday_close=100.8)
+    assert engine._velez_profit_taking_verdict(pos) is None
+
+
+def test_session_feed_keeps_the_pieces_of_the_last_closed_bar(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    engine.scanner_config["timeframe"] = "15Min"
+    start = datetime(2026, 6, 3, 13, 30, tzinfo=timezone.utc)
+    prices = [(101, 101.2, 100.6, 100.8), (100.8, 100.9, 100.2, 100.3), (100.3, 100.4, 99.6, 99.7)]
+    bars = [Bar(timestamp=start + timedelta(minutes=15 * i), open=o, high=h, low=l, close=c, volume=1)
+            for i, (o, h, l, c) in enumerate(prices)]
+    monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda symbol, asset_type, timeframe=None: bars)
+    monkeypatch.setattr(engine, "_velez_daily_rows", lambda symbol: daily_rows(70))
+    # The last closed bar starts 10:00 ET; the full tape's 10:10 piece spiked to 101.9, then made the low.
+    piece = {"o": 100.0, "h": 101.9, "l": 99.5, "c": 99.6, "v": 1, "t": start + timedelta(minutes=40)}
+    monkeypatch.setattr(engine, "_velez_session_bars", lambda symbol: [piece])
+    pos = position(0.5)
+    pos["side"] = "short"
+    pos["linked_decision"]["timestamp"] = (start + timedelta(minutes=5)).isoformat()
+    assert engine._velez_profit_taking_verdict(pos)["origin"] == 101.9
+
+
+def test_a_pending_add_does_not_block_the_cold_start_risk(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    pos = position(0.2)
+    pos.update(entry_fill={"side": "buy", "order_id": "open-1", "transaction_time": "2026-06-03T14:30:00+00:00"},
+               open_orders=[{"id": "add-2", "symbol": "SPY", "side": "buy", "status": "new"}])
+    engine._velez_record_initial_risk(pos)
+    assert engine._velez_recorded_risk(pos) == 5.0
+    pending = position(0.2)
+    pending.update(entry_fill={"side": "buy", "order_id": "open-9", "transaction_time": "2026-06-04T14:30:00+00:00"},
+                   open_orders=[{"id": "open-9", "symbol": "SPY", "side": "buy", "status": "partially_filled"}])
+    engine._velez_record_initial_risk(pending)
+    assert engine._velez_recorded_risk(pending) is None  # its own opening order is still filling
+
+
+def test_an_incomplete_fill_snapshot_keeps_a_recent_record(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    recent = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    first = position(0.2)
+    first.update(entry_fill={"side": "buy", "transaction_time": recent})
+    engine._velez_record_initial_risk(first)
+    other = position(0.3)
+    other.update(entry_price=505.0)  # an add since (no opening fill on the truncated page)
+    engine._velez_fills_complete = False
+    assert engine._velez_open_record(other) is not None
+    engine._velez_fills_complete = True
+    assert engine._velez_open_record(other) is None
+
+
+def test_opening_decision_never_picks_a_post_fill_add(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    fill = {"transaction_time": "2026-06-03T14:30:00+00:00"}
+    opening = {"symbol": "SPY", "side": "buy", "status": "submitted", "timestamp": "2026-06-03T14:29:58+00:00"}
+    add = {"symbol": "SPY", "side": "buy", "status": "submitted", "timestamp": "2026-06-03T14:31:00+00:00"}
+    monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: [add, opening])
+    assert engine._velez_opening_decision("SPY", "long", fill) == opening
+    # A market order journaled just after its fill is still found when nothing precedes the fill.
+    late = {**opening, "timestamp": "2026-06-03T14:30:01+00:00"}
+    monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: [add, late])
+    assert engine._velez_opening_decision("SPY", "long", fill) == late
+
+
+def test_premarket_prints_in_the_opening_hour_are_ignored_when_the_feed_has_the_open():
+    strat = strategy(daily_range=True)
+    strat.daily_bars_provider = lambda symbol: daily_rows()
+    ctx = strat._get_context("SPY")
+    # The hourly 09:00 aggregate's 98.0 low printed premarket.
+    for b in (hour_bar(9, 100, 100.5, 98.0, 100.2), hour_bar(10, 100.2, 101.2, 100.1, 101.0)):
+        ctx.bars.append(Bar(timestamp=b["t"], open=b["o"], high=b["h"], low=b["l"], close=b["c"], volume=1))
+    five = lambda minute, low: {"o": 100, "h": 100.4, "l": low, "c": 100.2, "v": 1,
+                                "t": datetime(2026, 6, 3, 13, 30, tzinfo=timezone.utc) + timedelta(minutes=minute)}
+    strat.session_bars_provider = lambda symbol: [five(0, 99.4), five(5, 99.6)]
+    bar = Bar(timestamp=hour_bar(11, 0, 0, 0, 0)["t"], open=101.0, high=101.3, low=100.9, close=101.2, volume=1)
+    assert abs(strat._range_used(signal(), bar) - 0.9) < 1e-9  # from the 99.4 session low, not 98.0
+
+
+def test_planned_limit_entries_are_measured_at_the_limit():
+    strat = strategy(daily_range=True)
+    strat.daily_bars_provider = lambda symbol: daily_rows()
+    strat.session_bars_provider = lambda symbol: [hour_bar(9, 100, 100.5, 99.0, 100.2), hour_bar(10, 100.2, 101.8, 100.1, 101.6)]
+    spike = Bar(timestamp=hour_bar(10, 0, 0, 0, 0)["t"], open=100.2, high=101.8, low=100.1, close=101.6, volume=1)
+    tail = signal()
+    tail.metadata["limit_price"] = 100.8  # a 50% retrace bid
+    assert abs(strat._range_used(tail, spike) - 0.9) < 1e-9
+
+
+def test_daily_bar_closes_early_on_a_half_day(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    monkeypatch.setattr(engine.broker, "is_configured", lambda: True, raising=False)
+    monkeypatch.setattr(engine.broker, "get_calendar_raw",
+                        lambda start=None, end=None: [{"date": start, "open": "09:30", "close": "13:00"}], raising=False)
+    from zoneinfo import ZoneInfo
+    today = datetime.now(ZoneInfo("America/New_York")).date()
+    bar = Bar(timestamp=datetime(today.year, today.month, today.day, tzinfo=timezone.utc), open=1, high=1, low=1, close=1, volume=1)
+    end = engine._velez_bar_end(bar, "1Day", True).astimezone(ZoneInfo("America/New_York"))
+    if datetime.now(timezone.utc) < datetime.combine(today, datetime.min.time(), tzinfo=ZoneInfo("America/New_York")).replace(hour=16):
+        assert (end.hour, end.minute) == (13, 0)
+    else:
+        assert (end.hour, end.minute) == (16, 0)  # past the normal close: no calendar lookup needed

@@ -196,6 +196,27 @@ def session_overlap_bars(bars: List[dict], as_of=None, spacing_seconds: Optional
     return out
 
 
+def session_feed_covers_open(bars: List[dict], as_of=None) -> bool:
+    """Whether a (5-minute) session feed holds today's opening bar, so it can stand for the open."""
+    today = session_overlap_bars(bars, as_of)
+    first = doctrine._local(today[0]["t"]) if today else None
+    if first is None:
+        return False
+    return first <= datetime.combine(first.date(), doctrine.SESSION_OPEN, tzinfo=first.tzinfo) + timedelta(minutes=5)
+
+
+def drop_premarket_bars(bars: List[dict]) -> List[dict]:
+    """Bars that start at or after 09:30 New York: an hourly 09:00 aggregate mixes premarket prints into
+    the open, so it's dropped wherever the session feed supplies the open precisely."""
+    out = []
+    for b in bars or []:
+        local = doctrine._local(b["t"]) if b.get("t") is not None else None
+        if local is not None and local.time() < doctrine.SESSION_OPEN:
+            continue
+        out.append(b)
+    return out
+
+
 def session_high_low_overlap(bars: List[dict], as_of=None) -> tuple:
     """Today's regular-session high and low, counting a bar that straddles the open."""
     today = session_overlap_bars(bars, as_of)
@@ -494,6 +515,8 @@ class VelezInstitutionalStrategy:
                 feeds.append(list(self.session_bars_provider(symbol) or []))
             except Exception:
                 pass
+        if len(feeds) > 1 and session_feed_covers_open(feeds[1], as_of=at):
+            feeds[0] = drop_premarket_bars(intraday)  # the feed has the open without premarket prints
         freshest = None
         for series in feeds:
             if not series:
@@ -508,6 +531,13 @@ class VelezInstitutionalStrategy:
                 freshest = today[-1]
         if price is None and freshest is not None:
             price = freshest["c"]
+        if entry_at is None:
+            # A planned limit entry (e.g. a tail's retrace bid) is measured where it would fill.
+            try:
+                planned = float(signal.metadata.get("limit_price") or 0)
+            except (TypeError, ValueError):
+                planned = 0.0
+            entry_at = planned if planned > 0 else None
         if entry_at is not None and entry_at > 0:
             price = entry_at  # the planned entry (a limit at the breakout level), not where the bar closed
         if price is None or not highs:

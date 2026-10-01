@@ -56,7 +56,8 @@ from .core.velez_strategy import (
     daily_atr_from_rows,
     daily_rows_before,
     session_overlap_bars,
-    DAILY_DISCONTINUITY_PCT,
+    drop_premarket_bars,
+    session_feed_covers_open,
     split_safe_daily_rows,
     utc_daily_rows,
 )
@@ -1551,6 +1552,10 @@ def yahoo_download_safe(symbol: str, **kwargs):
 
 
 # --- END YAHOO-SYMBOL-MAP 2026-09-21 ---
+
+# Raw vs split-adjusted daily close: beyond this the held bars span a split (5-for-4 is 25%).
+SPLIT_EVIDENCE_PCT = 0.10
+
 
 class TradingViewWebhookEngine:
     def __init__(self, config: dict, broker: Optional[Any] = None) -> None:
@@ -3900,13 +3905,16 @@ class TradingViewWebhookEngine:
         opening = None if same else (self._velez_opening_decision(symbol, side, fill) or linked)
         if risk is None:
             entry_side = "buy" if side == "long" else "sell"
+            opening_order = fill.get("order_id")
             working = [
                 order for order in position.get("open_orders") or []
                 if str(order.get("side") or "").lower() == entry_side
                 and str(order.get("status") or "").lower() not in {"filled", "canceled", "cancelled", "expired", "rejected"}
+                # The opening order itself when the fill names it; a separate pending add doesn't count.
+                and (not opening_order or str(order.get("id") or "") == str(opening_order))
             ]
             if working:
-                return  # an entry order is still filling: its average entry (and the risk) isn't final yet
+                return  # the opening order is still filling: its average entry (and the risk) isn't final yet
             entry = self._velez_price(position, "entry_price")
             if entry is None:
                 return
@@ -3949,32 +3957,41 @@ class TradingViewWebhookEngine:
         qty = abs(self._position_qty_number(position))
         entry = self._velez_price(position, "entry_price")
         updated = dict(record)
-        seen = record.get("seen")
-        if seen and qty and entry and record.get("risk"):
-            last_qty, last_entry = (self._float(seen[0]) or 0.0), (self._float(seen[1]) or 0.0)
-            if (
-                last_qty and last_entry
-                and abs(qty - last_qty) > 1e-9
-                and abs(entry / last_entry - 1.0) > 0.01
-                and abs((qty * entry) / (last_qty * last_entry) - 1.0) < 0.005
-            ):
-                updated["risk"] = float(record["risk"]) * entry / last_entry
+        factor = self._velez_split_factor(record.get("seen"), qty, entry)
+        if factor is not None and record.get("risk"):
+            updated["risk"] = float(record["risk"]) * factor
         if qty and entry:
             updated["seen"] = [qty, entry]
         return updated
 
+    def _velez_split_factor(self, seen: Any, qty: float, entry: Optional[float]) -> Optional[float]:
+        """The price factor of a split since `seen` ([qty, entry] last pass): the quantity changed and the
+        entry moved while the cost basis held. None when there's no such evidence."""
+        if not seen or not qty or not entry:
+            return None
+        last_qty, last_entry = (self._float(seen[0]) or 0.0), (self._float(seen[1]) or 0.0)
+        if (
+            last_qty and last_entry
+            and abs(qty - last_qty) > 1e-9
+            and abs(entry / last_entry - 1.0) > 0.01
+            and abs((qty * entry) / (last_qty * last_entry) - 1.0) < 0.005
+        ):
+            return entry / last_entry
+        return None
+
     def _velez_opening_decision(self, symbol: str, side: str, fill: dict) -> Optional[dict]:
         """The submitted decision that opened the position: the latest one for this symbol (aliases
-        included) and side at or before the opening fill (2 minutes of clock slack)."""
+        included) and side at or before the opening fill; failing that, the first one within 2 minutes
+        after it (a market order can fill before its decision is journaled)."""
         stamp = fill.get("transaction_time") or fill.get("filled_at")
         if not stamp:
             return None
         try:
-            opened = self._timestamp(stamp) + timedelta(minutes=2)
+            filled = self._timestamp(stamp)
         except Exception:
             return None
         want_side = "buy" if side == "long" else "sell"
-        best, best_at = None, None
+        best, best_at, after, after_at = None, None, None, None
         for decision in self.journal.decision_entries(limit=1000):
             if self._claim_symbol_key(decision.get("symbol")) != self._claim_symbol_key(symbol):
                 continue
@@ -3984,9 +4001,12 @@ class TradingViewWebhookEngine:
                 decided = self._timestamp(decision.get("timestamp"))
             except Exception:
                 continue
-            if decided <= opened and (best_at is None or decided > best_at):
-                best, best_at = decision, decided
-        return best
+            if decided <= filled:
+                if best_at is None or decided > best_at:
+                    best, best_at = decision, decided
+            elif decided <= filled + timedelta(minutes=2) and (after_at is None or decided < after_at):
+                after, after_at = decision, decided
+        return best or after
 
     def _velez_prune_open_records(self, open_symbols: set) -> None:
         """Clear the open-position record of every symbol that is now flat, so a later position in the
@@ -4016,9 +4036,23 @@ class TradingViewWebhookEngine:
         except Exception:
             opened = None
         days = self._int_env("VELEZ_LIFECYCLE_FILL_LOOKBACK_DAYS", 7, minimum=1, maximum=30)
-        if opened is None or opened > datetime.now(timezone.utc) - timedelta(days=days):
-            return None
-        return record
+        if opened is not None and opened <= datetime.now(timezone.utc) - timedelta(days=days):
+            return record
+        if not getattr(self, "_velez_fills_complete", False):
+            # The fill snapshot failed or was cut off at its page size: it can't disprove the record.
+            return record
+        # Recent: accept it only when the position is the one last seen (same quantity and entry) or a
+        # split explains the change (a split moves the quantity without a fill).
+        qty = abs(self._position_qty_number(position))
+        entry = self._velez_price(position, "entry_price")
+        seen = record.get("seen") or []
+        if len(seen) == 2 and qty and entry:
+            last_qty, last_entry = (self._float(seen[0]) or 0.0), (self._float(seen[1]) or 0.0)
+            if last_qty and last_entry and abs(qty - last_qty) <= 1e-9 and abs(entry / last_entry - 1.0) <= 1e-4:
+                return record
+        if self._velez_split_factor(seen, qty, entry) is not None:
+            return record
+        return None
 
     def _velez_recorded_risk(self, position: dict) -> Optional[float]:
         """The risk recorded for this position: by its opening fill, else the symbol's open-position
@@ -4120,14 +4154,39 @@ class TradingViewWebhookEngine:
             return f"{count}Hour"
         return f"{count // 60}Hour" if count % 60 == 0 else f"{count}Min"
 
+    def _velez_session_close(self, day, default: datetime) -> datetime:
+        """The exchange calendar's close for `day` (13:00 on a half day), cached; `default` (16:00) when
+        the calendar can't be read."""
+        cache = self.__dict__.setdefault("_velez_close_cache", {})
+        if day in cache:
+            return cache[day]
+        close = default
+        if self.broker.is_configured() and hasattr(self.broker, "get_calendar_raw"):
+            try:
+                rows = self.broker.get_calendar_raw(start=day.isoformat(), end=day.isoformat()) or []
+                row = next((r for r in rows if str(r.get("date")) == day.isoformat()), None)
+                if row and row.get("close"):
+                    hour, minute = (int(part) for part in str(row["close"]).split(":")[:2])
+                    close = default.replace(hour=hour, minute=minute)
+            except Exception as exc:
+                log_event(self.logger, "velez_calendar_failed", {"day": day.isoformat(), "reason": str(exc)[:160]})
+                return default  # not cached: retried next pass
+        if len(cache) > 32:
+            cache.clear()
+        cache[day] = close
+        return close
+
     def _velez_bar_end(self, bar: Bar, timeframe: str, equity: bool) -> datetime:
-        """When a bar is complete: start + timeframe, or the 16:00 New York close for an equity daily bar."""
+        """When a bar is complete: start + timeframe, or the session's close (16:00 New York, earlier on a
+        half day) for an equity daily bar."""
         start = bar.timestamp if bar.timestamp.tzinfo else bar.timestamp.replace(tzinfo=timezone.utc)
         seconds = self._timeframe_seconds(timeframe)
         if seconds >= 86400 and equity:
             day = velez_doctrine.daily_bar_date(start)
             if day is not None:
                 close = datetime.combine(day, velez_doctrine.SESSION_CLOSE, tzinfo=ZoneInfo(velez_doctrine.MARKET_TZ))
+                if close > datetime.now(timezone.utc):
+                    close = self._velez_session_close(day, close)  # today: maybe an early close
                 return close.astimezone(timezone.utc)
         return start + timedelta(seconds=seconds)
 
@@ -4173,11 +4232,19 @@ class TradingViewWebhookEngine:
         adjusted = {velez_doctrine.daily_bar_date(row["t"]): row["c"] for row in rows}
         raw: dict = {}
         for bar in since:
-            day = velez_doctrine.daily_bar_date(bar["t"]) if daily else velez_doctrine._local(bar["t"]).date()
-            raw[day] = bar["c"]  # the day's last close
+            if daily:
+                day = velez_doctrine.daily_bar_date(bar["t"])
+            else:
+                local = velez_doctrine._local(bar["t"])
+                if local is None or local.time() >= velez_doctrine.SESSION_CLOSE:
+                    continue  # after-hours prints aren't the day's close
+                day = local.date()
+            raw[day] = bar["c"]  # the day's last regular-session close
         for day, close in raw.items():
             ref = adjusted.get(day)
-            if ref and close and max(close / ref, ref / close) - 1.0 > DAILY_DISCONTINUITY_PCT:
+            # A held day's raw close matches its adjusted close to within the feeds' differences; a
+            # split, even 5-for-4, moves it by its whole ratio.
+            if ref and close and max(close / ref, ref / close) - 1.0 > SPLIT_EVIDENCE_PCT:
                 return True
         return False
 
@@ -4225,10 +4292,13 @@ class TradingViewWebhookEngine:
         since = [velez_doctrine.bar_dict(bar) for bar in closed if self._velez_bar_end(bar, timeframe, equity) > entry_ts]
         if not since:
             return None
-        # A rolling window that starts after the entry can't count pushes since entry (an earlier,
-        # higher extreme is out of view): measure the move against the ATRs only.
+        # A rolling window that starts after the entry can't see the whole hold.
         covers_entry = bool(closed) and (closed[0].timestamp if closed[0].timestamp.tzinfo
                                          else closed[0].timestamp.replace(tzinfo=timezone.utc)) <= entry_ts
+        if not covers_entry:
+            # Pushes before the window and the move's origin are out of view: a "hold" read from the
+            # rest would be wrong, so leave it to the R-multiple partial.
+            return None
         closed_dicts = [velez_doctrine.bar_dict(bar) for bar in closed]
         daily = self._timeframe_seconds(timeframe) >= 86400
         if equity and self._velez_split_in_hold(symbol, since, daily):
@@ -4237,10 +4307,13 @@ class TradingViewWebhookEngine:
         if equity and not daily:
             # The rolling window can lose the morning on short timeframes: add the full-session feed
             # (through the last closed bar) so the move's origin is the day's true low / high.
-            merged = {b["t"]: b for b in closed_dicts}
-            for b in self._velez_session_bars(symbol):
-                if b["t"] > since[-1]["t"]:
-                    continue
+            session = self._velez_session_bars(symbol)
+            base = drop_premarket_bars(closed_dicts) if session_feed_covers_open(session, since[-1]["t"]) else closed_dicts
+            merged = {b["t"]: b for b in base}
+            last_end = since[-1]["t"] + timedelta(seconds=self._timeframe_seconds(timeframe))
+            for b in session:
+                if b["t"] >= last_end:
+                    continue  # past the last closed decision bar (its own 5-minute pieces are kept)
                 cur = merged.get(b["t"])
                 # Same timestamp in both: keep the wider range (the full tape's low / high).
                 merged[b["t"]] = b if cur is None else {**cur, "h": max(cur["h"], b["h"]), "l": min(cur["l"], b["l"])}
@@ -4265,14 +4338,12 @@ class TradingViewWebhookEngine:
             rows = split_safe_daily_rows(rows)
             verdict = velez_doctrine.profit_taking(
                 side,
-                since if covers_entry else since[-1:],
+                since,
                 since[-1]["c"],
                 velez_doctrine.move_origin(origin_bars or since, side),
                 daily_atr_from_rows(rows),
                 velez_doctrine.wide_day_atr(rows),
             )
-            if not covers_entry:
-                verdict["pushes_unavailable"] = "bar history starts after the entry"
             return verdict
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             log_event(self.logger, "velez_profit_taking_skipped", {"symbol": symbol, "reason": str(exc)[:160]})
@@ -4776,6 +4847,8 @@ class TradingViewWebhookEngine:
         raw_positions, positions_error = self._raw_positions_for_lifecycle()
         raw_orders, orders_error = self._raw_orders_for_lifecycle()
         raw_fills, fills_error = self._raw_fills_for_lifecycle()
+        # Authoritative only when it loaded and wasn't cut off at the activity page size (100).
+        self._velez_fills_complete = not fills_error and len(raw_fills) < 100
         decisions = self.journal.decision_entries(limit=1000)
         pending = self.journal.pending_orders()
 
