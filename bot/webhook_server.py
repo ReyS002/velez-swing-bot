@@ -56,6 +56,7 @@ from .core.velez_strategy import (
     daily_atr_from_rows,
     daily_rows_before,
     session_overlap_bars,
+    DAILY_DISCONTINUITY_PCT,
     split_safe_daily_rows,
     utc_daily_rows,
 )
@@ -3855,17 +3856,58 @@ class TradingViewWebhookEngine:
         symbol = str(position.get("symbol") or "").upper()
         if key is None or not symbol:
             return
+        side = str(position.get("side") or "long").lower()
+        linked = position.get("linked_decision") or {}
         risk = self._float(self.journal.get_setting(key, None))
         if risk is None:
             entry = self._velez_price(position, "entry_price")
-            stop = self._velez_price(position, "stop_price")
-            if entry is None or stop is None or abs(entry - stop) <= 0:
+            if entry is None:
                 return
-            risk = abs(entry - stop)
+            # The current stop may already have trailed when the position is first seen (a restart, a
+            # fresh deploy): the journaled stop is the initial one. Take the wider protective distance.
+            distances = []
+            for stop in (self._velez_price(position, "stop_price"), self._float(linked.get("stop_price"))):
+                if stop is not None and ((stop < entry) if side == "long" else (stop > entry)):
+                    distances.append(abs(entry - stop))
+            if not distances:
+                return
+            risk = max(distances)
             self.journal.set_setting(key, risk)
-        record = {"key": key, "side": str(position.get("side") or "long").lower(), "risk": risk}
-        if self.journal.get_setting(f"velez_initial_risk.{symbol}.open", None) != record:
-            self.journal.set_setting(f"velez_initial_risk.{symbol}.open", record)
+        open_key = f"velez_initial_risk.{symbol}.open"
+        existing = self.journal.get_setting(open_key, None)
+        same = isinstance(existing, dict) and existing.get("key") == key
+        # The opening decision's timeframe: a later add's decision (another chart) never replaces it.
+        timeframe = existing.get("timeframe") if same else linked.get("timeframe")
+        fill = position.get("entry_fill") or {}
+        opened = fill.get("transaction_time") or fill.get("filled_at")
+        basis = existing.get("entry") if same else self._velez_price(position, "entry_price")
+        record = {"key": key, "side": side, "risk": risk, "timeframe": timeframe, "opened": opened, "entry": basis}
+        if existing != record:
+            self.journal.set_setting(open_key, record)
+        index = self.journal.get_setting("velez_initial_risk.open_symbols", []) or []
+        if symbol not in index:
+            self.journal.set_setting("velez_initial_risk.open_symbols", sorted(set(index) | {symbol}))
+
+    def _velez_prune_open_records(self, open_symbols: set) -> None:
+        """Clear the open-position record of every symbol that is now flat, so a later position in the
+        same symbol never inherits it."""
+        index = self.journal.get_setting("velez_initial_risk.open_symbols", []) or []
+        flat = [symbol for symbol in index if symbol not in open_symbols]
+        if not flat:
+            return
+        for symbol in flat:
+            self.journal.set_setting(f"velez_initial_risk.{symbol}.open", None)
+        self.journal.set_setting("velez_initial_risk.open_symbols", [symbol for symbol in index if symbol in open_symbols])
+
+    def _velez_open_record(self, position: dict) -> Optional[dict]:
+        """The symbol's open-position record when it belongs to this position (its opening fill, or the
+        same side when the opening fill is out of the fill snapshot)."""
+        symbol = str(position.get("symbol") or "").upper()
+        record = self.journal.get_setting(f"velez_initial_risk.{symbol}.open", None) if symbol else None
+        if not isinstance(record, dict) or record.get("side") != str(position.get("side") or "long").lower():
+            return None
+        key = self._velez_position_key(position)
+        return record if key is None or record.get("key") == key else None
 
     def _velez_recorded_risk(self, position: dict) -> Optional[float]:
         """The risk recorded for this position: by its opening fill, else the symbol's open-position
@@ -3887,6 +3929,10 @@ class TradingViewWebhookEngine:
         if entry is None or price is None:
             return None
         risk = self._velez_recorded_risk(position)
+        basis = self._float((self._velez_open_record(position) or {}).get("entry"))
+        if risk and basis and abs(entry / basis - 1.0) > DAILY_DISCONTINUITY_PCT:
+            # A split since the risk was recorded: the broker's entry is on the new share basis.
+            risk *= entry / basis
         if not risk:
             stop = self._float((position.get("linked_decision") or {}).get("stop_price"))
             risk = abs(entry - stop) if stop is not None else None
@@ -3991,8 +4037,44 @@ class TradingViewWebhookEngine:
                 return self._timestamp(filled_at)
             except Exception:
                 pass
+        # The opening fill has aged out of the fill snapshot: the time recorded when it was seen.
+        opened = (self._velez_open_record(position) or {}).get("opened")
+        if opened:
+            try:
+                return self._timestamp(opened)
+            except Exception:
+                pass
         decided = (position.get("linked_decision") or {}).get("timestamp")
         return self._timestamp(decided) if decided else None
+
+    @staticmethod
+    def _velez_partial_pending(symbol: str, open_orders: List[dict], level: str) -> bool:
+        """Whether this symbol's `level` partial (1r / 2r) is still an open broker order."""
+        prefix = f"velez-partial-{level}-{str(symbol or '').lower()}-"
+        closed = {"filled", "canceled", "cancelled", "expired", "rejected"}
+        return any(
+            str(order.get("client_order_id") or "").lower().startswith(prefix)
+            and str(order.get("status") or "").lower() not in closed
+            for order in open_orders or []
+        )
+
+    def _velez_split_in_hold(self, symbol: str, since: List[dict], daily: bool) -> bool:
+        """Whether a split happened inside the hold: a held day's raw close is off its split-adjusted
+        daily close by a split-sized ratio. A real gap (earnings, news) matches its adjusted close, so it
+        is never mistaken for a split. False when no split-adjusted reference is available."""
+        rows = self._velez_daily_rows(symbol)
+        if not rows or not all(row.get("split_adjusted") for row in rows):
+            return False
+        adjusted = {velez_doctrine.daily_bar_date(row["t"]): row["c"] for row in rows}
+        raw: dict = {}
+        for bar in since:
+            day = velez_doctrine.daily_bar_date(bar["t"]) if daily else velez_doctrine._local(bar["t"]).date()
+            raw[day] = bar["c"]  # the day's last close
+        for day, close in raw.items():
+            ref = adjusted.get(day)
+            if ref and close and abs(close / ref - 1.0) > DAILY_DISCONTINUITY_PCT:
+                return True
+        return False
 
     def _velez_profit_taking_verdict(self, position: dict) -> Optional[dict]:
         """The rulebook's profit-taking verdict (2026.10.6) for a live position, or None.
@@ -4012,12 +4094,19 @@ class TradingViewWebhookEngine:
             entry_ts = None
         if not symbol or entry_ts is None:
             return None
-        timeframe = self._velez_alpaca_timeframe(linked.get("timeframe")) or str(self.scanner_config.get("timeframe", "1Min"))
+        # The opening decision's timeframe (kept with the position), else the linked decision's.
+        opening_tf = (self._velez_open_record(position) or {}).get("timeframe")
+        timeframe = (
+            self._velez_alpaca_timeframe(opening_tf or linked.get("timeframe"))
+            or str(self.scanner_config.get("timeframe", "1Min"))
+        )
         # Broker symbols can be aliases of the configured ones (BTCUSD for BTC/USD).
         asset_type = self._quote_asset_type(symbol)
         equity = asset_type in {"equity", "stock", "etf"}
         if not equity and asset_type not in {"crypto", "future", "futures"}:
             return None  # no bar feed here (e.g. forex): the R-multiple partial applies instead
+        if equity and self._timeframe_seconds(timeframe) > 86400:
+            return None  # a 2Day+ equity bar closes on the trading calendar: the R-multiple partial applies
         try:
             bars = self._fetch_scanner_bars(symbol=symbol, asset_type=asset_type, timeframe=timeframe)
         except Exception as exc:
@@ -4028,11 +4117,7 @@ class TradingViewWebhookEngine:
         closed = [bar for bar in bars if self._velez_bar_end(bar, timeframe, equity) + delay <= now]
         # bars_since_entry starts with the entry bar: the bar the fill happened in.
         since = [velez_doctrine.bar_dict(bar) for bar in closed if self._velez_bar_end(bar, timeframe, equity) > entry_ts]
-        if len(since) < 2:
-            return None
-        if equity and len(split_safe_daily_rows(since)) != len(since):
-            # A split-sized gap inside the hold: pre- and post-split prices aren't comparable, so
-            # pushes and the origin can't be read. The R-multiple partial applies instead.
+        if not since:
             return None
         # A rolling window that starts after the entry can't count pushes since entry (an earlier,
         # higher extreme is out of view): measure the move against the ATRs only.
@@ -4040,11 +4125,19 @@ class TradingViewWebhookEngine:
                                          else closed[0].timestamp.replace(tzinfo=timezone.utc)) <= entry_ts
         closed_dicts = [velez_doctrine.bar_dict(bar) for bar in closed]
         daily = self._timeframe_seconds(timeframe) >= 86400
+        if equity and self._velez_split_in_hold(symbol, since, daily):
+            # Pre- and post-split prices aren't comparable, so pushes and the origin can't be read.
+            return None
         if equity and not daily:
             # The rolling window can lose the morning on short timeframes: add the full-session feed
             # (through the last closed bar) so the move's origin is the day's true low / high.
-            merged = {b["t"]: b for b in self._velez_session_bars(symbol) if b["t"] <= since[-1]["t"]}
-            merged.update({b["t"]: b for b in closed_dicts})
+            merged = {b["t"]: b for b in closed_dicts}
+            for b in self._velez_session_bars(symbol):
+                if b["t"] > since[-1]["t"]:
+                    continue
+                cur = merged.get(b["t"])
+                # Same timestamp in both: keep the wider range (the full tape's low / high).
+                merged[b["t"]] = b if cur is None else {**cur, "h": max(cur["h"], b["h"]), "l": min(cur["l"], b["l"])}
             origin_bars = session_overlap_bars(sorted(merged.values(), key=lambda b: b["t"]))
         else:
             origin_bars = since
@@ -4586,6 +4679,9 @@ class TradingViewWebhookEngine:
             self._position_lifecycle(item, decisions=decisions, orders=open_orders, fills=recent_fills)
             for item in raw_positions
         ]
+        if not positions_error and self.broker.is_configured():
+            # A complete position snapshot: symbols no longer held drop their profit-taking records.
+            self._velez_prune_open_records({str(p.get("symbol") or "").upper() for p in positions})
         guardrails = self._lifecycle_guardrails(
             positions=positions,
             open_orders=open_orders,
@@ -11283,7 +11379,11 @@ class TradingViewWebhookEngine:
                             log_event(self.logger, "auto_partial_1r", {"symbol": symbol, "partial_r": partial_r, "exit_pct": first_pct})
                         except Exception as exc:
                             results.append({"action": "partial_first_r", "symbol": symbol, "status": "failed", "error": str(exc)})
-                elif partial_r >= float(partials_cfg.get("second_r", 2.0)) and "second" not in partials_taken:
+                elif (
+                    partial_r >= float(partials_cfg.get("second_r", 2.0))
+                    and "second" not in partials_taken
+                    and not self._velez_partial_pending(symbol, open_orders, "1r")
+                ):
                     second_pct = float(partials_cfg.get("second_pct", 0.25))
                     exit_qty = self._velez_partial_qty(position, second_pct)
                     if exit_qty > 0:

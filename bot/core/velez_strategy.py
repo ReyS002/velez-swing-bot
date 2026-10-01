@@ -460,7 +460,7 @@ class VelezInstitutionalStrategy:
         symbol = str(signal.symbol).upper()
         if not self._is_equity(symbol):
             return None
-        at = decision_at or (bar.timestamp if bar is not None else None)
+        at = decision_at or (self._bar_session_time(symbol, bar) if bar is not None else None)
         local = doctrine._local(at) if at is not None else None
         if local is None:
             return None
@@ -519,6 +519,23 @@ class VelezInstitutionalStrategy:
             return None
         block = float(cfg.get("range_block", doctrine.RANGE_USED_BLOCK) or doctrine.RANGE_USED_BLOCK)
         return used * doctrine.RANGE_USED_BLOCK / block if block > 0 else None
+
+    def _bar_session_time(self, symbol: str, bar: Bar) -> datetime:
+        """When to measure the day for this bar: its timestamp, or for a daily bar its trading date's
+        16:00 close (a midnight-UTC label would otherwise fall on the prior New York date)."""
+        ctx = self.symbols.get(symbol)
+        stamps = [b.timestamp for b in list(ctx.bars)[-2:]] if ctx is not None else []
+        if len(stamps) == 2 and stamps[-1] == bar.timestamp:
+            stamps = [b.timestamp for b in list(ctx.bars)[-3:-1]]
+        if len(stamps) == 2:
+            daily = (stamps[-1] - stamps[-2]).total_seconds() >= 20 * 3600
+        else:
+            utc = bar.timestamp.astimezone(timezone.utc) if bar.timestamp.tzinfo else bar.timestamp
+            daily = (utc.hour, utc.minute, utc.second) == (0, 0, 0)
+        day = doctrine.daily_bar_date(bar.timestamp) if daily else None
+        if day is None or ZoneInfo is None:
+            return bar.timestamp
+        return datetime.combine(day, doctrine.SESSION_CLOSE, tzinfo=ZoneInfo(doctrine.MARKET_TZ))
 
     # ── Session windows and trading with the market (rulebook 2026.10.1) ──
 
