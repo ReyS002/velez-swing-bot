@@ -161,6 +161,63 @@ def split_safe_daily_rows(rows: List[dict]) -> List[dict]:
     return rows
 
 
+def session_overlap_bars(bars: List[dict], as_of=None, spacing_seconds: Optional[float] = None) -> List[dict]:
+    """Today's regular-session bars, including a bar that starts before 09:30 and ends after it.
+
+    Hourly feeds label the 09:30-10:00 aggregate 09:00; the rulebook's session_bars() filters
+    on the start timestamp and would drop the opening range. `spacing_seconds` defaults to the
+    median spacing of the last bars.
+    """
+    stamps = [b for b in bars or [] if b.get("t") is not None]
+    if not stamps:
+        return []
+    if spacing_seconds is None:
+        recent = stamps[-6:]
+        gaps = sorted((b["t"] - a["t"]).total_seconds() for a, b in zip(recent, recent[1:]) if b["t"] > a["t"])
+        spacing_seconds = gaps[len(gaps) // 2] if gaps else 0.0
+    last = doctrine._local(as_of or stamps[-1]["t"])
+    if last is None:
+        return []
+    open_dt = datetime.combine(last.date(), doctrine.SESSION_OPEN, tzinfo=last.tzinfo)
+    close_dt = datetime.combine(last.date(), doctrine.SESSION_CLOSE, tzinfo=last.tzinfo)
+    out = []
+    for b in stamps:
+        start = doctrine._local(b["t"])
+        if start is None or start.date() != last.date() or start > last or start >= close_dt:
+            continue
+        if start >= open_dt or start + timedelta(seconds=spacing_seconds) > open_dt:
+            out.append(b)
+    return out
+
+
+def session_high_low_overlap(bars: List[dict], as_of=None) -> tuple:
+    """Today's regular-session high and low, counting a bar that straddles the open."""
+    today = session_overlap_bars(bars, as_of)
+    if not today:
+        return None, None
+    return max(b["h"] for b in today), min(b["l"] for b in today)
+
+
+def utc_daily_rows(bars: List[dict], before) -> List[dict]:
+    """Daily rows aggregated by UTC date from intraday or daily bars (non-equities trade around the
+    clock), keeping the days before `before`."""
+    rows: List[dict] = []
+    for b in sorted((b for b in bars or [] if b.get("t") is not None), key=lambda b: b["t"]):
+        t = b["t"] if b["t"].tzinfo else b["t"].replace(tzinfo=timezone.utc)
+        day = t.astimezone(timezone.utc).date()
+        if day >= before:
+            continue
+        if rows and rows[-1]["_day"] == day:
+            row = rows[-1]
+            row.update(h=max(row["h"], b["h"]), l=min(row["l"], b["l"]), c=b["c"])
+        else:
+            rows.append({"o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": 0.0, "_day": day,
+                         "t": datetime(day.year, day.month, day.day, tzinfo=timezone.utc)})
+    for row in rows:
+        row.pop("_day", None)
+    return rows
+
+
 def daily_atr_from_rows(rows: List[dict]) -> Optional[float]:
     """The rulebook's daily ATR from completed daily rows, or None without a full reading.
 
@@ -399,7 +456,7 @@ class VelezInstitutionalStrategy:
         current = doctrine.bar_dict(bar)
         if not intraday or intraday[-1]["t"] != current["t"]:
             intraday.append(current)
-        high, low = doctrine.session_high_low(intraday, as_of=at)
+        high, low = session_high_low_overlap(intraday, as_of=at)
         side = "long" if signal.side == Side.BUY else "short"
         # The unrounded ratio: 0.996 has not covered the daily ATR yet.
         used = doctrine.daily_range_used(atr_value, high, low, bar.close, side).get("used_in_direction_raw")

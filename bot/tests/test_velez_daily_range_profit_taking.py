@@ -205,7 +205,7 @@ def test_profit_taking_verdict_reads_pushes_and_daily_atr(monkeypatch, tmp_path)
     bars = [Bar(timestamp=start + timedelta(minutes=15 * i), open=o, high=h, low=l, close=c, volume=1000)
             for i, (o, h, l, c) in enumerate(prices)]
     engine.scanner_config["timeframe"] = "15Min"
-    monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda symbol, asset_type: bars)
+    monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda symbol, asset_type, timeframe=None: bars)
     monkeypatch.setattr(engine, "_velez_daily_rows", lambda symbol: daily_rows(70, last_day=datetime(day.year, day.month, day.day, tzinfo=timezone.utc) - timedelta(days=1)))
     pos = position(0.5)
     pos["linked_decision"]["timestamp"] = (start + timedelta(minutes=5)).isoformat()
@@ -253,7 +253,7 @@ def test_profit_taking_verdict_on_daily_bars_measures_the_hold(monkeypatch, tmp_
     closes = [100, 101, 103, 102.5, 104.5, 104, 106.5]
     bars = [Bar(timestamp=today - timedelta(days=3 + len(closes) - 1 - i), open=c - 0.5, high=c + 0.5,
                 low=c - 1.0, close=c, volume=1e6) for i, c in enumerate(closes)]
-    monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda symbol, asset_type: bars)
+    monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda symbol, asset_type, timeframe=None: bars)
     monkeypatch.setattr(engine, "_velez_daily_rows", lambda symbol: daily_rows(70, last_day=today - timedelta(days=1)))
     pos = position(0.8)
     pos["linked_decision"]["timestamp"] = (bars[1].timestamp + timedelta(hours=15)).isoformat()

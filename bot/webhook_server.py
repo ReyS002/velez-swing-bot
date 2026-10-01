@@ -54,7 +54,9 @@ from .core.velez_strategy import (
     calculate_pyramid_add_qty,
     daily_atr_from_rows,
     daily_rows_before,
+    session_overlap_bars,
     split_safe_daily_rows,
+    utc_daily_rows,
 )
 from .core.velez_extensions import run_extensions
 from .core.market_regime import classify_regime, regime_lot_multiplier
@@ -3372,15 +3374,15 @@ class TradingViewWebhookEngine:
         status = str(order.get("status") or "").lower()
         return status in {"new", "accepted", "pending_new", "partially_filled"}
 
-    def _fetch_scanner_bars(self, *, symbol: str, asset_type: str) -> List[Bar]:
+    def _fetch_scanner_bars(self, *, symbol: str, asset_type: str, timeframe: Optional[str] = None) -> List[Bar]:
         if asset_type == "crypto":
-            return self._fetch_crypto_bars(symbol)
+            return self._fetch_crypto_bars(symbol, timeframe) if timeframe else self._fetch_crypto_bars(symbol)
         if asset_type in {"future", "futures"}:
             return self._fetch_polygon_futures_bars(symbol)
-        return self._fetch_stock_bars(symbol)
+        return self._fetch_stock_bars(symbol, timeframe) if timeframe else self._fetch_stock_bars(symbol)
 
-    def _fetch_stock_bars(self, symbol: str) -> List[Bar]:
-        timeframe = str(self.scanner_config.get("timeframe", "1Min"))
+    def _fetch_stock_bars(self, symbol: str, timeframe: Optional[str] = None) -> List[Bar]:
+        timeframe = str(timeframe or self.scanner_config.get("timeframe", "1Min"))
         limit = max(50, min(int(self.scanner_config.get("history_bars", 260) or 260), 1000))
         # Simulated broker (Arena bots): no Alpaca. Route scanner bars through the
         # free yfinance path instead of the dead sim:// HTTP URL. Honors the arena
@@ -3437,8 +3439,8 @@ class TradingViewWebhookEngine:
         rows = (data.get("bars") or {}).get(symbol) or []
         return [self._bar_from_alpaca(item) for item in rows]
 
-    def _fetch_crypto_bars(self, symbol: str) -> List[Bar]:
-        timeframe = str(self.scanner_config.get("timeframe", "1Min"))
+    def _fetch_crypto_bars(self, symbol: str, timeframe: Optional[str] = None) -> List[Bar]:
+        timeframe = str(timeframe or self.scanner_config.get("timeframe", "1Min"))
         limit = max(50, min(int(self.scanner_config.get("history_bars", 260) or 260), 1000))
         alpaca_symbol = self._alpaca_crypto_symbol(symbol)
         params = {
@@ -3766,41 +3768,97 @@ class TradingViewWebhookEngine:
             self._velez_daily_cache[key] = rows
         return rows
 
+    @staticmethod
+    def _velez_alpaca_timeframe(value: Any) -> Optional[str]:
+        """Alpaca timeframe for a decision's timeframe ("15", "15m", "1h", "D", "15Min", ...), or None."""
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        if raw.upper() in {"D", "1D", "DAY", "DAILY"}:
+            return "1Day"
+        match = re.match(r"^(\d+)\s*(min|m|t|hour|h|day|d)?$", raw, re.IGNORECASE)
+        if not match or int(match.group(1)) <= 0:
+            return None
+        count, unit = int(match.group(1)), (match.group(2) or "min").lower()
+        if unit in {"day", "d"}:
+            return f"{count}Day"
+        if unit in {"hour", "h"}:
+            return f"{count}Hour"
+        return f"{count // 60}Hour" if count % 60 == 0 else f"{count}Min"
+
+    def _velez_bar_end(self, bar: Bar, timeframe: str, equity: bool) -> datetime:
+        """When a bar is complete: start + timeframe, or the 16:00 New York close for an equity daily bar."""
+        start = bar.timestamp if bar.timestamp.tzinfo else bar.timestamp.replace(tzinfo=timezone.utc)
+        seconds = self._timeframe_seconds(timeframe)
+        if seconds >= 86400 and equity:
+            day = velez_doctrine.daily_bar_date(start)
+            if day is not None:
+                close = datetime.combine(day, velez_doctrine.SESSION_CLOSE, tzinfo=ZoneInfo(velez_doctrine.MARKET_TZ))
+                return close.astimezone(timezone.utc)
+        return start + timedelta(seconds=seconds)
+
+    def _velez_entry_time(self, position: dict) -> Optional[datetime]:
+        """When the position was actually opened: the entry fill's time when the broker reports one on
+        the entry side (a resting limit can fill well after its decision), else the decision time."""
+        decided = (position.get("linked_decision") or {}).get("timestamp")
+        if not decided:
+            return None
+        entry_ts = self._timestamp(decided)
+        fill = position.get("latest_fill") or {}
+        long = str(position.get("side") or "long").lower() == "long"
+        entry_sides = {"buy"} if long else {"sell", "sell_short"}
+        filled_at = fill.get("transaction_time") or fill.get("filled_at")
+        if filled_at and str(fill.get("side") or "").lower() in entry_sides:
+            try:
+                entry_ts = max(entry_ts, self._timestamp(filled_at))
+            except Exception:
+                pass
+        return entry_ts
+
     def _velez_profit_taking_verdict(self, position: dict) -> Optional[dict]:
         """The rulebook's profit-taking verdict (2026.10.6) for a live position, or None.
 
-        The same inputs as the backtested scale-out: pushes since the entry bar, the move from
-        today's session origin (the whole hold for non-equities), and the daily and wide-day
-        ATRs from completed daily bars. None when the entry time, bars or price are missing.
+        The same inputs as the backtested scale-out, on the trade's own timeframe (the linked
+        decision's, else the scanner's): pushes since the bar the entry filled in, the move from
+        today's session origin (from its origin within the hold on daily bars and for
+        non-equities), and the daily and wide-day ATRs from completed days. None when the entry
+        time, bars or price are missing.
         """
         symbol = str(position.get("symbol") or "").upper()
         side = str(position.get("side") or "long")
-        entered_at = (position.get("linked_decision") or {}).get("timestamp")
-        if not symbol or not entered_at:
-            return None
+        linked = position.get("linked_decision") or {}
         try:
-            entry_ts = self._timestamp(entered_at)
-            asset_type = str((self.symbol_config.get(symbol) or {}).get("type") or "equity").lower()
-            bars = self._fetch_scanner_bars(symbol=symbol, asset_type=asset_type)
+            entry_ts = self._velez_entry_time(position)
+        except Exception:
+            entry_ts = None
+        if not symbol or entry_ts is None:
+            return None
+        timeframe = self._velez_alpaca_timeframe(linked.get("timeframe")) or str(self.scanner_config.get("timeframe", "1Min"))
+        asset_type = str((self.symbol_config.get(symbol) or {}).get("type") or "equity").lower()
+        equity = asset_type in {"equity", "stock", "etf"}
+        try:
+            bars = self._fetch_scanner_bars(symbol=symbol, asset_type=asset_type, timeframe=timeframe)
         except Exception as exc:
             log_event(self.logger, "velez_profit_taking_skipped", {"symbol": symbol, "reason": str(exc)[:160]})
             return None
         now = datetime.now(timezone.utc)
-        closed = [bar for bar in bars if self._scanner_bar_is_closed(bar, now)]
-        first_after = next((i for i, bar in enumerate(closed) if bar.timestamp >= entry_ts), None)
-        if first_after is None:
-            return None
+        delay = timedelta(seconds=max(0, int(self.scanner_config.get("closed_bar_delay_seconds", 15) or 15)))
+        closed = [bar for bar in bars if self._velez_bar_end(bar, timeframe, equity) + delay <= now]
         # bars_since_entry starts with the entry bar: the bar the fill happened in.
-        since = [velez_doctrine.bar_dict(bar) for bar in closed[max(0, first_after - 1):]]
+        since = [velez_doctrine.bar_dict(bar) for bar in closed if self._velez_bar_end(bar, timeframe, equity) > entry_ts]
         if len(since) < 2:
             return None
-        equity = asset_type in {"equity", "stock", "etf"}
-        origin_bars = velez_doctrine.session_bars([velez_doctrine.bar_dict(b) for b in closed]) if equity else since
-        rows: List[dict] = []
-        if equity:
-            local = velez_doctrine._local(since[-1]["t"])
-            rows = split_safe_daily_rows(daily_rows_before(self._velez_daily_rows(symbol), local.date())) if local else []
+        closed_dicts = [velez_doctrine.bar_dict(bar) for bar in closed]
+        daily = self._timeframe_seconds(timeframe) >= 86400
+        origin_bars = session_overlap_bars(closed_dicts) if equity and not daily else since
         try:
+            if equity:
+                last_day = velez_doctrine.daily_bar_date(since[-1]["t"]) if daily else velez_doctrine._local(since[-1]["t"]).date()
+                rows = daily_rows_before(self._velez_daily_rows(symbol), last_day)
+            else:
+                last = since[-1]["t"] if since[-1]["t"].tzinfo else since[-1]["t"].replace(tzinfo=timezone.utc)
+                rows = utc_daily_rows(closed_dicts, last.astimezone(timezone.utc).date())
+            rows = split_safe_daily_rows(rows)
             return velez_doctrine.profit_taking(
                 side,
                 since,
@@ -3809,7 +3867,7 @@ class TradingViewWebhookEngine:
                 daily_atr_from_rows(rows),
                 velez_doctrine.wide_day_atr(rows),
             )
-        except (ValueError, KeyError, TypeError) as exc:
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
             log_event(self.logger, "velez_profit_taking_skipped", {"symbol": symbol, "reason": str(exc)[:160]})
             return None
 
@@ -10955,7 +11013,9 @@ class TradingViewWebhookEngine:
                     # Rulebook 2026.10.6: the first partial comes off at the profit-taking verdict
                     # (3+ pushes, or the move past the daily / wide-day ATR), only while in profit.
                     first_due = False
-                    if "first" not in partials_taken and 0 < current_r < float(partials_cfg.get("second_r", 2.0)):
+                    # Still eligible past second_r: a trade that runs straight through 2R takes its
+                    # first partial at the verdict too (the second, at 2R, waits for the next pass).
+                    if "first" not in partials_taken and current_r > 0:
                         verdict = self._velez_profit_taking_verdict(position)
                         first_due = bool(verdict) and verdict.get("status") in {"take_partial", "take_profits"}
                         if first_due:
