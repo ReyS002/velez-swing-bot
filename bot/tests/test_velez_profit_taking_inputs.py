@@ -536,6 +536,9 @@ def test_a_real_big_gap_is_not_a_split(monkeypatch, tmp_path):
 def test_first_record_uses_the_journaled_stop_when_the_stop_already_trailed(monkeypatch, tmp_path):
     engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
     # First seen after a restart: the broker stop has trailed to 500.10, the journal still has 495.
+    opening = {"symbol": "SPY", "side": "buy", "status": "submitted", "stop_price": 495.0,
+               "timestamp": "2026-06-03T14:29:00+00:00"}
+    monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: [opening])
     pos = position(60.0)
     pos.update(entry_fill={"side": "buy", "transaction_time": "2026-06-03T14:30:00+00:00"},
                stop_price=500.10, current_price=506.0)
@@ -547,6 +550,11 @@ def test_first_record_uses_the_journaled_stop_when_the_stop_already_trailed(monk
 def test_verdict_keeps_the_opening_timeframe_after_an_add(monkeypatch, tmp_path):
     engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
     opening = {"side": "buy", "transaction_time": "2026-06-03T14:30:00+00:00"}
+    decisions = [{"symbol": "SPY", "side": "buy", "status": "submitted", "stop_price": 495.0, "timeframe": "60",
+                  "timestamp": "2026-06-03T17:00:00+00:00"},
+                 {"symbol": "SPY", "side": "buy", "status": "submitted", "stop_price": 495.0, "timeframe": "15",
+                  "timestamp": "2026-06-03T14:29:00+00:00"}]
+    monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: decisions)
     first = position(0.3)
     first.update(entry_fill=opening)
     first["linked_decision"]["timeframe"] = "15"
@@ -1316,3 +1324,26 @@ def test_a_failed_partial_puts_the_whole_stop_back(monkeypatch, tmp_path):
         engine._velez_partial_with_stop(position(0.6), 50, refuse)
     stops = [o for o in broker.submitted if str(o.get("client_order_id", "")).startswith("velez-runner-stop-")]
     assert [(o["qty"], o["stop_price"]) for o in stops] == [("100", "497.00")]
+
+
+def test_a_split_read_off_fills_with_a_post_split_add_is_not_trusted(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    at = "2026-06-03T14:{:02d}:00+00:00"
+    buy = {"symbol": "SPY", "side": "buy", "qty": "100", "price": "100", "order_id": "o1", "transaction_time": at.format(30)}
+    add = {"symbol": "SPY", "side": "buy", "qty": "100", "price": "60", "order_id": "o2", "transaction_time": at.format(50)}
+    # 2-for-1 between the fills: 300 held at 53.33 reads as a 3-for-2 split off the fills.
+    assert engine._velez_opening_fill("SPY", True, None, [buy, add], 300, 160 / 3) is None
+    # Without the add the 2-for-1 is read.
+    assert engine._velez_opening_fill("SPY", True, None, [buy], 200, 50.0)["split_factor"] == 2.0
+
+
+def test_an_old_lone_decision_is_not_a_manual_positions_opening(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    old = {"symbol": "SPY", "side": "buy", "status": "submitted", "stop_price": 480.0, "timestamp": "2026-03-01T14:00:00+00:00"}
+    monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: [old])
+    pos = position(None)
+    pos.update(entry_fill={"side": "buy", "price": "500", "transaction_time": "2026-06-03T14:30:00+00:00"},
+               entry_price=500.0, stop_price=495.0, current_price=503.0)
+    pos["linked_decision"] = dict(old)  # the symbol's only decision, months before this manual entry
+    engine._velez_record_initial_risk(pos)
+    assert engine._velez_recorded_risk(pos) == 5.0  # the live stop, not the old trade's 480

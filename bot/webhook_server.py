@@ -3950,11 +3950,9 @@ class TradingViewWebhookEngine:
         same = isinstance(existing, dict) and existing.get("key") == key
         risk = self._float(existing.get("risk")) if same else self._float(self.journal.get_setting(key, None))
         fill = position.get("entry_fill") or {}
-        opening = None
-        if not same:
-            opening = self._velez_opening_decision(symbol, side, fill)
-            if opening is None and self._velez_linked_is_only_entry(position):
-                opening = linked  # the symbol's only entry decision: it can't be a later add
+        # The bounded opening decision only: a linked decision can be a later add or an unrelated older
+        # trade, so without one the live protective stop stands in.
+        opening = None if same else self._velez_opening_decision(symbol, side, fill)
         if same and not existing.get("timeframe"):
             # Recorded before its decision was journaled: look the opening decision up again.
             opening = self._velez_opening_decision(symbol, side, fill)
@@ -4322,6 +4320,7 @@ class TradingViewWebhookEngine:
         inventory, opening = 0.0, None
         cost, bought = 0.0, 0.0  # entry-side shares since the open, for the average entry
         basis_cost, basis_qty = 0.0, 0.0  # the opening order's shares on this side, for its basis
+        added = False  # another order added to the position since the open
         for _, fill, signed in timed:
             before = inventory
             inventory += signed
@@ -4335,6 +4334,7 @@ class TradingViewWebhookEngine:
                 opened = inventory * direction
                 cost, bought = (opened * price, opened) if price else (0.0, 0.0)
                 basis_cost, basis_qty = cost, bought
+                added = False
                 continue
             if inventory * direction <= 0:
                 opening = None
@@ -4345,6 +4345,8 @@ class TradingViewWebhookEngine:
                 if opening.get("order_id") and str(fill.get("order_id") or "") == str(opening.get("order_id")):
                     basis_cost += abs(signed) * price
                     basis_qty += abs(signed)
+                else:
+                    added = True
         if opening is None or held_qty is None or inventory * direction <= 0:
             return None
         factor = abs(held_qty) / (inventory * direction)
@@ -4354,7 +4356,8 @@ class TradingViewWebhookEngine:
             # mid-trade fails this.
             average = cost / bought if bought else None
             if (
-                self._velez_split_ratio(factor) is None
+                added  # fills on both sides of the split: the ratio isn't the opening shares' factor
+                or self._velez_split_ratio(factor) is None
                 or not held_entry or not average
                 or abs(held_entry * factor / average - 1.0) > 0.01
             ):
