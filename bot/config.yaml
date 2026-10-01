@@ -146,7 +146,9 @@ strategy:
     enabled: true
     minutes_before_close: 15
   partials_auto_execute:
-    enabled: true
+    # Off until the partial-exit order handling (stop resize around the exit, follow-up across
+    # polls) lands in its own reviewed PR. The rulebook verdict and daily range stay active.
+    enabled: false
     # First partial trigger: r_multiple (at first_r) or velez_profit_taking (rulebook 2026.10.6:
     # 3+ pushes since entry, or the move past the daily / wide-day ATR; only while in profit).
     # The swarm backtest: half off at this verdict with the runner at breakeven kept the profit
