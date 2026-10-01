@@ -4,7 +4,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Deque, Dict, List, Optional
+from typing import Callable, Deque, Dict, List, Optional
 
 try:
     from zoneinfo import ZoneInfo
@@ -137,6 +137,175 @@ def candle_shape(bar: Bar) -> CandleShape:
     )
 
 
+# A day opening this far from the prior close is a split or bad print, not volatility.
+DAILY_DISCONTINUITY_PCT = 0.30
+
+
+def daily_rows_before(rows: List[dict], day) -> List[dict]:
+    """Completed daily rows (rulebook dicts, oldest first) labeled before trading date `day`."""
+    out = []
+    for row in rows or []:
+        label = doctrine.daily_bar_date(row.get("t")) if row.get("t") is not None else None
+        if label is not None and label < day:
+            out.append(row)
+    return out
+
+
+def split_safe_daily_rows(rows: List[dict]) -> List[dict]:
+    """Daily rows after the latest split-sized gap (a split is not volatility).
+
+    Rows already adjusted for splits (`split_adjusted`) are kept whole: a big gap there is a
+    real move (earnings, news), and dropping the history would blind the ATR rules for weeks.
+    """
+    rows = list(rows)
+    if rows and all(row.get("split_adjusted") for row in rows):
+        return rows
+    for i in range(len(rows) - 1, 0, -1):
+        prior_close = rows[i - 1]["c"]
+        if prior_close and abs(rows[i]["o"] / prior_close - 1.0) > DAILY_DISCONTINUITY_PCT:
+            return rows[i:]
+    return rows
+
+
+_session_close_resolver: Optional[Callable] = None
+
+
+def set_session_close_resolver(resolver: Optional[Callable]) -> None:
+    """Install the exchange calendar's close (day -> aware datetime) for the session helpers; None
+    restores the normal 16:00 close."""
+    global _session_close_resolver
+    _session_close_resolver = resolver
+
+
+def session_close_on(day, tzinfo) -> datetime:
+    """The regular session's close on `day`: the calendar's (13:00 on a half day), else 16:00."""
+    default = datetime.combine(day, doctrine.SESSION_CLOSE, tzinfo=tzinfo)
+    if _session_close_resolver is None:
+        return default
+    try:
+        close = _session_close_resolver(day)
+    except Exception:
+        return default
+    return close.astimezone(tzinfo) if isinstance(close, datetime) else default
+
+
+def _median_spacing(stamps: List[dict]) -> float:
+    recent = stamps[-6:]
+    gaps = sorted((b["t"] - a["t"]).total_seconds() for a, b in zip(recent, recent[1:]) if b["t"] > a["t"])
+    return gaps[len(gaps) // 2] if gaps else 0.0
+
+
+def regular_session_bars(bars: List[dict], spacing_seconds: Optional[float] = None) -> List[dict]:
+    """Bars of every day that fall in that day's regular session (a bar straddling the open counts),
+    dropping premarket, after-hours and post-close prints on a half day."""
+    stamps = [b for b in bars or [] if b.get("t") is not None]
+    if spacing_seconds is None:
+        spacing_seconds = _median_spacing(stamps)
+    out = []
+    for b in stamps:
+        start = doctrine._local(b["t"])
+        if start is None:
+            continue
+        open_dt = datetime.combine(start.date(), doctrine.SESSION_OPEN, tzinfo=start.tzinfo)
+        if start >= session_close_on(start.date(), start.tzinfo):
+            continue
+        if start >= open_dt or start + timedelta(seconds=spacing_seconds) > open_dt:
+            out.append(b)
+    return out
+
+
+def session_overlap_bars(bars: List[dict], as_of=None, spacing_seconds: Optional[float] = None) -> List[dict]:
+    """Today's regular-session bars, including a bar that starts before 09:30 and ends after it.
+
+    Hourly feeds label the 09:30-10:00 aggregate 09:00; the rulebook's session_bars() filters
+    on the start timestamp and would drop the opening range. `spacing_seconds` defaults to the
+    median spacing of the last bars.
+    """
+    stamps = [b for b in bars or [] if b.get("t") is not None]
+    if not stamps:
+        return []
+    if spacing_seconds is None:
+        recent = stamps[-6:]
+        gaps = sorted((b["t"] - a["t"]).total_seconds() for a, b in zip(recent, recent[1:]) if b["t"] > a["t"])
+        spacing_seconds = gaps[len(gaps) // 2] if gaps else 0.0
+    last = doctrine._local(as_of or stamps[-1]["t"])
+    if last is None:
+        return []
+    open_dt = datetime.combine(last.date(), doctrine.SESSION_OPEN, tzinfo=last.tzinfo)
+    close_dt = session_close_on(last.date(), last.tzinfo)  # 13:00 on a half day
+    out = []
+    for b in stamps:
+        start = doctrine._local(b["t"])
+        if start is None or start.date() != last.date() or start > last or start >= close_dt:
+            continue
+        if start >= open_dt or start + timedelta(seconds=spacing_seconds) > open_dt:
+            out.append(b)
+    return out
+
+
+def session_feed_covers_open(bars: List[dict], as_of=None) -> bool:
+    """Whether a (5-minute) session feed holds today's opening bar, so it can stand for the open."""
+    today = session_overlap_bars(bars, as_of)
+    first = doctrine._local(today[0]["t"]) if today else None
+    if first is None:
+        return False
+    # Bars are labelled by their start: a first bar at 09:35 doesn't hold the 09:30-09:35 interval.
+    return first <= datetime.combine(first.date(), doctrine.SESSION_OPEN, tzinfo=first.tzinfo)
+
+
+def drop_premarket_bars(bars: List[dict]) -> List[dict]:
+    """Bars that start at or after 09:30 New York: an hourly 09:00 aggregate mixes premarket prints into
+    the open, so it's dropped wherever the session feed supplies the open precisely."""
+    out = []
+    for b in bars or []:
+        local = doctrine._local(b["t"]) if b.get("t") is not None else None
+        if local is not None and local.time() < doctrine.SESSION_OPEN:
+            continue
+        out.append(b)
+    return out
+
+
+def session_high_low_overlap(bars: List[dict], as_of=None) -> tuple:
+    """Today's regular-session high and low, counting a bar that straddles the open."""
+    today = session_overlap_bars(bars, as_of)
+    if not today:
+        return None, None
+    return max(b["h"] for b in today), min(b["l"] for b in today)
+
+
+def utc_daily_rows(bars: List[dict], before) -> List[dict]:
+    """Daily rows aggregated by UTC date from intraday or daily bars (non-equities trade around the
+    clock), keeping the days before `before`."""
+    rows: List[dict] = []
+    for b in sorted((b for b in bars or [] if b.get("t") is not None), key=lambda b: b["t"]):
+        t = b["t"] if b["t"].tzinfo else b["t"].replace(tzinfo=timezone.utc)
+        day = t.astimezone(timezone.utc).date()
+        if day >= before:
+            continue
+        if rows and rows[-1]["_day"] == day:
+            row = rows[-1]
+            row.update(h=max(row["h"], b["h"]), l=min(row["l"], b["l"]), c=b["c"])
+        else:
+            # Crypto and futures have no share splits: every gap in their history is real.
+            rows.append({"o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": 0.0, "_day": day,
+                         "split_adjusted": True, "t": datetime(day.year, day.month, day.day, tzinfo=timezone.utc)})
+    for row in rows:
+        row.pop("_day", None)
+    return rows
+
+
+def daily_atr_from_rows(rows: List[dict]) -> Optional[float]:
+    """The rulebook's daily ATR from completed daily rows, or None without a full reading.
+
+    A full ATR needs DAILY_ATR_PERIOD + 1 rows after the latest split-sized gap; a partial
+    average never arms a rule.
+    """
+    rows = split_safe_daily_rows(rows)
+    if len(rows) <= doctrine.DAILY_ATR_PERIOD:
+        return None
+    return doctrine.atr(rows[-(doctrine.DAILY_ATR_PERIOD + 1):], doctrine.DAILY_ATR_PERIOD)
+
+
 class VelezInstitutionalStrategy:
     """Oliver Velez candle-play engine with strict SMA location gating."""
 
@@ -148,6 +317,12 @@ class VelezInstitutionalStrategy:
         self.market_bars: Dict[str, List[dict]] = {}
         # Configured futures/FX/crypto symbols: the equity session windows don't apply.
         self.non_equity_symbols: set = set()
+        # Completed daily bars for the daily-range rule (rulebook 2026.10.5), as rulebook dicts.
+        # Set by the live server; None in backtests and replays, where the rule is not enforced.
+        self.daily_bars_provider: Optional[Callable[[str], List[dict]]] = None
+        # Today's regular-session bars from the live feed, so the day's extremes survive a short
+        # local history (1-minute bars roll the open out by midday) and bare alerts are measured.
+        self.session_bars_provider: Optional[Callable[[str], List[dict]]] = None
         self._validate_setup_allowlist()
 
     def _get_context(self, symbol: str) -> VelezContext:
@@ -296,8 +471,10 @@ class VelezInstitutionalStrategy:
         market: dict,
         event_open: Optional[float] = None,
         decision_at: Optional[datetime] = None,
+        entry_at: Optional[float] = None,
     ) -> dict:
-        """`decision_at` overrides the entry time (a bare alert is judged when it arrives, not at the cached bar)."""
+        """`decision_at` overrides the entry time (a bare alert is judged when it arrives, not at the cached bar).
+        `entry_at` is the planned entry price when it isn't the bar's close (a limit at the breakout level)."""
         play = str(signal.metadata.get("play") or signal.reason)
         # Three-finger spread: stretch from the 20 SMA in ATR. Event-bar plays are measured from the
         # event bar's open (an igniting elephant leaving the 20 is not a chase); plays that fire
@@ -326,7 +503,123 @@ class VelezInstitutionalStrategy:
                 if decision_at is not None else self._decision_time(signal.symbol, bar)
             ),
             market_bias=self._market_bias(signal.symbol, decision_at or bar.timestamp),
+            range_used=self._range_used(signal, bar, decision_at, entry_at),
         )
+
+    # ── Daily range used (rulebook 2026.10.5) ──
+
+    def _range_used(
+        self,
+        signal: Signal,
+        bar: Optional[Bar],
+        decision_at: Optional[datetime] = None,
+        entry_at: Optional[float] = None,
+    ) -> Optional[float]:
+        """Daily ATRs today's move has covered in the signal's direction, for the entry gate.
+
+        Today's high and low come from the local bars and, live, from the session feed (the
+        local history can be too short to hold the open). Without a bar (a bare alert) the
+        price is the feed's latest. None (not enforced) when the rule is off, for non-equities,
+        without a live daily-bar source, or when the daily ATR or today's session can't be read.
+        `range_block` moves the veto: the value is scaled so the rulebook's 1.0 lands on it.
+        """
+        cfg = self._doctrine_cfg()
+        if not cfg.get("daily_range", False) or self.daily_bars_provider is None:
+            return None
+        symbol = str(signal.symbol).upper()
+        if not self._is_equity(symbol):
+            return None
+        at = decision_at or (self._bar_session_time(symbol, bar) if bar is not None else None)
+        local = doctrine._local(at) if at is not None else None
+        if local is None:
+            return None
+        try:
+            rows = self.daily_bars_provider(symbol) or []
+        except Exception:
+            return None
+        atr_value = daily_atr_from_rows(daily_rows_before(rows, local.date()))
+        if not atr_value:
+            return None
+        highs: List[float] = []
+        lows: List[float] = []
+        ctx = self.symbols.get(signal.symbol) or self.symbols.get(symbol)
+        intraday = [doctrine.bar_dict(b) for b in ctx.bars] if ctx is not None else []
+        if bar is not None:
+            current = doctrine.bar_dict(bar)
+            if not intraday or intraday[-1]["t"] != current["t"]:
+                intraday.append(current)
+        price = bar.close if bar is not None else None
+        if decision_at is not None:
+            # A bare alert is judged where it would enter: its proposed price, else the freshest
+            # close in the local bars or the session feed (the cached chart bar can be an hour old).
+            try:
+                proposed = float(signal.metadata.get("entry_price") or 0)
+            except (TypeError, ValueError):
+                proposed = 0.0
+            price = proposed if proposed > 0 else None
+        feeds = [intraday]
+        if self.session_bars_provider is not None:
+            try:
+                feeds.append(list(self.session_bars_provider(symbol) or []))
+            except Exception:
+                pass
+        if len(feeds) > 1 and session_feed_covers_open(feeds[1], as_of=at):
+            feeds[0] = drop_premarket_bars(intraday)  # the feed has the open without premarket prints
+        freshest = None
+        for series in feeds:
+            if not series:
+                continue
+            high, low = session_high_low_overlap(series, as_of=at)
+            if high is None:
+                continue
+            highs.append(high)
+            lows.append(low)
+            today = session_overlap_bars(series, as_of=at)
+            if today and (freshest is None or today[-1]["t"] > freshest["t"]):
+                freshest = today[-1]
+        if price is None and freshest is not None:
+            price = freshest["c"]
+        if entry_at is None:
+            # A planned limit entry (e.g. a tail's retrace bid) is measured where it would fill.
+            try:
+                planned = float(signal.metadata.get("limit_price") or 0)
+            except (TypeError, ValueError):
+                planned = 0.0
+            entry_at = planned if planned > 0 else None
+        if entry_at is not None and entry_at > 0:
+            price = entry_at  # the planned entry (a limit at the breakout level), not where the bar closed
+        if price is None or not highs:
+            return None
+        side = "long" if signal.side == Side.BUY else "short"
+        # The unrounded ratio: 0.996 has not covered the daily ATR yet.
+        used = doctrine.daily_range_used(atr_value, max(highs), min(lows), price, side).get("used_in_direction_raw")
+        if used is None:
+            return None
+        block = float(cfg.get("range_block", doctrine.RANGE_USED_BLOCK) or doctrine.RANGE_USED_BLOCK)
+        return used * doctrine.RANGE_USED_BLOCK / block if block > 0 else None
+
+    def _bar_session_time(self, symbol: str, bar: Bar) -> datetime:
+        """When to measure the day for this bar: its close (from the bar spacing), or for a daily bar its
+        trading date's 16:00 close (a midnight-UTC label would otherwise fall on the prior New York date)."""
+        ctx = self.symbols.get(symbol)
+        # The bar spacing: the smallest recent gap (the first bar of a session follows an overnight one).
+        recent = [b.timestamp for b in list(ctx.bars)[-6:] if b.timestamp < bar.timestamp] if ctx is not None else []
+        recent.append(bar.timestamp)
+        gaps = [(later - earlier).total_seconds() for earlier, later in zip(recent, recent[1:]) if later > earlier]
+        spacing = min(gaps) if gaps else 0.0
+        if gaps:
+            daily = spacing >= 20 * 3600
+        else:
+            utc = bar.timestamp.astimezone(timezone.utc) if bar.timestamp.tzinfo else bar.timestamp
+            daily = (utc.hour, utc.minute, utc.second) == (0, 0, 0)
+        if not daily:
+            # Measured when the bar closes: an hourly 09:00 bar is judged at 10:00, with the session
+            # feed's 09:30-09:55 bars in view (a second short, so the next bar isn't).
+            return bar.timestamp + timedelta(seconds=max(0.0, spacing - 1)) if spacing > 1 else bar.timestamp
+        day = doctrine.daily_bar_date(bar.timestamp)
+        if day is None or ZoneInfo is None:
+            return bar.timestamp
+        return datetime.combine(day, doctrine.SESSION_CLOSE, tzinfo=ZoneInfo(doctrine.MARKET_TZ))
 
     # ── Session windows and trading with the market (rulebook 2026.10.1) ──
 
@@ -387,16 +680,25 @@ class VelezInstitutionalStrategy:
             metadata=signal.metadata,
             decision_time=at if self._session_applies(signal.symbol) else None,
             market_bias=self._market_bias(signal.symbol, at),
+            range_used=self._range_used(signal, None, at),
         )
 
     def _session_applies(self, symbol: str) -> bool:
         """Session windows are for equities; configured futures/FX/crypto are exempt."""
-        cfg = self._doctrine_cfg()
-        if not cfg.get("session_windows", False):
+        if not self._doctrine_cfg().get("session_windows", False):
             return False
+        return self._is_equity(symbol)
+
+    def _is_equity(self, symbol: str) -> bool:
+        """US equities only: configured futures/FX/crypto (and their ticker shapes) are not."""
         sym = str(symbol).upper()
-        configured = {str(s).upper() for s in cfg.get("non_equity_symbols", [])} | self.non_equity_symbols
+        configured = {str(s).upper() for s in self._doctrine_cfg().get("non_equity_symbols", [])} | self.non_equity_symbols
+        # Broker aliases drop the separator (EURUSD for EUR/USD, BTCUSD for BTC/USD): compare without it.
+        canonical = {c.replace("/", "").replace("-", "") for c in configured}
+        if sym.replace("/", "").replace("-", "") in canonical:
+            return False
         return not (sym in configured or "/" in sym or sym.startswith("^") or sym.endswith(("=F", "=X", "-USD")))
+
 
     def _decision_time(self, symbol: str, bar: Bar) -> Optional[datetime]:
         """When an entry off this bar would be taken (its close), for the session windows.
@@ -537,18 +839,20 @@ class VelezInstitutionalStrategy:
                     self._log_doctrine("doctrine_setup_expired", original, ["no_break_within_window"])
                 continue
             del ctx.armed[side_key]
-            gate = self._doctrine_gate(original, bar, location, market, event_open=armed.get("event_open"))
-            if not gate["allowed"]:
-                self._log_doctrine("doctrine_entry_blocked", original, gate["reasons"])
-                continue
             max_chase = float(self._doctrine_cfg().get("max_chase_atr", 0.25)) * float(atr or 0.0)
             chase = abs(bar.close - trigger)
-            metadata = dict(original.metadata)
             if chase <= max(max_chase, self._tick_size(symbol)):
                 order_type, entry_price, limit_price = OrderType.MARKET, bar.close, None
             else:
                 # Price already ran past the break: don't chase, bid the breakout level.
                 order_type, entry_price, limit_price = OrderType.LIMIT, trigger, trigger
+            gate = self._doctrine_gate(
+                original, bar, location, market, event_open=armed.get("event_open"), entry_at=entry_price
+            )
+            if not gate["allowed"]:
+                self._log_doctrine("doctrine_entry_blocked", original, gate["reasons"])
+                continue
+            metadata = dict(original.metadata)
             metadata.update(
                 {
                     "entry_type": "break_of_event_bar",

@@ -9,6 +9,7 @@ from .desk_brief import DeskBriefService, brief_owner
 from .desk_workspace import broker_provider as desk_broker_provider
 from .desk_workspace import broadcast_config as desk_broadcast_config, workspace_config
 import os
+import math
 import re
 import secrets
 import threading
@@ -48,7 +49,21 @@ from .core.utils import get_logger, log_event
 from .core.trifecta import score_webhook_confluence
 from .core.bull_mentor import BullMentorEngine
 from .core.post_trade_autopsy import PostTradeAutopsyEngine
-from .core.velez_strategy import VelezInstitutionalStrategy, VelezPlay, calculate_pyramid_add_qty
+from .core.velez_strategy import (
+    VelezInstitutionalStrategy,
+    VelezPlay,
+    calculate_pyramid_add_qty,
+    daily_atr_from_rows,
+    daily_rows_before,
+    session_overlap_bars,
+    drop_premarket_bars,
+    regular_session_bars,
+    session_close_on,
+    set_session_close_resolver,
+    session_feed_covers_open,
+    split_safe_daily_rows,
+    utc_daily_rows,
+)
 from .core.velez_extensions import run_extensions
 from .core.market_regime import classify_regime, regime_lot_multiplier
 from .core.top_down_brain import build_top_down_state, merged_top_down_config
@@ -1541,6 +1556,11 @@ def yahoo_download_safe(symbol: str, **kwargs):
 
 # --- END YAHOO-SYMBOL-MAP 2026-09-21 ---
 
+# Raw vs split-adjusted daily close: beyond this the held bars span a split (a 5% stock dividend is
+# 4.8%; on a normal day the regular-session close matches its adjusted close to well under 1%).
+SPLIT_EVIDENCE_PCT = 0.03
+
+
 class TradingViewWebhookEngine:
     def __init__(self, config: dict, broker: Optional[Any] = None) -> None:
         self.config = config
@@ -1605,6 +1625,19 @@ class TradingViewWebhookEngine:
         self.calendar = CalendarFeedService(self.broker, self.config, self.recent_decisions, journal=self.journal)
         self.scanner_strategy = VelezInstitutionalStrategy(config.get("velez_strategy", config.get("strategy", {})), self.logger)
         self.scanner_strategy.set_symbol_types(config.get("symbols", []))
+        # Completed daily bars for the rulebook's daily range and profit taking (2026.10.5/10.6).
+        self._velez_daily_cache: Dict[tuple, List[dict]] = {}
+        self._velez_session_cache: Dict[str, tuple] = {}
+        for velez_strategy in (self.strategy, self.scanner_strategy):
+            if hasattr(velez_strategy, "daily_bars_provider"):
+                velez_strategy.daily_bars_provider = self._velez_daily_rows
+                velez_strategy.session_bars_provider = self._velez_session_bars
+                # Session helpers close the day at the exchange calendar's close (half days).
+                set_session_close_resolver(
+                    lambda day: self._velez_session_close(
+                        day, datetime.combine(day, velez_doctrine.SESSION_CLOSE, tzinfo=ZoneInfo(velez_doctrine.MARKET_TZ))
+                    )
+                )
         self.scanner_last_bar: Dict[str, datetime] = {}
         self.scanner_seen_alerts: Deque[str] = deque(maxlen=int(self.scanner_config.get("dedupe_cache_size", 1000) or 1000))
         self.scanner_symbol_cooldowns: Dict[str, datetime] = {}
@@ -3360,15 +3393,15 @@ class TradingViewWebhookEngine:
         status = str(order.get("status") or "").lower()
         return status in {"new", "accepted", "pending_new", "partially_filled"}
 
-    def _fetch_scanner_bars(self, *, symbol: str, asset_type: str) -> List[Bar]:
+    def _fetch_scanner_bars(self, *, symbol: str, asset_type: str, timeframe: Optional[str] = None) -> List[Bar]:
         if asset_type == "crypto":
-            return self._fetch_crypto_bars(symbol)
+            return self._fetch_crypto_bars(symbol, timeframe) if timeframe else self._fetch_crypto_bars(symbol)
         if asset_type in {"future", "futures"}:
-            return self._fetch_polygon_futures_bars(symbol)
-        return self._fetch_stock_bars(symbol)
+            return self._fetch_polygon_futures_bars(symbol, timeframe) if timeframe else self._fetch_polygon_futures_bars(symbol)
+        return self._fetch_stock_bars(symbol, timeframe) if timeframe else self._fetch_stock_bars(symbol)
 
-    def _fetch_stock_bars(self, symbol: str) -> List[Bar]:
-        timeframe = str(self.scanner_config.get("timeframe", "1Min"))
+    def _fetch_stock_bars(self, symbol: str, timeframe: Optional[str] = None) -> List[Bar]:
+        timeframe = str(timeframe or self.scanner_config.get("timeframe", "1Min"))
         limit = max(50, min(int(self.scanner_config.get("history_bars", 260) or 260), 1000))
         # Simulated broker (Arena bots): no Alpaca. Route scanner bars through the
         # free yfinance path instead of the dead sim:// HTTP URL. Honors the arena
@@ -3425,8 +3458,8 @@ class TradingViewWebhookEngine:
         rows = (data.get("bars") or {}).get(symbol) or []
         return [self._bar_from_alpaca(item) for item in rows]
 
-    def _fetch_crypto_bars(self, symbol: str) -> List[Bar]:
-        timeframe = str(self.scanner_config.get("timeframe", "1Min"))
+    def _fetch_crypto_bars(self, symbol: str, timeframe: Optional[str] = None) -> List[Bar]:
+        timeframe = str(timeframe or self.scanner_config.get("timeframe", "1Min"))
         limit = max(50, min(int(self.scanner_config.get("history_bars", 260) or 260), 1000))
         alpaca_symbol = self._alpaca_crypto_symbol(symbol)
         params = {
@@ -3439,9 +3472,9 @@ class TradingViewWebhookEngine:
         rows = (data.get("bars") or {}).get(alpaca_symbol) or []
         return [self._bar_from_alpaca(item) for item in rows]
 
-    def _fetch_polygon_futures_bars(self, symbol: str) -> List[Bar]:
+    def _fetch_polygon_futures_bars(self, symbol: str, timeframe: Optional[str] = None) -> List[Bar]:
         ticker = self._polygon_futures_ticker(symbol)
-        resolution = self._polygon_resolution(str(self.scanner_config.get("futures_resolution") or self.scanner_config.get("timeframe", "1Min")))
+        resolution = self._polygon_resolution(str(timeframe or self.scanner_config.get("futures_resolution") or self.scanner_config.get("timeframe", "1Min")))
         limit = max(50, min(int(self.scanner_config.get("history_bars", 260) or 260), 50000))
         data = self._polygon_request(f"/futures/vX/aggs/{ticker}", params={"resolution": resolution, "limit": limit})
         rows = data.get("results") or []
@@ -3707,6 +3740,1160 @@ class TradingViewWebhookEngine:
                 )
             )
         return bars
+
+    @staticmethod
+    def _velez_rth_clip(bars: List[dict], session: List[dict], spacing: float) -> List[dict]:
+        """`bars` on the full tape's regular session: a bar that straddles its day's open or close (mixing in
+        premarket or after-hours prints) is rebuilt from the session feed's regular-session pieces, and
+        every other bar's high and low widened by the full-tape pieces inside it (a new high printed off
+        the configured feed still counts). [] when a straddling bar's open isn't in the feed."""
+        out = []
+        for b in bars:
+            start = velez_doctrine._local(b["t"])
+            if start is None:
+                continue
+            open_dt = datetime.combine(start.date(), velez_doctrine.SESSION_OPEN, tzinfo=start.tzinfo)
+            end = b["t"] + timedelta(seconds=spacing)
+            # Whole 5-minute pieces inside the bar (a 1- or 2-minute bar has none).
+            pieces = [p for p in session if max(b["t"], open_dt) <= p["t"] and p["t"] + timedelta(minutes=5) <= end]
+            close_dt = session_close_on(start.date(), start.tzinfo)
+            if start < open_dt or start + timedelta(seconds=spacing) > close_dt:
+                # Straddles the open or the close: rebuilt from the regular-session pieces alone.
+                pieces = [p for p in pieces if p["t"] < close_dt]
+                first = velez_doctrine._local(pieces[0]["t"]) if pieces else None
+                last_end = velez_doctrine._local(pieces[-1]["t"]) + timedelta(minutes=5) if pieces else None
+                if first is None or (start < open_dt and first != open_dt):
+                    return []  # the premarket part can't be separated
+                if start + timedelta(seconds=spacing) > close_dt and last_end < close_dt:
+                    return []  # the session's last pieces are missing: the after-hours part can't be separated
+                out.append({**b, "o": pieces[0]["o"], "h": max(p["h"] for p in pieces),
+                            "l": min(p["l"] for p in pieces), "c": pieces[-1]["c"]})
+            elif pieces:
+                out.append({**b, "h": max(b["h"], *(p["h"] for p in pieces)), "l": min(b["l"], *(p["l"] for p in pieces))})
+            else:
+                out.append(b)
+        return out
+
+    def _velez_yahoo_daily_bars(self, symbol: str) -> List[Bar]:
+        """Daily bars from Yahoo (~9 months, oldest first), split-adjusted only: Yahoo's OHLC already carries
+        split adjustments, and dividend adjustment would read as a split against raw intraday closes."""
+        import yfinance as yf
+
+        def download(yahoo: str, _timeframe: str):
+            frame = yf.download(yahoo, period="9mo", interval="1d", auto_adjust=False, progress=False)
+            if frame is not None and hasattr(frame.columns, "nlevels") and frame.columns.nlevels > 1:
+                frame.columns = frame.columns.get_level_values(0)
+            return frame
+
+        frame = yahoo_fetch_bars_safe(symbol, "D", fetch_impl=download)
+        if frame is None or frame.empty:
+            return []
+        bars: List[Bar] = []
+        for ts, row in frame.iterrows():
+            pyts = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else self._timestamp(ts)
+            if pyts.tzinfo is None:
+                pyts = pyts.replace(tzinfo=ZoneInfo("America/New_York"))
+            bars.append(Bar(timestamp=pyts, open=float(row["Open"]), high=float(row["High"]), low=float(row["Low"]),
+                            close=float(row["Close"]), volume=float(row.get("Volume", 0) or 0)))
+        return bars
+
+    def _velez_daily_rows(self, symbol: str) -> List[dict]:
+        """Completed daily bars (rulebook dicts, oldest first) for the daily-range and profit-taking rules.
+
+        Cached per symbol and New York trading date: completed days don't change during the
+        session. Alpaca SIP first (completed days are past the free plan's 15-minute delay,
+        and the full tape gives the true range), then the configured feed, both split-adjusted,
+        then Yahoo (split-adjusted). A failed or empty fetch is not cached, so the next call retries.
+        """
+        sym = str(symbol or "").upper().strip()
+        if not sym:
+            return []
+        today = datetime.now(ZoneInfo("America/New_York")).date()
+        key = (sym, today)
+        cached = self._velez_daily_cache.get(key)
+        if cached is not None:
+            return cached
+        bars: List[Bar] = []
+        if self.broker.is_configured():
+            feeds = ["sip"]
+            configured = str(self.scanner_config.get("stock_feed", "iex")).lower()
+            if configured not in feeds:
+                feeds.append(configured)
+            for feed in feeds:
+                try:
+                    data = self._alpaca_data_request(
+                        f"/v2/stocks/{sym}/bars",
+                        params={
+                            "timeframe": "1Day",
+                            "start": (today - timedelta(days=140)).isoformat(),
+                            "end": (today + timedelta(days=1)).isoformat(),
+                            "limit": 120,
+                            # Split-adjusted to today's share basis: a split never fakes a range, so a
+                            # genuine big gap (earnings, news) stays in the ATR history.
+                            "adjustment": "split",
+                            "feed": feed,
+                        },
+                    )
+                    bars = [self._bar_from_alpaca(item) for item in data.get("bars") or []]
+                except Exception as exc:
+                    log_event(self.logger, "velez_daily_rows_alpaca_fallback", {"symbol": sym, "feed": feed, "reason": str(exc)[:160]})
+                if bars:
+                    break
+        if not bars:
+            try:
+                bars = self._velez_yahoo_daily_bars(sym)  # requested auto-adjusted
+            except Exception as exc:
+                log_event(self.logger, "velez_daily_rows_failed", {"symbol": sym, "reason": str(exc)[:160]})
+                return []
+        adjusted = bool(bars)  # every source above is split-adjusted
+        rows = [velez_doctrine.bar_dict(bar) for bar in bars]
+        for row in rows:
+            row["split_adjusted"] = adjusted
+        if rows:
+            if len(self._velez_daily_cache) > 256:
+                self._velez_daily_cache.clear()
+            self._velez_daily_cache[key] = rows
+        return rows
+
+    def _velez_session_bars(self, symbol: str, since_day=None) -> List[dict]:
+        """Today's regular-session 5-minute bars (rulebook dicts) for the daily-range rule, cached a minute;
+        with `since_day`, every trading day's regular session from that date through today.
+
+        The scanner keeps only a rolling window of bars, which on short timeframes no longer holds
+        the open by midday; this keeps the day's true high and low in the measurement. The full tape
+        (SIP) gives the true extremes; on a plan where SIP lags 15 minutes, the configured feed fills
+        in the latest bars. Equities only; when every fetch fails it returns [] and is not cached.
+        """
+        sym = str(symbol or "").upper().strip()
+        if not sym or not self.broker.is_configured():
+            return []
+        now = datetime.now(timezone.utc)
+        tz = ZoneInfo(velez_doctrine.MARKET_TZ)
+        first_day = since_day or now.astimezone(tz).date()
+        cache_key = sym if since_day is None else (sym, first_day)
+        cached = self._velez_session_cache.get(cache_key)
+        if cached is not None and (now - cached[0]).total_seconds() < 60:
+            return cached[1]
+        start = datetime.combine(first_day, velez_doctrine.SESSION_OPEN, tzinfo=tz)
+        feeds = ["sip"]
+        configured = str(self.scanner_config.get("stock_feed", "iex")).lower()
+        if configured not in feeds:
+            feeds.append(configured)
+        merged: dict = {}
+        fetched = False
+        for feed in feeds:
+            try:
+                data = self._alpaca_data_request(
+                    "/v2/stocks/bars",
+                    params={
+                        "symbols": sym,
+                        "timeframe": "5Min",
+                        "start": start.isoformat(),
+                        "limit": 200 if since_day is None else 10000,
+                        "feed": feed,
+                        "adjustment": "raw",
+                        "sort": "asc",
+                    },
+                )
+            except Exception as exc:
+                log_event(self.logger, "velez_session_bars_failed", {"symbol": sym, "feed": feed, "reason": str(exc)[:160]})
+                continue
+            fetched = True
+            for item in (data.get("bars") or {}).get(sym) or []:
+                row = velez_doctrine.bar_dict(self._bar_from_alpaca(item))
+                merged.setdefault(row["t"], row)  # the full-tape bar wins where both feeds have it
+        if not fetched:
+            return []
+        rows = []
+        for row in merged.values():
+            local = velez_doctrine._local(row["t"])
+            if local is None:
+                continue
+            # Each day's regular session only: no premarket, nothing after the bell (13:00 on a half day).
+            if datetime.combine(local.date(), velez_doctrine.SESSION_OPEN, tzinfo=local.tzinfo) <= local < session_close_on(local.date(), local.tzinfo):
+                rows.append(row)
+        rows.sort(key=lambda row: row["t"])
+        if len(self._velez_session_cache) > 256:
+            self._velez_session_cache.clear()
+        self._velez_session_cache[cache_key] = (now, rows)
+        return rows
+
+    def _velez_position_key(self, position: dict) -> Optional[str]:
+        """A stable id for the open position: its opening fill (adds and exits don't change it)."""
+        fill = position.get("entry_fill") or {}
+        opened = fill.get("transaction_time") or fill.get("filled_at") or fill.get("id")
+        symbol = str(position.get("symbol") or "").upper()
+        return f"velez_initial_risk.{symbol}.{opened}" if symbol and opened else None
+
+    def _velez_price(self, position: dict, name: str) -> Optional[float]:
+        """The unrounded lifecycle price (sub-cent crypto), else the display-rounded one."""
+        value = self._float(position.get(f"velez_{name}"))
+        return value if value is not None else self._float(position.get(name))
+
+    def _velez_record_initial_risk(self, position: dict) -> None:
+        """Remember the position's risk per unit the first time it is seen with a real stop, so R stays
+        measurable after the stop moves (and isn't read off a later add's decision).
+
+        Kept as the symbol's open-position record (keyed by the opening fill) with the opening time,
+        the opening decision's timeframe, and the last seen quantity and entry: a split shows up as the
+        quantity changing while the cost basis doesn't, and rebases the risk to the new share basis.
+        """
+        symbol = str(position.get("symbol") or "").upper()
+        if not symbol:
+            return
+        open_key = f"velez_initial_risk.{symbol}.open"
+        key = self._velez_position_key(position)
+        if key is None:
+            # The opening fill aged out of the snapshot: keep tracking splits on the confirmed record.
+            record = self._velez_open_record(position)
+            if record is not None:
+                tracked = self._velez_track_split(position, record)
+                if tracked != record:
+                    self.journal.set_setting(open_key, tracked)
+            return
+        side = str(position.get("side") or "long").lower()
+        linked = position.get("linked_decision") or {}
+        existing = self.journal.get_setting(open_key, None)
+        same = isinstance(existing, dict) and existing.get("key") == key
+        risk = self._float(existing.get("risk")) if same else self._float(self.journal.get_setting(key, None))
+        fill = position.get("entry_fill") or {}
+        # The bounded opening decision only: a linked decision can be a later add or an unrelated older
+        # trade, so without one the live protective stop stands in.
+        opening = None if same else self._velez_opening_decision(symbol, side, fill)
+        if same and not existing.get("timeframe"):
+            # Recorded before its decision was journaled: look the opening decision up again.
+            opening = self._velez_opening_decision(symbol, side, fill)
+        if risk is None:
+            entry_side = "buy" if side == "long" else "sell"
+            opening_order = fill.get("order_id")
+            working = [
+                order for order in position.get("open_orders") or []
+                if str(order.get("side") or "").lower() == entry_side
+                and str(order.get("status") or "").lower() not in {"filled", "canceled", "cancelled", "expired", "rejected"}
+                # The opening order itself when the fill names it; a separate pending add doesn't count.
+                and (not opening_order or str(order.get("id") or "") == str(opening_order))
+            ]
+            if working:
+                return  # the opening order is still filling: its average entry (and the risk) isn't final yet
+            entry = self._velez_price(position, "entry_price")
+            if entry is None:
+                return
+            protective = lambda stop, ref: stop is not None and ((stop < ref) if side == "long" else (stop > ref))
+            # The current stop may already have trailed when the position is first seen (a restart, a
+            # fresh deploy), and the linked decision may be a later add: the opening decision's stop,
+            # from the opening fill's price, is the initial risk. Take the wider protective distance.
+            current = self._velez_price(position, "stop_price")
+            opening_stop = self._float((opening or {}).get("stop_price"))
+            base = self._float(fill.get("basis_price")) or self._float(fill.get("price")) or entry
+            factor = self._float(fill.get("split_factor")) or 1.0
+            if protective(opening_stop, base):
+                # The opening trade's own risk; the fill and the journaled stop are on the share basis
+                # before any split since.
+                risk = abs(base - opening_stop) / factor
+            elif protective(current, entry):
+                risk = abs(entry - current)  # no opening stop on record: the live stop, if not trailed
+            # Otherwise the risk stays unknown (retried next pass), but the record still keeps the
+            # opening time and timeframe the profit-taking verdict needs.
+            if risk is not None:
+                self.journal.set_setting(key, risk)
+        record = {
+            "key": key,
+            "side": side,
+            "risk": risk,
+            # The opening decision's timeframe: a later add's decision (another chart) never replaces it.
+            "timeframe": existing.get("timeframe") or (opening or {}).get("timeframe") if same else (opening or {}).get("timeframe"),
+            "opened": fill.get("transaction_time") or fill.get("filled_at"),
+            "seen": existing.get("seen") if same else None,
+        }
+        # The opening fill carries the verified split factor since the open (fills vs held shares, cost
+        # basis confirmed): the risk is the opening basis risk divided by it. That holds even when an exit
+        # and a split between passes leave the quantity unchanged.
+        record = self._velez_track_split(position, record)  # last-seen quantity and entry
+        if "split_factor" in fill and risk is not None:  # a rebuilt opening fill: its factor decides the basis
+            factor_now = self._float(fill.get("split_factor")) or 1.0
+            if same and existing.get("base_risk") is not None:
+                base_risk = self._float(existing.get("base_risk"))
+            elif same:
+                base_risk = risk * (self._float(existing.get("factor")) or 1.0)
+            else:
+                base_risk = risk * factor_now  # this pass's risk is on today's share basis
+            record.update(risk=base_risk / factor_now, base_risk=base_risk, factor=factor_now)
+        if existing != record:
+            self.journal.set_setting(open_key, record)
+        index = self.journal.get_setting("velez_initial_risk.open_symbols", []) or []
+        if symbol not in index:
+            self.journal.set_setting("velez_initial_risk.open_symbols", sorted(set(index) | {symbol}))
+
+    def _velez_track_split(self, position: dict, record: dict) -> dict:
+        """The record with its risk rebased when a split happened since the last pass: the quantity
+        changed and the entry moved while the cost basis (quantity x entry) stayed put. An add or a
+        partial exit changes the cost basis, so neither is ever taken for a split."""
+        qty = abs(self._position_qty_number(position))
+        entry = self._velez_price(position, "entry_price")
+        updated = dict(record)
+        factor = self._velez_split_factor(record.get("seen"), qty, entry)
+        if factor is not None and record.get("risk"):
+            updated["risk"] = float(record["risk"]) * factor
+        if qty and entry:
+            updated["seen"] = [qty, entry]
+            updated["seen_at"] = datetime.now(timezone.utc).isoformat()
+        return updated
+
+    def _velez_split_factor(self, seen: Any, qty: float, entry: Optional[float]) -> Optional[float]:
+        """The price factor of a split since `seen` ([qty, entry] last pass): the quantity changed and the
+        entry moved while the cost basis held. None when there's no such evidence."""
+        if not seen or not qty or not entry:
+            return None
+        last_qty, last_entry = (self._float(seen[0]) or 0.0), (self._float(seen[1]) or 0.0)
+        if (
+            last_qty and last_entry
+            and abs(qty - last_qty) > 1e-9
+            and abs(entry / last_entry - 1.0) > 0.01
+            and abs((qty * entry) / (last_qty * last_entry) - 1.0) < 0.005
+        ):
+            return entry / last_entry
+        return None
+
+    def _velez_opening_decision(self, symbol: str, side: str, fill: dict) -> Optional[dict]:
+        """The submitted decision that opened the position: the one whose broker order the opening fill
+        belongs to; failing that, the latest same-symbol (aliases included), same-side decision in the day
+        before the fill, else the first within 2 minutes after it (a market order can fill before its
+        decision is journaled); None when neither exists."""
+        stamp = fill.get("transaction_time") or fill.get("filled_at")
+        order_id = str(fill.get("order_id") or "")
+        try:
+            filled = self._timestamp(stamp) if stamp else None
+        except Exception:
+            filled = None
+        want_side = "buy" if side == "long" else "sell"
+        before, before_at, after, after_at, older, older_at = None, None, None, None, None, None
+        for decision in self.journal.decision_entries(limit=1000):
+            if self._claim_symbol_key(decision.get("symbol")) != self._claim_symbol_key(symbol):
+                continue
+            if str(decision.get("side") or "").lower() != want_side or str(decision.get("status") or "").lower() != "submitted":
+                continue
+            quality = decision.get("execution_quality") if isinstance(decision.get("execution_quality"), dict) else {}
+            if order_id and str(quality.get("order_id") or "") == order_id:
+                return decision
+            if filled is None:
+                continue
+            try:
+                decided = self._timestamp(decision.get("timestamp"))
+            except Exception:
+                continue
+            if decided <= filled:
+                if decided >= filled - timedelta(days=1):
+                    if before_at is None or decided > before_at:
+                        before, before_at = decision, decided
+                elif older_at is None or decided > older_at:
+                    older, older_at = decision, decided
+            elif decided <= filled + timedelta(minutes=2) and (after_at is None or decided < after_at):
+                after, after_at = decision, decided
+        # A later add is never preferred over the decision before the fill. Nothing within those bounds
+        # (e.g. a manual position in a symbol traded long ago): no opening decision rather than a stale one.
+        return before or after
+
+    def _velez_prune_open_records(self, open_symbols: set) -> None:
+        """Clear the open-position record of every symbol that is now flat, so a later position in the
+        same symbol never inherits it."""
+        resizing = self.journal.get_setting("velez_partial_resize.symbols", []) or []
+        if any(symbol not in open_symbols for symbol in resizing):
+            # A partial's stop follow-up ends with its position: never applied to a later trade.
+            for symbol in resizing:
+                if symbol not in open_symbols:
+                    self.journal.set_setting(f"velez_partial_resize.{symbol}", None)
+            self.journal.set_setting("velez_partial_resize.symbols", [symbol for symbol in resizing if symbol in open_symbols])
+        index = self.journal.get_setting("velez_initial_risk.open_symbols", []) or []
+        flat = [symbol for symbol in index if symbol not in open_symbols]
+        if not flat:
+            return
+        for symbol in flat:
+            self.journal.set_setting(f"velez_initial_risk.{symbol}.open", None)
+        self.journal.set_setting("velez_initial_risk.open_symbols", [symbol for symbol in index if symbol in open_symbols])
+
+    def _velez_open_record(self, position: dict) -> Optional[dict]:
+        """The symbol's open-position record when it belongs to this position (its opening fill, or the
+        same side when the opening fill is out of the fill snapshot)."""
+        symbol = str(position.get("symbol") or "").upper()
+        record = self.journal.get_setting(f"velez_initial_risk.{symbol}.open", None) if symbol else None
+        if not isinstance(record, dict) or record.get("side") != str(position.get("side") or "long").lower():
+            return None
+        key = self._velez_position_key(position)
+        if key is not None:
+            return record if record.get("key") == key else None
+        # No opening fill in the snapshot. That's expected only once the recorded open has aged out of
+        # the fill lookback; a recent record that the fills can't confirm may be another trade's.
+        try:
+            opened = self._timestamp(record.get("opened")) if record.get("opened") else None
+        except Exception:
+            opened = None
+        days = self._int_env("VELEZ_LIFECYCLE_FILL_LOOKBACK_DAYS", 7, minimum=1, maximum=30)
+        # An open older than the lookback is expected to be missing from the fills; it still has to be
+        # the same trade as last pass (a trade closed and reopened between polls is not).
+        aged = opened is not None and opened <= datetime.now(timezone.utc) - timedelta(days=days)
+        # Accept it only when the position is the one last seen (same quantity and entry) or a split
+        # explains the change (a split moves the quantity without a fill). When the open is aged out or
+        # the fill snapshot failed or was cut off, a partial exit since the last pass is accepted too (a
+        # reopen at the very same average entry doesn't happen); an add only with a complete snapshot,
+        # since a trade closed and reopened larger looks like an add when the fills can't show the close.
+        qty = abs(self._position_qty_number(position))
+        entry = self._velez_price(position, "entry_price")
+        seen = record.get("seen") or []
+        if len(seen) == 2 and qty and entry:
+            last_qty, last_entry = (self._float(seen[0]) or 0.0), (self._float(seen[1]) or 0.0)
+            if last_qty and self._velez_closed_since(position, record, last_qty):
+                return None  # the fills show the old position closed: this is a new trade
+            if last_qty and last_entry:
+                if abs(qty - last_qty) <= 1e-9 and abs(entry / last_entry - 1.0) <= 1e-4:
+                    return record
+                if aged or not getattr(self, "_velez_fills_complete", False):
+                    if qty < last_qty and abs(entry / last_entry - 1.0) <= 1e-4:
+                        return record  # a partial exit: the average entry doesn't move
+                    if qty > last_qty and getattr(self, "_velez_fills_complete", False):
+                        # An add at a plausible price; only with a complete fill snapshot, where
+                        # _velez_closed_since() above would have seen a close-and-reopen.
+                        added_at = (qty * entry - last_qty * last_entry) / (qty - last_qty)
+                        if 0.5 * entry <= added_at <= 2.0 * entry:
+                            return record
+        if self._velez_split_factor(seen, qty, entry) is not None:
+            return record
+        return None
+
+    def _velez_closed_since(self, position: dict, record: dict, last_qty: float) -> bool:
+        """Whether the fills in view since the record was last seen, replayed in order from the quantity
+        seen then (adds and exits alike), take the position to flat or through it: the old position
+        closed, whatever was opened after."""
+        try:
+            seen_at = self._timestamp(record.get("seen_at")) if record.get("seen_at") else None
+        except Exception:
+            seen_at = None
+        if seen_at is None:
+            return False
+        entry_sides = {"buy"} if str(position.get("side") or "long").lower() == "long" else {"sell", "sell_short"}
+        timed = []
+        for fill in position.get("velez_symbol_fills") or []:
+            try:
+                at = self._timestamp(fill.get("transaction_time") or fill.get("filled_at"))
+            except Exception:
+                continue
+            if at <= seen_at:
+                continue
+            qty = abs(self._float(fill.get("qty")) or 0.0)
+            timed.append((at, qty if str(fill.get("side") or "").lower() in entry_sides else -qty))
+        inventory = abs(last_qty)
+        for _, signed in sorted(timed, key=lambda item: item[0]):
+            inventory += signed
+            if inventory <= 1e-9:
+                return True
+        return False
+
+    def _velez_recorded_risk(self, position: dict) -> Optional[float]:
+        """The risk recorded for this position: by its opening fill, else the symbol's open-position
+        record (same side) when the opening fill is no longer in the fill snapshot. The record's risk is
+        rebased across splits; the per-fill setting is the fallback."""
+        record = self._velez_open_record(position)
+        if record is not None and record.get("risk") is not None:
+            return self._float(record.get("risk"))
+        key = self._velez_position_key(position)
+        return self._float(self.journal.get_setting(key, None)) if key else None
+
+    def _velez_linked_is_only_entry(self, position: dict) -> bool:
+        """Whether the linked decision can stand for the opening: it's the only submitted decision for the
+        symbol (aliases included) and side in the journal, so it can't be a later add."""
+        linked = position.get("linked_decision") or {}
+        if not linked:
+            return False
+        symbol = str(position.get("symbol") or "")
+        want_side = "buy" if str(position.get("side") or "long").lower() == "long" else "sell"
+        entries = [
+            decision for decision in self.journal.decision_entries(limit=200)
+            if self._claim_symbol_key(decision.get("symbol")) == self._claim_symbol_key(symbol)
+            and str(decision.get("side") or "").lower() == want_side
+            and str(decision.get("status") or "").lower() == "submitted"
+        ]
+        return len(entries) <= 1
+
+    def _velez_initial_r(self, position: dict) -> Optional[float]:
+        """Open R against the position's initial risk: the risk recorded when it was first seen, else the
+        journaled decision's stop. The current stop may sit at entry or trail past it."""
+        entry = self._velez_price(position, "entry_price")
+        price = self._velez_price(position, "current_price")
+        if entry is None or price is None:
+            return None
+        risk = self._velez_recorded_risk(position)  # rebased across splits by _velez_track_split
+        if not risk and self._velez_linked_is_only_entry(position):
+            stop = self._float((position.get("linked_decision") or {}).get("stop_price"))
+            risk = abs(entry - stop) if stop is not None else None
+        if not risk or risk <= 0:
+            return None
+        direction = 1.0 if str(position.get("side") or "long").lower() == "long" else -1.0
+        return (price - entry) * direction / risk
+
+    def _velez_partial_window_open(self, symbol: str) -> bool:
+        """Whether a market partial fills at once, so the stop resized around it never leaves queued exit
+        shares unprotected. Crypto: always. Futures: outside the daily 17:00-18:00 ET halt and the weekend
+        (Friday 17:00 to Sunday 18:00 ET). Forex: outside the weekend (Friday 17:00 to Sunday 17:00 ET).
+        Equities: only in a regular session the exchange calendar confirms for today (not in its last 5
+        minutes); when the calendar can't be read, closed."""
+        asset = self._quote_asset_type(symbol)
+        tz = ZoneInfo(velez_doctrine.MARKET_TZ)
+        now = datetime.now(tz)
+        minutes = now.hour * 60 + now.minute
+        if asset == "crypto":
+            return True
+        if asset in {"future", "futures"}:
+            if now.weekday() == 5 or (now.weekday() == 6 and minutes < 18 * 60) or (now.weekday() == 4 and minutes >= 17 * 60):
+                return False
+            return not (17 * 60 <= minutes < 18 * 60)
+        if asset == "forex":
+            return not (now.weekday() == 5 or (now.weekday() == 6 and minutes < 17 * 60) or (now.weekday() == 4 and minutes >= 17 * 60))
+        if asset not in {"equity", "stock", "etf"} or now.weekday() >= 5:
+            return False
+        today = now.date()
+        open_dt = datetime.combine(today, velez_doctrine.SESSION_OPEN, tzinfo=tz)
+        close = self._velez_session_close(today, datetime.combine(today, velez_doctrine.SESSION_CLOSE, tzinfo=tz))
+        if today not in self.__dict__.get("_velez_open_days", set()):
+            return False  # the calendar didn't confirm a session today (a holiday, or it couldn't be read)
+        # A few minutes' margin at the bell: the exit must fill before the session ends.
+        return open_dt <= now < close - timedelta(minutes=5)
+
+    def _velez_exit_stops(self, symbol: str, side: str, orders: List[dict]) -> List[dict]:
+        """The position's open protective stops: exit-side stop orders (bracket legs included)."""
+        exit_side = "sell" if side == "long" else "buy"
+        stops = []
+        for order in orders or []:
+            for leg in [order, *(order.get("legs") or [])]:
+                if self._claim_symbol_key(leg.get("symbol")) != self._claim_symbol_key(symbol):
+                    continue
+                if str(leg.get("type") or "").lower() not in {"stop", "stop_limit", "trailing_stop"}:
+                    continue
+                if str(leg.get("side") or "").lower() != exit_side:
+                    continue  # a stop-entry or stop-add order on the entry side isn't protection
+                if str(leg.get("status") or "").lower() in {"pending_cancel", "canceled", "cancelled", "filled"}:
+                    continue
+                stops.append(leg)
+        return stops
+
+    def _velez_order_known(self, client_order_id: str) -> Optional[bool]:
+        """Whether the broker has an order with this client order id (any status); None if it can't tell."""
+        try:
+            orders = self.broker.get_orders_raw(status="all", limit=100, direction="desc", nested=True)
+        except Exception:
+            return None
+        for order in orders or []:
+            for leg in [order, *(order.get("legs") or [])]:
+                if str(leg.get("client_order_id") or "") == client_order_id:
+                    return True
+        return False
+
+    def _velez_place_stop(self, symbol: str, side: str, qty: float, stop_price: float, client_order_id: Optional[str] = None) -> dict:
+        """Submit a protective stop for `qty` straight to the broker. Not through the verified-stop helper:
+        that one treats any open same-side stop (even one pending cancellation, or one covering less) as
+        enough, and would skip the order."""
+        payload = {
+            "symbol": symbol,
+            "qty": self._format_qty(qty),
+            "side": "sell" if side == "long" else "buy",
+            "type": "stop",
+            "time_in_force": "gtc",
+            "stop_price": f"{float(stop_price):.2f}",
+            "client_order_id": client_order_id or f"velez-runner-stop-{symbol.lower()}-{secrets.token_hex(6)}",
+        }
+        if self._quote_asset_type(symbol) in {"equity", "stock", "etf"}:
+            payload["position_intent"] = "sell_to_close" if side == "long" else "buy_to_close"
+        return self.broker.submit_order_payload(payload)
+
+    def _velez_reconcile_partial_stop(self, position: dict) -> Optional[dict]:
+        """Follow up a partial whose stop was resized, until the open protective stops cover what is
+        actually held. While the exit is still working, wait; once it has ended (filled, partly filled,
+        rejected, cancelled), top the stops up to the held quantity at the recorded price. This also
+        covers a runner stop that couldn't be placed, and stops whose cancellation was still pending."""
+        symbol = str(position.get("symbol") or "").upper()
+        key = f"velez_partial_resize.{symbol}"
+        pending = self.journal.get_setting(key, None)
+        if not isinstance(pending, dict) or not pending.get("stop_price"):
+            return None  # nothing pending (a cleared setting reads back as {})
+        held = self._position_qty_number(position)
+        position_key = self._velez_position_key(position)
+        if held <= 0 or (pending.get("position") and position_key and pending.get("position") != position_key):
+            self.journal.set_setting(key, None)  # the position closed, or this is another trade
+            return None
+        try:
+            orders = self.broker.get_orders_raw(status="open", limit=100, direction="desc", nested=True)
+        except Exception:
+            return None  # can't tell yet: next pass
+        ids = {str(pending.get("order_id") or ""), str(pending.get("client_order_id") or "")} - {""}
+        if any(str(o.get("id") or "") in ids or str(o.get("client_order_id") or "") in ids for o in orders or []):
+            return None  # the exit is still working
+        side = str(position.get("side") or "long").lower()
+        if pending.get("level") and held >= (self._float(pending.get("full_qty")) or 0.0) - 1e-9:
+            # The exit ended without a share coming off: that partial wasn't taken, so it can fire again.
+            taken = self._partials_taken_for_symbol(symbol)
+            if pending["level"] in taken:
+                taken.discard(pending["level"])
+                self.journal.set_setting(f"partials_taken.{symbol}", json.dumps(sorted(taken)))
+            pending = {**pending, "level": None}
+            self.journal.set_setting(key, pending)
+        stops = self._velez_exit_stops(symbol, side, orders)
+        covered = sum(abs(self._float(leg.get("qty")) or 0.0) for leg in stops)
+        if abs(covered - held) <= 1e-9:
+            self.journal.set_setting(key, None)  # protected, exactly
+            return None
+        live = [p for p in (self._float(leg.get("stop_price")) for leg in stops) if p]
+        stop_price = (max(live) if side == "long" else min(live)) if live else self._float(pending.get("stop_price"))
+        result = {"action": "velez_partial_stop_restore", "symbol": symbol, "qty": held, "stop_price": stop_price}
+        try:
+            if covered > held:
+                # Oversized (e.g. a stop moved to the full size while the exit was working): one stop for
+                # what's held, once the old ones are gone.
+                for leg in stops:
+                    self.broker.cancel_order(str(leg.get("id") or ""))
+                if not self._velez_stops_gone(symbol, side, [str(leg.get("id") or "") for leg in stops]):
+                    result.update(status="pending", error="stop cancellation not confirmed")  # next pass
+                    log_event(self.logger, "velez_partial_stop_restore", result)
+                    return result
+                self._velez_place_stop(symbol, side, held, stop_price)
+            else:
+                result["qty"] = held - covered
+                self._velez_place_stop(symbol, side, held - covered, stop_price)
+            result["status"] = "submitted"
+            self.journal.set_setting(key, None)
+        except Exception as exc:
+            result.update(status="failed", error=str(exc)[:160])  # retried next pass
+            self._notify_event(
+                key=f"velez-runner-stop:{symbol}",
+                title="Velez stop NOT restored",
+                detail=f"{symbol}: the protective stop at {stop_price} for qty {self._format_qty(held)} could not be restored after a partial. It is retried each pass; until then part of the position is unprotected.",
+                severity="critical",
+                payload={"kind": "partial_stop_restore_failed", "symbol": symbol, "qty": held, "stop_price": stop_price, "error": result["error"]},
+                ignore_cooldown=True,
+            )
+        log_event(self.logger, "velez_partial_stop_restore", result)
+        return result
+
+    def _velez_partial_with_stop(self, position: dict, exit_qty: float, submit: Any, level: Optional[str] = None,
+                                 client_order_id: Optional[str] = None) -> Optional[str]:
+        """Submit a partial exit with the protective stop resized around it. The open stop covers every
+        share: the broker would refuse the exit for want of free shares, or the stop would later sell more
+        than the runner holds. So the position's protective stops (exit-side stops, read from the broker so
+        a stop moved this pass counts) are cancelled, and once the broker confirms they're gone the exit is
+        sent and one stop placed for the remaining quantity at the most protective cancelled price.
+
+        Every resize is recorded and followed up each pass (`_velez_reconcile_partial_stop`), which tops
+        the stops back up to the held quantity if the exit doesn't fill, fills partly, or a stop couldn't
+        be placed. If a cancel fails or isn't confirmed, the exit isn't sent and the helper raises (the
+        follow-up restores any coverage that went). Returns None, or the error when the exit went through
+        but the runner's stop couldn't be placed (escalated; the follow-up retries it).
+        """
+        symbol = str(position.get("symbol") or "")
+        side = str(position.get("side") or "long").lower()
+        held = self._position_qty_number(position)
+        try:
+            orders = self.broker.get_orders_raw(status="open", limit=100, direction="desc", nested=True)
+        except Exception:
+            orders = position.get("open_orders") or []
+        stops = self._velez_exit_stops(symbol, side, orders)
+        prices = [self._float(leg.get("stop_price")) for leg in stops]
+        # Checked before anything is cancelled: the replacement must be placeable at the same price.
+        if any(not p for p in prices):
+            # e.g. a trailing stop reported without its current stop price: it can't be re-placed.
+            raise RuntimeError("a protective stop has no readable stop price: partial skipped")
+        if any(abs(round(p, 2) - p) > 1e-9 for p in prices):
+            raise RuntimeError("a protective stop price needs more than 2 decimals: partial skipped")
+        stop_price = (max(prices) if side == "long" else min(prices)) if prices else None
+        resize_key = f"velez_partial_resize.{symbol.upper()}"
+
+        def remember(response: Optional[dict] = None) -> None:
+            response = response if isinstance(response, dict) else {}
+            self.journal.set_setting(resize_key, {
+                "order_id": response.get("id"), "client_order_id": response.get("client_order_id") or client_order_id,
+                "full_qty": held, "exit_qty": exit_qty, "stop_price": stop_price, "level": level,
+                "position": self._velez_position_key(position),
+                "at": datetime.now(timezone.utc).isoformat(),
+            })
+            index = self.journal.get_setting("velez_partial_resize.symbols", []) or []
+            if symbol.upper() not in index:
+                self.journal.set_setting("velez_partial_resize.symbols", sorted(set(index) | {symbol.upper()}))
+
+        def place(qty: float) -> Optional[str]:
+            if stop_price is None or qty <= 0:
+                return None
+            error = None
+            client_id = f"velez-runner-stop-{symbol.lower()}-{secrets.token_hex(6)}"  # one key for the retries
+            for _ in range(2):
+                try:
+                    self._velez_place_stop(symbol, side, qty, stop_price, client_order_id=client_id)
+                    return None
+                except Exception as exc:
+                    error = str(exc)[:160]
+                    if self._velez_order_known(client_id) is not False:
+                        # Accepted despite the error, or the broker can't say: don't send a second stop.
+                        # The follow-up checks the coverage on the next pass.
+                        return None if self._velez_order_known(client_id) else error
+            log_event(self.logger, "velez_partial_stop_replace_failed", {"symbol": symbol, "qty": qty, "stop_price": stop_price, "reason": error})
+            self._notify_event(
+                key=f"velez-runner-stop:{symbol}",
+                title="Velez runner stop NOT placed",
+                detail=f"{symbol}: the protective stop at {stop_price} for qty {self._format_qty(qty)} could not be placed after a partial. It is retried each pass; until then the position is unprotected.",
+                severity="critical",
+                payload={"kind": "runner_stop_failed", "symbol": symbol, "qty": qty, "stop_price": stop_price, "error": error},
+                ignore_cooldown=True,
+            )
+            return error or "stop_replace_failed"
+
+        cancelled_qty, failed = 0.0, None
+        for leg in stops:
+            try:
+                self.broker.cancel_order(str(leg.get("id") or ""))
+                cancelled_qty += abs(self._float(leg.get("qty")) or held)
+            except Exception as exc:
+                failed = str(exc)[:160]
+                log_event(self.logger, "velez_partial_stop_cancel_failed", {"symbol": symbol, "order": leg.get("id"), "reason": failed})
+        if stops and failed is None and not self._velez_stops_gone(symbol, side, [str(leg.get("id") or "") for leg in stops]):
+            failed = "stop cancellation not confirmed"
+        if failed is not None:
+            # A protective stop may still be live: the exit could be refused or leave the stops oversized.
+            # The exit isn't sent; the follow-up tops the stops back up to the held quantity.
+            if cancelled_qty and stop_price is not None:
+                remember()
+            raise RuntimeError(f"protective stop cancel failed: {failed}")
+        if stop_price is not None:
+            remember()  # before the exit, with its client order id: a failure past this point is followed up
+        if level:
+            # Marked before the exit goes out, so a timeout can't lead to a second sale; the follow-up
+            # unmarks it if the exit ends without a share coming off.
+            self._record_partial_taken(symbol, level)
+        try:
+            response = submit()
+        except Exception as exc:
+            known = self._velez_order_known(client_order_id) if client_order_id else False
+            if known is False:
+                # Definitely not at the broker: the stop goes back for the whole position, the level unmarked.
+                if level:
+                    taken = self._partials_taken_for_symbol(symbol)
+                    taken.discard(level)
+                    self.journal.set_setting(f"partials_taken.{symbol.upper()}", json.dumps(sorted(taken)))
+                self.journal.set_setting(resize_key, None)
+                place(held)
+                raise
+            # Accepted despite the error, or the broker can't say: treated as sent. The runner gets its stop
+            # and the follow-up settles the rest (and unmarks the level if nothing came off).
+            log_event(self.logger, "velez_partial_submit_ambiguous", {"symbol": symbol, "client_order_id": client_order_id, "reason": str(exc)[:160]})
+            return place(held - exit_qty) or f"exit submission unconfirmed: {str(exc)[:120]}"
+        if stop_price is not None:
+            remember(response)
+        return place(held - exit_qty)
+
+    def _velez_stops_gone(self, symbol: str, side: str, ids: List[str], attempts: int = 8) -> bool:
+        """Whether the broker no longer lists the cancelled stops as open (a cancel is acknowledged before
+        it takes effect, and until then the stop still holds the shares)."""
+        wanted = {i for i in ids if i}
+        for attempt in range(attempts):
+            try:
+                orders = self.broker.get_orders_raw(status="open", limit=100, direction="desc", nested=True)
+            except Exception:
+                orders = None
+            if orders is not None:
+                live = {str(leg.get("id") or "") for leg in self._velez_exit_stops(symbol, side, orders)}
+                pending = {
+                    str(leg.get("id") or "")
+                    for order in orders for leg in [order, *(order.get("legs") or [])]
+                    if str(leg.get("status") or "").lower() == "pending_cancel"
+                }
+                if not (wanted & (live | pending)):
+                    return True
+            if attempt < attempts - 1:
+                time.sleep(0.25)
+        return False
+
+    def _velez_partial_qty(self, position: dict, pct: float) -> float:
+        """Quantity for a partial exit: whole units for stocks and futures, 4 decimals for a fractional long
+        stock position, 8 for crypto; never rounded up and never the whole position (0 means skip)."""
+        held = self._position_qty_number(position)
+        if held <= 0 or pct <= 0:
+            return 0.0
+        crypto = self._quote_asset_type(str(position.get("symbol") or "")) == "crypto"
+        raw = held * min(pct, 1.0)
+        long = str(position.get("side") or "long").lower() == "long"
+        fractional = long and not crypto and abs(held - round(held)) > 1e-9  # a fractionable stock held in fractions
+        if crypto:
+            qty = math.floor(raw * 1e8) / 1e8
+        elif fractional:
+            qty = math.floor(raw * 1e4 + 1e-9) / 1e4  # the broker takes 4-decimal sell_to_close quantities
+        else:
+            qty = float(math.floor(raw + 1e-9))
+        return qty if 0 < qty < held else 0.0
+
+    def _velez_opening_fill(
+        self,
+        symbol: str,
+        long: bool,
+        linked: Optional[dict],
+        fills: List[dict],
+        held_qty: Optional[float] = None,
+        held_entry: Optional[float] = None,
+    ) -> Optional[dict]:
+        """The fill that opened the position, rebuilt from the fill history.
+
+        Walks this symbol's fills oldest first, tracking signed inventory (buys add, sells subtract):
+        the opening fill is the one that took the position from flat, or across zero, into its current
+        direction. Split fills, pyramid adds, partial exits and earlier trades in either direction
+        never move it, whichever decision the lifecycle linked. Trusted only when the fills add up to
+        `held_qty` (a window that starts mid-trade can't see the open), or to a split of it that the
+        cost basis confirms (`held_entry` x held = the fills' average entry x their quantity); otherwise
+        None.
+        """
+        timed = []
+        for fill in fills or []:
+            if str(fill.get("symbol") or "").upper() != symbol:
+                continue
+            stamp = fill.get("transaction_time") or fill.get("filled_at")
+            qty = self._float(fill.get("qty"))
+            side = str(fill.get("side") or "").lower()
+            if not stamp or not qty or side not in {"buy", "sell", "sell_short"}:
+                continue
+            try:
+                timed.append((self._timestamp(stamp), fill, abs(qty) if side == "buy" else -abs(qty)))
+            except Exception:
+                continue
+        timed.sort(key=lambda item: item[0])
+        direction = 1.0 if long else -1.0
+        inventory, opening = 0.0, None
+        cost, bought = 0.0, 0.0  # entry-side shares since the open, for the average entry
+        basis_cost, basis_qty = 0.0, 0.0  # the opening order's shares on this side, for its basis
+        added = False  # another order added to the position since the open
+        for _, fill, signed in timed:
+            before = inventory
+            inventory += signed
+            price = self._float(fill.get("price"))
+            if abs(inventory) <= 1e-9:
+                inventory, opening = 0.0, None
+                continue
+            if before * direction <= 1e-9 and inventory * direction > 1e-9:
+                opening = fill  # from flat (or the other side) into this position's direction
+                # A reversing fill only opens what's past zero; the rest closed the other side.
+                opened = inventory * direction
+                cost, bought = (opened * price, opened) if price else (0.0, 0.0)
+                basis_cost, basis_qty = cost, bought
+                added = False
+                continue
+            if inventory * direction <= 0:
+                opening = None
+                continue
+            if opening is not None and signed * direction > 0 and price:
+                cost += abs(signed) * price
+                bought += abs(signed)
+                if opening.get("order_id") and str(fill.get("order_id") or "") == str(opening.get("order_id")):
+                    basis_cost += abs(signed) * price
+                    basis_qty += abs(signed)
+                else:
+                    added = True
+        if opening is None or held_qty is None or inventory * direction <= 0:
+            return None
+        factor = abs(held_qty) / (inventory * direction)
+        if abs(factor - 1.0) > 1e-6:
+            # A split since is accepted only when the cost basis confirms it: the broker's average
+            # entry is the fills' average divided by the split factor. A window that merely starts
+            # mid-trade fails this.
+            average = cost / bought if bought else None
+            if (
+                added  # fills on both sides of the split: the ratio isn't the opening shares' factor
+                or self._velez_split_ratio(factor) is None
+                or not held_entry or not average
+                or abs(held_entry * factor / average - 1.0) > 0.01
+            ):
+                return None
+        opening = dict(opening)
+        # 1.0 without a split; otherwise the fills are on the share basis before it.
+        opening["split_factor"] = factor if abs(factor - 1.0) > 1e-6 else 1.0
+        # The opening order's weighted price on this side: a split-filled entry's basis isn't its first
+        # piece, and a reversal's closing shares aren't part of it.
+        if basis_qty:
+            opening["basis_price"] = basis_cost / basis_qty
+        return opening
+
+    @staticmethod
+    def _velez_split_ratio(factor: float) -> Optional[tuple]:
+        """(new, old) shares when `factor` is a split ratio of small whole numbers (2-for-1, 5-for-4,
+        1-for-10, ...), else None."""
+        for old in range(1, 21):
+            new = round(factor * old)
+            if 1 <= new <= 200 and abs(new / old - factor) < 1e-6:
+                return (new, old)
+        old = round(1.0 / factor) if factor > 0 else 0
+        if 20 < old <= 200 and abs(1.0 / old - factor) < 1e-9:
+            return (1, old)  # a reverse split such as 1-for-25 or 1-for-50
+        return None
+
+    @staticmethod
+    def _velez_alpaca_timeframe(value: Any) -> Optional[str]:
+        """Alpaca timeframe for a decision's timeframe ("15", "15m", "1h", "D", "15Min", ...), or None."""
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        if raw.upper() in {"D", "1D", "DAY", "DAILY"}:
+            return "1Day"
+        match = re.match(r"^(\d+)\s*(min|m|t|hour|h|day|d)?$", raw, re.IGNORECASE)
+        if not match or int(match.group(1)) <= 0:
+            return None
+        count, unit = int(match.group(1)), (match.group(2) or "min").lower()
+        if unit in {"day", "d"}:
+            return f"{count}Day"
+        if unit in {"hour", "h"}:
+            return f"{count}Hour"
+        if count % 1440 == 0:
+            return f"{count // 1440}Day"
+        return f"{count // 60}Hour" if count % 60 == 0 else f"{count}Min"
+
+    def _velez_session_close(self, day, default: datetime) -> datetime:
+        """The exchange calendar's close for `day` (13:00 on a half day), cached; `default` (16:00) when
+        the calendar can't be read."""
+        cache = self.__dict__.setdefault("_velez_close_cache", {})
+        if day in cache:
+            return cache[day]
+        failed = self.__dict__.setdefault("_velez_close_failed", {})
+        if day in failed and datetime.now(timezone.utc) < failed[day]:
+            return default  # the calendar just failed: don't ask again for every bar
+        close = default
+        if self.broker.is_configured() and hasattr(self.broker, "get_calendar_raw"):
+            try:
+                # The surrounding months in one request: a bar history asks for many days at once.
+                start, end = day - timedelta(days=120), max(day, datetime.now(timezone.utc).date()) + timedelta(days=7)
+                rows = self.broker.get_calendar_raw(start=start.isoformat(), end=end.isoformat()) or []
+                by_date = {str(r.get("date")): r for r in rows if r.get("date") and r.get("close")}
+                if rows:
+                    for offset in range((end - start).days + 1):
+                        other = start + timedelta(days=offset)
+                        if other == day or other in cache:
+                            continue
+                        found = by_date.get(other.isoformat())
+                        if found:
+                            hour, minute = (int(part) for part in str(found["close"]).split(":")[:2])
+                            cache[other] = default.replace(year=other.year, month=other.month, day=other.day, hour=hour, minute=minute)
+                            self.__dict__.setdefault("_velez_open_days", set()).add(other)
+                        else:
+                            cache[other] = default.replace(year=other.year, month=other.month, day=other.day)
+                            self.__dict__.setdefault("_velez_closed_days", set()).add(other)
+                row = by_date.get(day.isoformat())
+                if row and row.get("close"):
+                    hour, minute = (int(part) for part in str(row["close"]).split(":")[:2])
+                    close = default.replace(hour=hour, minute=minute)
+                    self.__dict__.setdefault("_velez_open_days", set()).add(day)  # a confirmed session
+            except Exception as exc:
+                log_event(self.logger, "velez_calendar_failed", {"day": day.isoformat(), "reason": str(exc)[:160]})
+                failed[day] = datetime.now(timezone.utc) + timedelta(minutes=5)  # retried after that
+                return default
+            if not rows or row is None:
+                self.__dict__.setdefault("_velez_closed_days", set()).add(day)  # a holiday: no session
+        if len(cache) > 2000:
+            cache.clear()
+        cache[day] = close
+        return close
+
+    def _velez_bar_end(self, bar: Bar, timeframe: str, equity: bool) -> datetime:
+        """When a bar is complete: start + timeframe, or the session's close (16:00 New York, earlier on a
+        half day) for an equity daily bar."""
+        start = bar.timestamp if bar.timestamp.tzinfo else bar.timestamp.replace(tzinfo=timezone.utc)
+        seconds = self._timeframe_seconds(timeframe)
+        if seconds >= 86400 and equity:
+            day = velez_doctrine.daily_bar_date(start)
+            if day is not None:
+                close = datetime.combine(day, velez_doctrine.SESSION_CLOSE, tzinfo=ZoneInfo(velez_doctrine.MARKET_TZ))
+                close = self._velez_session_close(day, close)  # a half day (past or today) ends at 13:00
+                return close.astimezone(timezone.utc)
+        return start + timedelta(seconds=seconds)
+
+    def _velez_entry_time(self, position: dict) -> Optional[datetime]:
+        """When the position was actually opened: the opening fill's time (a resting limit can fill well
+        after its decision; split fills and adds don't move it, nor does an add's linked decision), else
+        the decision time."""
+        fill = position.get("entry_fill") or {}
+        filled_at = fill.get("transaction_time") or fill.get("filled_at")
+        if filled_at:
+            try:
+                return self._timestamp(filled_at)
+            except Exception:
+                pass
+        # The opening fill has aged out of the fill snapshot: the time recorded when it was seen.
+        opened = (self._velez_open_record(position) or {}).get("opened")
+        if opened:
+            try:
+                return self._timestamp(opened)
+            except Exception:
+                pass
+        decided = (position.get("linked_decision") or {}).get("timestamp")
+        if not decided or not self._velez_linked_is_only_entry(position):
+            return None  # e.g. an add's decision on a position opened before its fills were in view
+        return self._timestamp(decided)
+
+    @staticmethod
+    def _velez_partial_pending(symbol: str, open_orders: List[dict], level: str) -> bool:
+        """Whether this symbol's `level` partial (1r / 2r) is still an open broker order."""
+        prefix = f"velez-partial-{level}-{str(symbol or '').lower()}-"
+        closed = {"filled", "canceled", "cancelled", "expired", "rejected"}
+        return any(
+            str(order.get("client_order_id") or "").lower().startswith(prefix)
+            and str(order.get("status") or "").lower() not in closed
+            for order in open_orders or []
+        )
+
+    def _velez_split_in_hold(self, symbol: str, since: List[dict], daily: bool) -> bool:
+        """Whether a split happened inside the hold: a held day's raw close is off its split-adjusted
+        daily close by a split-sized ratio. A real gap (earnings, news) matches its adjusted close, so it
+        is never mistaken for a split. False when no split-adjusted reference is available."""
+        rows = self._velez_daily_rows(symbol)
+        if not rows or not all(row.get("split_adjusted") for row in rows):
+            return False
+        # Completed days only: today's daily bar (if the feed returned one) is still forming and cached.
+        today = datetime.now(ZoneInfo(velez_doctrine.MARKET_TZ)).date()
+        adjusted = {
+            day: row["c"] for row in rows
+            if (day := velez_doctrine.daily_bar_date(row["t"])) is not None and day < today
+        }
+        raw: dict = {}
+        for bar in since:
+            if daily:
+                day = velez_doctrine.daily_bar_date(bar["t"])
+            else:
+                local = velez_doctrine._local(bar["t"])
+                if local is None or local >= session_close_on(local.date(), local.tzinfo):
+                    continue  # after-hours prints (after 13:00 on a half day) aren't the day's close
+                day = local.date()
+            raw[day] = bar["c"]  # the day's last regular-session close
+        for day, close in raw.items():
+            ref = adjusted.get(day)
+            # A held day's raw close matches its adjusted close to within the feeds' differences; a
+            # split, even 5-for-4, moves it by its whole ratio.
+            if ref and close and max(close / ref, ref / close) - 1.0 > SPLIT_EVIDENCE_PCT:
+                return True
+        return False
+
+    def _velez_profit_taking_verdict(self, position: dict) -> Optional[dict]:
+        """The rulebook's profit-taking verdict (2026.10.6) for a live position, or None.
+
+        The same inputs as the backtested scale-out, on the trade's own timeframe (the linked
+        decision's, else the scanner's): pushes since the bar the entry filled in, the move from
+        today's session origin (from its origin within the hold on daily bars and for
+        non-equities), and the daily and wide-day ATRs from completed days. None when the entry
+        time, bars or price are missing.
+        """
+        symbol = str(position.get("symbol") or "").upper()
+        side = str(position.get("side") or "long")
+        linked = position.get("linked_decision") or {}
+        try:
+            entry_ts = self._velez_entry_time(position)
+        except Exception:
+            entry_ts = None
+        if not symbol or entry_ts is None:
+            return None
+        # The opening decision's timeframe (kept with the position), else the linked decision's.
+        raw_tf = (self._velez_open_record(position) or {}).get("timeframe") or linked.get("timeframe")
+        timeframe = self._velez_alpaca_timeframe(raw_tf)
+        if timeframe is None:
+            if str(raw_tf or "").strip():
+                return None  # a timeframe this feed can't serve (e.g. weekly): the R-multiple partial applies
+            timeframe = str(self.scanner_config.get("timeframe", "1Min"))
+        # Broker symbols can be aliases of the configured ones (BTCUSD for BTC/USD).
+        asset_type = self._quote_asset_type(symbol)
+        equity = asset_type in {"equity", "stock", "etf"}
+        if not equity and asset_type not in {"crypto", "future", "futures"}:
+            return None  # no bar feed here (e.g. forex): the R-multiple partial applies instead
+        if equity and self._timeframe_seconds(timeframe) > 86400:
+            return None  # a 2Day+ equity bar closes on the trading calendar: the R-multiple partial applies
+        try:
+            bars = self._fetch_scanner_bars(symbol=symbol, asset_type=asset_type, timeframe=timeframe)
+        except Exception as exc:
+            log_event(self.logger, "velez_profit_taking_skipped", {"symbol": symbol, "reason": str(exc)[:160]})
+            return None
+        now = datetime.now(timezone.utc)
+        delay = timedelta(seconds=max(0, int(self.scanner_config.get("closed_bar_delay_seconds", 15) or 15)))
+        closed = [bar for bar in bars if self._velez_bar_end(bar, timeframe, equity) + delay <= now]
+        # bars_since_entry starts with the entry bar: the bar the fill happened in.
+        since = [velez_doctrine.bar_dict(bar) for bar in closed if self._velez_bar_end(bar, timeframe, equity) > entry_ts]
+        if not since:
+            return None
+        # A rolling window that starts after the entry can't see the whole hold.
+        covers_entry = bool(closed) and (closed[0].timestamp if closed[0].timestamp.tzinfo
+                                         else closed[0].timestamp.replace(tzinfo=timezone.utc)) <= entry_ts
+        if not covers_entry:
+            # Pushes before the window and the move's origin are out of view: a "hold" read from the
+            # rest would be wrong, so leave it to the R-multiple partial.
+            return None
+        closed_dicts = [velez_doctrine.bar_dict(bar) for bar in closed]
+        daily = self._timeframe_seconds(timeframe) >= 86400
+        session: List[dict] = []
+        if equity and not daily:
+            # Pushes count in the regular session only: thin premarket / after-hours prints don't.
+            spacing = self._timeframe_seconds(timeframe)
+            since = regular_session_bars(since, spacing)
+            if not since:
+                return None
+            session = self._velez_session_bars(symbol)
+            entry_day = velez_doctrine._local(since[0]["t"]).date()
+            # Full-tape session pieces for every held day (today's alone can't rebuild earlier opens).
+            hold = session if entry_day >= velez_doctrine._local(since[-1]["t"]).date() else self._velez_session_bars(symbol, since_day=entry_day)
+            since = self._velez_rth_clip(since, hold, spacing)
+            if not since:
+                return None  # an opening bar's premarket part can't be separated: leave it to the R partial
+        if equity and self._velez_split_in_hold(symbol, since, daily):
+            # Pre- and post-split prices aren't comparable, so pushes and the origin can't be read.
+            return None
+        if equity and not daily:
+            # The rolling window can lose the morning on short timeframes: add the full-session feed
+            # (through the last closed bar) so the move's origin is the day's true low / high.
+            base = drop_premarket_bars(closed_dicts) if session_feed_covers_open(session, since[-1]["t"]) else closed_dicts
+            merged = {b["t"]: b for b in base}
+            last_end = since[-1]["t"] + timedelta(seconds=self._timeframe_seconds(timeframe))
+            for b in session:
+                if b["t"] >= last_end:
+                    continue  # past the last closed decision bar (its own 5-minute pieces are kept)
+                cur = merged.get(b["t"])
+                # Same timestamp in both: keep the wider range (the full tape's low / high).
+                merged[b["t"]] = b if cur is None else {**cur, "h": max(cur["h"], b["h"]), "l": min(cur["l"], b["l"])}
+            ordered = sorted(merged.values(), key=lambda b: b["t"])
+            entry_day = velez_doctrine._local(since[0]["t"]).date()
+            if entry_day < velez_doctrine._local(since[-1]["t"]).date():
+                # Held overnight: the move began within the hold, before today's session. Only regular-
+                # session prices count: the hold's RTH bars plus today's session pieces, not after-hours.
+                held = {b["t"]: b for b in since}
+                for b in hold:
+                    if not since[0]["t"] <= b["t"] < last_end:
+                        continue
+                    cur = held.get(b["t"])
+                    held[b["t"]] = b if cur is None else {**cur, "h": max(cur["h"], b["h"]), "l": min(cur["l"], b["l"])}
+                origin_bars = sorted(held.values(), key=lambda b: b["t"])
+            else:
+                origin_bars = session_overlap_bars(ordered)
+        else:
+            origin_bars = since
+        try:
+            if equity:
+                last_day = velez_doctrine.daily_bar_date(since[-1]["t"]) if daily else velez_doctrine._local(since[-1]["t"]).date()
+                rows = daily_rows_before(self._velez_daily_rows(symbol), last_day)
+            else:
+                last = since[-1]["t"] if since[-1]["t"].tzinfo else since[-1]["t"].replace(tzinfo=timezone.utc)
+                # Intraday history is far shorter than the 61 days the wide-day ATR needs: read daily bars.
+                daily_source = closed_dicts
+                if not daily:
+                    try:
+                        daily_source = [velez_doctrine.bar_dict(bar) for bar in
+                                        self._fetch_scanner_bars(symbol=symbol, asset_type=asset_type, timeframe="1Day")]
+                    except Exception as exc:
+                        log_event(self.logger, "velez_profit_taking_daily_fallback", {"symbol": symbol, "reason": str(exc)[:160]})
+                rows = utc_daily_rows(daily_source, last.astimezone(timezone.utc).date())
+            rows = split_safe_daily_rows(rows)
+            verdict = velez_doctrine.profit_taking(
+                side,
+                since,
+                since[-1]["c"],
+                velez_doctrine.move_origin(origin_bars or since, side),
+                daily_atr_from_rows(rows),
+                velez_doctrine.wide_day_atr(rows),
+            )
+            return verdict
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            log_event(self.logger, "velez_profit_taking_skipped", {"symbol": symbol, "reason": str(exc)[:160]})
+            return None
 
     def market_close_payload(self, symbol: str) -> dict:
         cleaned = self._clean_quote_symbol(symbol)
@@ -4206,6 +5393,8 @@ class TradingViewWebhookEngine:
         raw_positions, positions_error = self._raw_positions_for_lifecycle()
         raw_orders, orders_error = self._raw_orders_for_lifecycle()
         raw_fills, fills_error = self._raw_fills_for_lifecycle()
+        # Authoritative only when it loaded and wasn't cut off at the activity page size (100).
+        self._velez_fills_complete = not fills_error and len(raw_fills) < 100
         decisions = self.journal.decision_entries(limit=1000)
         pending = self.journal.pending_orders()
 
@@ -4215,6 +5404,9 @@ class TradingViewWebhookEngine:
             self._position_lifecycle(item, decisions=decisions, orders=open_orders, fills=recent_fills)
             for item in raw_positions
         ]
+        if not positions_error and self.broker.is_configured():
+            # A complete position snapshot: symbols no longer held drop their profit-taking records.
+            self._velez_prune_open_records({str(p.get("symbol") or "").upper() for p in positions})
         guardrails = self._lifecycle_guardrails(
             positions=positions,
             open_orders=open_orders,
@@ -10248,6 +11440,11 @@ class TradingViewWebhookEngine:
         multiplier = self._float(sym_cfg.get("contract_multiplier")) or 1.0
         initial_risk = risk_per_unit * qty_abs * multiplier if risk_per_unit and qty_abs else None
         latest_fill = next((fill for fill in fills if str(fill.get("symbol") or "").upper() == symbol), None)
+        # Untruncated: a 0.1 BTC position must match its fills (qty_abs is whole units).
+        held_qty = abs(self._float(item.get("qty")) or 0.0)
+        entry_fill = self._velez_opening_fill(
+            symbol, direction > 0, linked, fills, held_qty, self._float(item.get("avg_entry_price"))
+        )
         management = self._position_management_actions(
             side=side,
             entry_price=entry_price,
@@ -10277,6 +11474,12 @@ class TradingViewWebhookEngine:
             "linked_decision": self._public_lifecycle_decision(linked),
             "open_orders": symbol_orders,
             "latest_fill": latest_fill,
+            "entry_fill": entry_fill,
+            # Unrounded for the profit-taking R basis (sub-cent crypto stops).
+            "velez_entry_price": entry_price,
+            "velez_stop_price": stop_price,
+            "velez_current_price": current_price,
+            "velez_symbol_fills": [fill for fill in fills if str(fill.get("symbol") or "").upper() == symbol],
             "management": management,
             "next_action": self._next_management_action(management),
         }
@@ -10579,6 +11782,23 @@ class TradingViewWebhookEngine:
         claims = self.journal.get_setting("lifecycle.position_claims", {}) or {}
         return claims if isinstance(claims, dict) else {}
 
+    @staticmethod
+    def _claim_symbol_key(symbol: Any) -> str:
+        """Symbols compared without separators: a broker BTCUSD is the journaled BTC/USD."""
+        return str(symbol or "").upper().strip().replace("/", "").replace("-", "")
+
+    def _lifecycle_claim_for_symbol(self, symbol: str) -> Optional[dict]:
+        """The stored claim for this symbol or one of its aliases (exact match first)."""
+        claims = self._lifecycle_claims()
+        wanted = str(symbol or "").upper().strip()
+        if isinstance(claims.get(wanted), dict):
+            return claims[wanted]
+        key = self._claim_symbol_key(wanted)
+        return next(
+            (claim for name, claim in claims.items() if isinstance(claim, dict) and self._claim_symbol_key(name) == key),
+            None,
+        )
+
     def _set_lifecycle_claim(self, symbol: str, decision: dict) -> dict:
         cleaned_symbol = str(symbol or decision.get("symbol") or "").upper().strip()
         claim = {
@@ -10597,7 +11817,7 @@ class TradingViewWebhookEngine:
             return []
         candidates = [
             item for item in decisions
-            if str(item.get("symbol") or "").upper().strip() == wanted
+            if self._claim_symbol_key(item.get("symbol")) == self._claim_symbol_key(wanted)
             and str(item.get("status") or "").lower() in {"submitted", "proposed", "diagnostic"}
         ]
         side = str(side or "").lower()
@@ -10772,6 +11992,12 @@ class TradingViewWebhookEngine:
                     except Exception as exc:
                         results.append({"action": "emergency_stop_repair", "symbol": symbol, "status": "failed", "error": str(exc)})
 
+            # A partial's stop follow-up first: while its exit is working, stops aren't moved (a move would
+            # size the stop to the full position again).
+            restored = self._velez_reconcile_partial_stop(position)
+            if restored is not None:
+                results.append(restored)
+            resize_pending = bool(self.journal.get_setting(f"velez_partial_resize.{str(symbol).upper()}", None))
             # V0: Velez bar-by-bar management (owner doctrine, see CLAUDE.md):
             # 1R -> breakeven, trail one tick behind the prior bar once two bars
             # close in favor, 3-bar rule, tighten on an opposing tail/180/elephant.
@@ -10800,7 +12026,7 @@ class TradingViewWebhookEngine:
                     and stop_price is not None
                     and ((side == "long" and new_stop > stop_price) or (side == "short" and new_stop < stop_price))
                 )
-                if tighter:
+                if tighter and not resize_pending:
                     self._cancel_symbol_stop_orders(position)
                     try:
                         repair = self._submit_verified_protective_stop(
@@ -10823,7 +12049,7 @@ class TradingViewWebhookEngine:
                     breakeven_due = True
                 elif side == "short" and stop_price is not None and stop_price > entry_price:
                     breakeven_due = True
-                if breakeven_due:
+                if breakeven_due and not resize_pending:
                     # Cancel existing stop orders and submit new breakeven stop
                     self._cancel_symbol_stop_orders(position)
                     try:
@@ -10840,12 +12066,63 @@ class TradingViewWebhookEngine:
                         results.append({"action": "breakeven_stop_move", "symbol": symbol, "status": "failed", "error": str(exc)})
 
             # #2: Auto-execute partial profit-taking at 1R and 2R
-            partials_cfg = self.config.get("strategy", {}).get("exits", {}).get("partials_auto_execute", {})
-            if partials_cfg.get("enabled", True) and current_r is not None and qty:
+            # config.yaml keeps this block beside `exits`, not inside it: read either place.
+            strategy_cfg = self.config.get("strategy", {}) or {}
+            partials_cfg = (strategy_cfg.get("exits", {}) or {}).get("partials_auto_execute") or strategy_cfg.get("partials_auto_execute") or {}
+            # After the stop moves to breakeven, R from the current stop is undefined: measure it
+            # against the initial (journaled) stop so later partials still fire.
+            self._velez_record_initial_risk(position)
+            initial_r = self._velez_initial_r(position)
+            partial_r = initial_r
+            if partial_r is None:
+                entry_now = self._velez_price(position, "entry_price")
+                stop_now = self._velez_price(position, "stop_price")
+                protective = (
+                    entry_now is not None and stop_now is not None
+                    and ((stop_now < entry_now) if side == "long" else (stop_now > entry_now))
+                )
+                # A trailed stop's distance isn't a risk (entry 100, trail 100.10 reads 60R): without
+                # the initial risk, R-based partials wait.
+                partial_r = current_r if protective else None
+            if partials_cfg.get("enabled", True) and qty:
                 partials_taken = self._partials_taken_for_symbol(symbol)
-                if current_r >= float(partials_cfg.get("first_r", 1.0)) and "first" not in partials_taken and current_r < float(partials_cfg.get("second_r", 2.0)):
+                first_due = (
+                    partial_r is not None
+                    and float(partials_cfg.get("first_r", 1.0)) <= partial_r < float(partials_cfg.get("second_r", 2.0))
+                )
+                if str(partials_cfg.get("trigger", "r_multiple")).lower() == "velez_profit_taking":
+                    # Rulebook 2026.10.6: the first partial comes off at the profit-taking verdict
+                    # (3+ pushes, or the move past the daily / wide-day ATR), only while in profit.
+                    # The fallback is eligible past second_r too: the first partial comes before the second.
+                    r_first_due = partial_r is not None and partial_r >= float(partials_cfg.get("first_r", 1.0))
+                    first_due = False
+                    entry_now = self._velez_price(position, "entry_price")
+                    price_now = self._velez_price(position, "current_price")
+                    # In profit from entry and price: R can be unknown (no initial risk, stop trailed).
+                    in_profit = (
+                        (price_now > entry_now if side == "long" else price_now < entry_now)
+                        if entry_now is not None and price_now is not None
+                        else partial_r is not None and partial_r > 0
+                    )
+                    # Still eligible past second_r: a trade that runs straight through 2R takes its
+                    # first partial at the verdict too (the second, at 2R, waits for the next pass).
+                    if "first" not in partials_taken and in_profit:
+                        verdict = self._velez_profit_taking_verdict(position)
+                        if verdict is None or verdict.get("status") == "unknown":
+                            # The rulebook's inputs can't be read for this position (no bar feed, too
+                            # little history): keep the R-multiple partial rather than none.
+                            first_due = r_first_due
+                        else:
+                            first_due = verdict.get("status") in {"take_partial", "take_profits"}
+                        if first_due:
+                            log_event(self.logger, "velez_profit_taking_verdict", {"symbol": symbol, "partial_r": partial_r, "verdict": verdict})
+                if (
+                    first_due and "first" not in partials_taken and not self._velez_partial_pending(symbol, open_orders, "2r")
+                    and self._velez_partial_window_open(symbol)
+                    and not self.journal.get_setting(f"velez_partial_resize.{symbol.upper()}", None)
+                ):
                     first_pct = float(partials_cfg.get("first_pct", 0.5))
-                    exit_qty = max(1, int(self._position_qty_number(position) * first_pct))
+                    exit_qty = self._velez_partial_qty(position, first_pct)
                     if exit_qty > 0:
                         exit_side = "sell" if side == "long" else "buy"
                         partial_payload = {
@@ -10855,15 +12132,26 @@ class TradingViewWebhookEngine:
                             "client_order_id": f"velez-partial-1r-{symbol.lower()}-{secrets.token_hex(6)}",
                         }
                         try:
-                            self.broker.submit_order_payload(partial_payload)
-                            self._record_partial_taken(symbol, "first")
-                            results.append({"action": "partial_first_r", "symbol": symbol, "pct": first_pct, "status": "submitted"})
-                            log_event(self.logger, "auto_partial_1r", {"symbol": symbol, "current_r": current_r, "exit_pct": first_pct})
+                            stop_error = self._velez_partial_with_stop(position, exit_qty, level="first", client_order_id=partial_payload["client_order_id"], submit=lambda: self.broker.submit_order_payload(partial_payload))
+                            self._record_partial_taken(symbol, "first")  # the exit went out: never sent twice
+                            results.append({"action": "partial_first_r", "symbol": symbol, "pct": first_pct, "status": "submitted"}
+                                           if stop_error is None else
+                                           {"action": "partial_first_r", "symbol": symbol, "pct": first_pct, "status": "failed", "error": f"partial needs follow-up (runner stop not confirmed): {stop_error}"})
+                            log_event(self.logger, "auto_partial_1r", {"symbol": symbol, "partial_r": partial_r, "exit_pct": first_pct})
                         except Exception as exc:
                             results.append({"action": "partial_first_r", "symbol": symbol, "status": "failed", "error": str(exc)})
-                elif current_r >= float(partials_cfg.get("second_r", 2.0)) and "second" not in partials_taken:
+                elif (
+                    partial_r is not None
+                    and partial_r >= float(partials_cfg.get("second_r", 2.0))
+                    and "second" not in partials_taken
+                    # With the rulebook trigger the first partial comes first, at its verdict.
+                    and ("first" in partials_taken or str(partials_cfg.get("trigger", "r_multiple")).lower() != "velez_profit_taking")
+                    and not self._velez_partial_pending(symbol, open_orders, "1r")
+                    and self._velez_partial_window_open(symbol)
+                    and not self.journal.get_setting(f"velez_partial_resize.{symbol.upper()}", None)
+                ):
                     second_pct = float(partials_cfg.get("second_pct", 0.25))
-                    exit_qty = max(1, int(self._position_qty_number(position) * second_pct))
+                    exit_qty = self._velez_partial_qty(position, second_pct)
                     if exit_qty > 0:
                         exit_side = "sell" if side == "long" else "buy"
                         partial_payload = {
@@ -10873,10 +12161,12 @@ class TradingViewWebhookEngine:
                             "client_order_id": f"velez-partial-2r-{symbol.lower()}-{secrets.token_hex(6)}",
                         }
                         try:
-                            self.broker.submit_order_payload(partial_payload)
-                            self._record_partial_taken(symbol, "second")
-                            results.append({"action": "partial_second_r", "symbol": symbol, "pct": second_pct, "status": "submitted"})
-                            log_event(self.logger, "auto_partial_2r", {"symbol": symbol, "current_r": current_r, "exit_pct": second_pct})
+                            stop_error = self._velez_partial_with_stop(position, exit_qty, level="second", client_order_id=partial_payload["client_order_id"], submit=lambda: self.broker.submit_order_payload(partial_payload))
+                            self._record_partial_taken(symbol, "second")  # the exit went out: never sent twice
+                            results.append({"action": "partial_second_r", "symbol": symbol, "pct": second_pct, "status": "submitted"}
+                                           if stop_error is None else
+                                           {"action": "partial_second_r", "symbol": symbol, "pct": second_pct, "status": "failed", "error": f"partial needs follow-up (runner stop not confirmed): {stop_error}"})
+                            log_event(self.logger, "auto_partial_2r", {"symbol": symbol, "partial_r": partial_r, "exit_pct": second_pct})
                         except Exception as exc:
                             results.append({"action": "partial_second_r", "symbol": symbol, "status": "failed", "error": str(exc)})
 
@@ -11149,12 +12439,17 @@ class TradingViewWebhookEngine:
         wanted = str(symbol or "").upper().strip()
         if not wanted:
             return None
-        claim = self._lifecycle_claims().get(wanted)
+        claim = self._lifecycle_claim_for_symbol(wanted)
         if isinstance(claim, dict) and claim.get("alert_ref"):
             claimed = self.journal.decision_by_alert_ref(str(claim.get("alert_ref")))
-            if claimed and str(claimed.get("symbol") or "").upper().strip() == wanted:
+            if claimed and self._claim_symbol_key(claimed.get("symbol")) == self._claim_symbol_key(wanted):
                 return claimed
-        candidates = [item for item in decisions if str(item.get("symbol") or "").upper().strip() == wanted]
+        # Broker symbols can be aliases of the journaled ones (BTCUSD for BTC/USD).
+        wanted_key = wanted.replace("/", "").replace("-", "")
+        candidates = [
+            item for item in decisions
+            if str(item.get("symbol") or "").upper().strip().replace("/", "").replace("-", "") == wanted_key
+        ]
         side = str(side or "").lower()
         side_values = {"long": "buy", "short": "sell"}
         wanted_side = side_values.get(side)
