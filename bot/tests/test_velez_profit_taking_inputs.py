@@ -1039,3 +1039,66 @@ def test_opening_timeframe_is_backfilled_when_its_decision_arrives(monkeypatch, 
     monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: [decision])
     engine._velez_record_initial_risk(first)
     assert engine._velez_open_record(first)["timeframe"] == "15"
+
+
+def test_split_evidence_ignores_todays_forming_bar(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    from zoneinfo import ZoneInfo
+    today = datetime.now(ZoneInfo("America/New_York")).date()
+    rows = [{**r, "split_adjusted": True} for r in daily_rows(70)]
+    rows.append({"o": 100, "h": 100, "l": 100, "c": 100.0, "v": 1, "split_adjusted": True,
+                 "t": datetime(today.year, today.month, today.day, tzinfo=timezone.utc)})  # cached early today
+    monkeypatch.setattr(engine, "_velez_daily_rows", lambda symbol: rows)
+    # The stock has since run 15% today: not a split.
+    late = {"o": 114, "h": 115.5, "l": 113.8, "c": 115.0, "v": 1,
+            "t": datetime.combine(today, datetime.min.time(), tzinfo=ZoneInfo("America/New_York")).replace(hour=15)}
+    assert engine._velez_split_in_hold("SPY", [late], False) is False
+
+
+def test_opening_stop_wins_over_a_wider_current_stop(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    decision = {"symbol": "SPY", "side": "buy", "status": "submitted", "stop_price": 95.0,
+                "timestamp": "2026-06-03T14:29:00+00:00"}
+    monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: [decision])
+    pos = position(None)
+    pos.update(entry_fill={"side": "buy", "price": "100", "transaction_time": "2026-06-03T14:30:00+00:00"},
+               qty="200", entry_price=110.0, stop_price=100.0, current_price=112.0)  # an add moved the average
+    engine._velez_record_initial_risk(pos)
+    assert engine._velez_recorded_risk(pos) == 5.0  # the opening's 100 -> 95, not 110 -> 100
+
+
+def test_fills_showing_a_close_reject_an_add_shaped_reopen(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    first = position(0.2)
+    first.update(entry_fill={"side": "buy", "transaction_time": "2026-05-20T14:30:00+00:00"}, entry_price=100.0, stop_price=95.0)
+    first["linked_decision"]["stop_price"] = 95.0
+    engine._velez_record_initial_risk(first)  # 100 @ 100, aged out of the fills later
+    assert engine._velez_recorded_risk(first) == 5.0
+    later = datetime.now(timezone.utc) + timedelta(minutes=1)
+    reopened = position(0.3)
+    reopened.update(qty="150", entry_price=100.0,  # looks like an add of 50 @ 100...
+                    velez_symbol_fills=[{"symbol": "SPY", "side": "sell", "qty": "100", "transaction_time": later.isoformat()}])
+    assert engine._velez_open_record(reopened) is None  # ...but the fills show the old 100 closed
+    added = position(0.3)
+    added.update(qty="150", entry_price=100.0, velez_symbol_fills=[])
+    assert engine._velez_open_record(added) is not None
+
+
+def test_first_bar_of_the_session_uses_the_normal_spacing():
+    strat = strategy(daily_range=True)
+    ctx = strat._get_context("SPY")
+    # Yesterday's last 5-minute bars, then today's 09:30 bar after the overnight gap.
+    for minute in (45, 50, 55):
+        t = datetime(2026, 6, 2, 19, minute, tzinfo=timezone.utc)
+        ctx.bars.append(Bar(timestamp=t, open=100, high=100, low=100, close=100, volume=1))
+    opening = Bar(timestamp=datetime(2026, 6, 3, 13, 30, tzinfo=timezone.utc), open=100, high=101, low=99, close=100.5, volume=1)
+    at = strat._bar_session_time("SPY", opening)
+    assert at == opening.timestamp + timedelta(seconds=299)  # 09:34:59 today, not the next day
+
+
+def test_overnight_hold_measures_the_move_from_within_the_hold(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    # Entered yesterday afternoon off a 95.0 low; today never trades below 99.
+    pos = _two_day_hold(monkeypatch, engine, [(96, 97, 95.0, 96.8), (96.8, 98, 96.5, 97.9)],
+                        [(99.5, 100.5, 99.2, 100.2), (100.2, 101.5, 100.0, 101.4)], adjusted_yesterday_close=97.9)
+    assert engine._velez_profit_taking_verdict(pos)["origin"] == 95.0

@@ -554,11 +554,12 @@ class VelezInstitutionalStrategy:
         """When to measure the day for this bar: its close (from the bar spacing), or for a daily bar its
         trading date's 16:00 close (a midnight-UTC label would otherwise fall on the prior New York date)."""
         ctx = self.symbols.get(symbol)
-        # The spacing between this bar and the one before it in the context.
-        stamps = [b.timestamp for b in list(ctx.bars)[-3:] if b.timestamp < bar.timestamp] if ctx is not None else []
-        stamps = stamps[-1:] + [bar.timestamp]
-        spacing = (stamps[-1] - stamps[-2]).total_seconds() if len(stamps) == 2 else 0.0
-        if len(stamps) == 2:
+        # The bar spacing: the smallest recent gap (the first bar of a session follows an overnight one).
+        recent = [b.timestamp for b in list(ctx.bars)[-6:] if b.timestamp < bar.timestamp] if ctx is not None else []
+        recent.append(bar.timestamp)
+        gaps = [(later - earlier).total_seconds() for earlier, later in zip(recent, recent[1:]) if later > earlier]
+        spacing = min(gaps) if gaps else 0.0
+        if gaps:
             daily = spacing >= 20 * 3600
         else:
             utc = bar.timestamp.astimezone(timezone.utc) if bar.timestamp.tzinfo else bar.timestamp

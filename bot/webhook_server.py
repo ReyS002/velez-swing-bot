@@ -3925,19 +3925,18 @@ class TradingViewWebhookEngine:
             # The current stop may already have trailed when the position is first seen (a restart, a
             # fresh deploy), and the linked decision may be a later add: the opening decision's stop,
             # from the opening fill's price, is the initial risk. Take the wider protective distance.
-            distances = []
             current = self._velez_price(position, "stop_price")
-            if protective(current, entry):
-                distances.append(abs(entry - current))
             opening_stop = self._float((opening or {}).get("stop_price"))
             base = self._float(fill.get("basis_price")) or self._float(fill.get("price")) or entry
             factor = self._float(fill.get("split_factor")) or 1.0
             if protective(opening_stop, base):
-                # The fill and the journaled stop are on the share basis before any split since.
-                distances.append(abs(base - opening_stop) / factor)
-            if not distances:
+                # The opening trade's own risk; the fill and the journaled stop are on the share basis
+                # before any split since.
+                risk = abs(base - opening_stop) / factor
+            elif protective(current, entry):
+                risk = abs(entry - current)  # no opening stop on record: the live stop, if not trailed
+            else:
                 return
-            risk = max(distances)
             self.journal.set_setting(key, risk)
         record = {
             "key": key,
@@ -3967,6 +3966,7 @@ class TradingViewWebhookEngine:
             updated["risk"] = float(record["risk"]) * factor
         if qty and entry:
             updated["seen"] = [qty, entry]
+            updated["seen_at"] = datetime.now(timezone.utc).isoformat()
         return updated
 
     def _velez_split_factor(self, seen: Any, qty: float, entry: Optional[float]) -> Optional[float]:
@@ -4063,6 +4063,8 @@ class TradingViewWebhookEngine:
         seen = record.get("seen") or []
         if len(seen) == 2 and qty and entry:
             last_qty, last_entry = (self._float(seen[0]) or 0.0), (self._float(seen[1]) or 0.0)
+            if last_qty and self._velez_closed_since(position, record, last_qty):
+                return None  # the fills show the old position closed: this is a new trade
             if last_qty and last_entry:
                 if abs(qty - last_qty) <= 1e-9 and abs(entry / last_entry - 1.0) <= 1e-4:
                     return record
@@ -4076,6 +4078,28 @@ class TradingViewWebhookEngine:
         if self._velez_split_factor(seen, qty, entry) is not None:
             return record
         return None
+
+    def _velez_closed_since(self, position: dict, record: dict, last_qty: float) -> bool:
+        """Whether the fills in view show exits since the record was last seen that add up to the whole
+        quantity seen then (the old position closed, whatever was opened after)."""
+        try:
+            seen_at = self._timestamp(record.get("seen_at")) if record.get("seen_at") else None
+        except Exception:
+            seen_at = None
+        if seen_at is None:
+            return False
+        exit_sides = {"sell"} if str(position.get("side") or "long").lower() == "long" else {"buy"}
+        closed = 0.0
+        for fill in position.get("velez_symbol_fills") or []:
+            if str(fill.get("side") or "").lower() not in exit_sides:
+                continue
+            try:
+                if self._timestamp(fill.get("transaction_time") or fill.get("filled_at")) <= seen_at:
+                    continue
+            except Exception:
+                continue
+            closed += abs(self._float(fill.get("qty")) or 0.0)
+        return closed >= last_qty - 1e-9
 
     def _velez_recorded_risk(self, position: dict) -> Optional[float]:
         """The risk recorded for this position: by its opening fill, else the symbol's open-position
@@ -4320,7 +4344,12 @@ class TradingViewWebhookEngine:
         rows = self._velez_daily_rows(symbol)
         if not rows or not all(row.get("split_adjusted") for row in rows):
             return False
-        adjusted = {velez_doctrine.daily_bar_date(row["t"]): row["c"] for row in rows}
+        # Completed days only: today's daily bar (if the feed returned one) is still forming and cached.
+        today = datetime.now(ZoneInfo(velez_doctrine.MARKET_TZ)).date()
+        adjusted = {
+            day: row["c"] for row in rows
+            if (day := velez_doctrine.daily_bar_date(row["t"])) is not None and day < today
+        }
         raw: dict = {}
         for bar in since:
             if daily:
@@ -4408,7 +4437,13 @@ class TradingViewWebhookEngine:
                 cur = merged.get(b["t"])
                 # Same timestamp in both: keep the wider range (the full tape's low / high).
                 merged[b["t"]] = b if cur is None else {**cur, "h": max(cur["h"], b["h"]), "l": min(cur["l"], b["l"])}
-            origin_bars = session_overlap_bars(sorted(merged.values(), key=lambda b: b["t"]))
+            ordered = sorted(merged.values(), key=lambda b: b["t"])
+            entry_day = velez_doctrine._local(since[0]["t"]).date()
+            if entry_day < velez_doctrine._local(since[-1]["t"]).date():
+                # Held overnight: the move began within the hold, before today's session.
+                origin_bars = [b for b in ordered if b["t"] >= since[0]["t"]]
+            else:
+                origin_bars = session_overlap_bars(ordered)
         else:
             origin_bars = since
         try:
@@ -11024,6 +11059,7 @@ class TradingViewWebhookEngine:
             "velez_entry_price": entry_price,
             "velez_stop_price": stop_price,
             "velez_current_price": current_price,
+            "velez_symbol_fills": [fill for fill in fills if str(fill.get("symbol") or "").upper() == symbol],
             "management": management,
             "next_action": self._next_management_action(management),
         }
