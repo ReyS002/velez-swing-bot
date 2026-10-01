@@ -213,7 +213,7 @@ def test_profit_taking_verdict_reads_pushes_and_daily_atr(monkeypatch, tmp_path)
     engine.scanner_config["timeframe"] = "15Min"
     monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda symbol, asset_type, timeframe=None: bars)
     monkeypatch.setattr(engine, "_velez_daily_rows", lambda symbol: daily_rows(70))
-    monkeypatch.setattr(engine, "_velez_session_bars", lambda symbol: [])
+    monkeypatch.setattr(engine, "_velez_session_bars", lambda symbol, since_day=None: [])
     pos = position(0.5)
     pos["linked_decision"]["timestamp"] = (start + timedelta(minutes=5)).isoformat()
     verdict = engine._velez_profit_taking_verdict(pos)

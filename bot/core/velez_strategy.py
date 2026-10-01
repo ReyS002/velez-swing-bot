@@ -249,7 +249,8 @@ def session_feed_covers_open(bars: List[dict], as_of=None) -> bool:
     first = doctrine._local(today[0]["t"]) if today else None
     if first is None:
         return False
-    return first <= datetime.combine(first.date(), doctrine.SESSION_OPEN, tzinfo=first.tzinfo) + timedelta(minutes=5)
+    # Bars are labelled by their start: a first bar at 09:35 doesn't hold the 09:30-09:35 interval.
+    return first <= datetime.combine(first.date(), doctrine.SESSION_OPEN, tzinfo=first.tzinfo)
 
 
 def drop_premarket_bars(bars: List[dict]) -> List[dict]:

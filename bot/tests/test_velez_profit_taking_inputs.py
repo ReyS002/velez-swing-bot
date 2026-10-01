@@ -330,7 +330,7 @@ def test_profit_taking_origin_uses_the_full_session_feed(monkeypatch, tmp_path):
     monkeypatch.setattr(engine, "_velez_daily_rows", lambda symbol: daily_rows(70))
     # The 09:40 ET low (99.6) is only in the full-session feed.
     morning = {"o": 100.0, "h": 100.2, "l": 99.6, "c": 100.1, "v": 1, "t": datetime(2026, 6, 3, 13, 40, tzinfo=timezone.utc)}
-    monkeypatch.setattr(engine, "_velez_session_bars", lambda symbol: [morning])
+    monkeypatch.setattr(engine, "_velez_session_bars", lambda symbol, since_day=None: [morning])
     pos = position(0.5)
     pos["linked_decision"]["timestamp"] = (start + timedelta(minutes=5)).isoformat()
     verdict = engine._velez_profit_taking_verdict(pos)
@@ -460,7 +460,10 @@ def test_alias_claim_links_after_the_decision_leaves_the_window(monkeypatch, tmp
 def test_session_feed_is_full_tape_first(monkeypatch, tmp_path):
     engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
     monkeypatch.setattr(engine.broker, "is_configured", lambda: True, raising=False)
-    t = lambda minutes: (datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=minutes)).isoformat()
+    import bot.webhook_server as ws
+    now = datetime(2026, 6, 3, 15, 0, tzinfo=timezone.utc)  # 11:00 ET, in the session
+    monkeypatch.setattr(ws, "datetime", type("FrozenDatetime", (datetime,), {"now": staticmethod(lambda tz=None: now if tz is None else now.astimezone(tz))}))
+    t = lambda minutes: (now - timedelta(minutes=minutes)).isoformat()
     feeds = []
 
     def data(path, params):
@@ -506,7 +509,7 @@ def _two_day_hold(monkeypatch, engine, yesterday_prices, today_prices, adjusted_
     rows[-1]["c"] = adjusted_yesterday_close
     monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda symbol, asset_type, timeframe=None: bars)
     monkeypatch.setattr(engine, "_velez_daily_rows", lambda symbol: rows)
-    monkeypatch.setattr(engine, "_velez_session_bars", lambda symbol: [])
+    monkeypatch.setattr(engine, "_velez_session_bars", lambda symbol, since_day=None: [])
     import bot.webhook_server as ws
     monkeypatch.setattr(ws, "datetime", type("FrozenDatetime", (datetime,), {"now": staticmethod(lambda tz=None: datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc))}))
     pos = position(0.5)
@@ -601,7 +604,7 @@ def test_one_completed_entry_bar_is_measured_against_the_atrs(monkeypatch, tmp_p
     entry_bar = Bar(timestamp=start, open=100, high=103, low=99.8, close=102.8, volume=1)
     monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda symbol, asset_type, timeframe=None: [entry_bar])
     monkeypatch.setattr(engine, "_velez_daily_rows", lambda symbol: daily_rows(70))
-    monkeypatch.setattr(engine, "_velez_session_bars", lambda symbol: [])
+    monkeypatch.setattr(engine, "_velez_session_bars", lambda symbol, since_day=None: [])
     pos = position(0.5)
     pos["linked_decision"]["timestamp"] = (start + timedelta(minutes=1)).isoformat()  # filled in the bar
     verdict = engine._velez_profit_taking_verdict(pos)
@@ -641,7 +644,7 @@ def test_profit_origin_keeps_the_full_tape_low(monkeypatch, tmp_path):
     monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda symbol, asset_type, timeframe=None: bars)
     monkeypatch.setattr(engine, "_velez_daily_rows", lambda symbol: daily_rows(70))
     # The same opening bar on the full tape printed 99.5, below IEX's 99.8.
-    monkeypatch.setattr(engine, "_velez_session_bars", lambda symbol: [{"o": 100, "h": 100.4, "l": 99.5, "c": 100.2, "v": 1, "t": start}])
+    monkeypatch.setattr(engine, "_velez_session_bars", lambda symbol, since_day=None: [{"o": 100, "h": 100.4, "l": 99.5, "c": 100.2, "v": 1, "t": start}])
     pos = position(0.5)
     pos["linked_decision"]["timestamp"] = (start + timedelta(minutes=5)).isoformat()
     assert engine._velez_profit_taking_verdict(pos)["origin"] == 99.5
@@ -805,7 +808,7 @@ def test_session_feed_keeps_the_pieces_of_the_last_closed_bar(monkeypatch, tmp_p
     monkeypatch.setattr(engine, "_velez_daily_rows", lambda symbol: daily_rows(70))
     # The last closed bar starts 10:00 ET; the full tape's 10:10 piece spiked to 101.9, then made the low.
     piece = {"o": 100.0, "h": 101.9, "l": 99.5, "c": 99.6, "v": 1, "t": start + timedelta(minutes=40)}
-    monkeypatch.setattr(engine, "_velez_session_bars", lambda symbol: [piece])
+    monkeypatch.setattr(engine, "_velez_session_bars", lambda symbol, since_day=None: [piece])
     pos = position(0.5)
     pos["side"] = "short"
     pos["linked_decision"]["timestamp"] = (start + timedelta(minutes=5)).isoformat()
@@ -1120,7 +1123,7 @@ def test_extended_hours_bars_do_not_count_as_pushes(monkeypatch, tmp_path):
             Bar(timestamp=t(4, 13, 45), open=100.8, high=101.0, low=100.5, close=100.9, volume=1)]
     monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda symbol, asset_type, timeframe=None: bars)
     monkeypatch.setattr(engine, "_velez_daily_rows", lambda symbol: daily_rows(70, last_day=datetime(2026, 6, 3, tzinfo=timezone.utc)))
-    monkeypatch.setattr(engine, "_velez_session_bars", lambda symbol: [])
+    monkeypatch.setattr(engine, "_velez_session_bars", lambda symbol, since_day=None: [])
     pos = position(0.5)
     pos["linked_decision"]["timestamp"] = t(3, 19, 1).isoformat()
     assert engine._velez_profit_taking_verdict(pos)["pushes"] < 3
@@ -1246,3 +1249,70 @@ def test_split_evidence_stops_at_a_half_days_close(monkeypatch, tmp_path):
         assert engine._velez_split_in_hold("SPY", since, False) is False  # the 14:00 print is after the bell
     finally:
         set_session_close_resolver(None)
+
+
+def test_a_feed_starting_0935_does_not_cover_the_open():
+    from bot.core.velez_strategy import session_feed_covers_open
+    piece = lambda minute: {"o": 100, "h": 100.5, "l": 99.5, "c": 100.2, "v": 1.0,
+                            "t": datetime(2026, 6, 3, 13, minute, tzinfo=timezone.utc)}
+    assert session_feed_covers_open([piece(30), piece(35)], datetime(2026, 6, 3, 14, 0, tzinfo=timezone.utc))
+    assert not session_feed_covers_open([piece(35), piece(40)], datetime(2026, 6, 3, 14, 0, tzinfo=timezone.utc))
+
+
+def test_push_bars_are_widened_by_the_full_tape_and_prior_opens_need_their_pieces():
+    from bot.webhook_server import TradingViewWebhookEngine
+    clip = TradingViewWebhookEngine._velez_rth_clip
+    ten = hour_bar(10, 100.0, 101.0, 99.9, 100.8)  # IEX
+    sip = [{"o": 100.0, "h": 101.6, "l": 99.7, "c": 100.5, "v": 1.0,
+            "t": datetime(2026, 6, 3, 14, 20, tzinfo=timezone.utc)}]
+    assert [(b["h"], b["l"]) for b in clip([ten], sip, 3600)] == [(101.6, 99.7)]
+    # Yesterday's 09:00 bar with only today's pieces: its premarket part can't be separated.
+    yesterday_open = hour_bar(9, 100.0, 105.0, 95.0, 100.8, day=2)
+    assert clip([yesterday_open, ten], sip, 3600) == []
+
+
+def test_a_later_add_is_not_the_opening_decision_of_a_fill_without_one(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    first = {"symbol": "SPY", "side": "buy", "status": "submitted", "stop_price": 480.0, "timestamp": "2026-05-01T14:00:00+00:00"}
+    add = {"symbol": "SPY", "side": "buy", "status": "submitted", "stop_price": 480.0, "timestamp": "2026-05-02T14:00:00+00:00"}
+    monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: [add, first])
+    pos = position(None)
+    pos.update(entry_fill={"side": "buy", "price": "500", "transaction_time": "2026-06-03T14:30:00+00:00"},
+               entry_price=500.0, stop_price=495.0, current_price=503.0)
+    pos["linked_decision"] = dict(add)
+    engine._velez_record_initial_risk(pos)
+    assert engine._velez_recorded_risk(pos) == 5.0  # the live stop, not the add's 480
+
+
+def test_a_fractional_long_stock_position_takes_a_fractional_partial(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    pos = position(1.2)
+    pos["qty"] = "1.5"
+    assert engine._velez_partial_qty(pos, 0.5) == 0.75
+    pos["qty"] = "101"
+    assert engine._velez_partial_qty(pos, 0.5) == 50.0  # whole shares stay whole (maybe not fractionable)
+
+
+def test_the_stop_is_resized_around_a_partial(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    monkeypatch.setattr(engine, "_velez_profit_taking_verdict", lambda p: {"status": "take_partial"})
+    broker.orders = [{"id": "s1", "symbol": "SPY", "type": "stop", "side": "sell", "qty": "100", "stop_price": "497", "status": "new"}]
+    engine._auto_lifecycle_actions(positions=[position(0.6)], open_orders=[], guardrails=[])
+    assert broker.canceled == ["s1"]
+    stops = [o for o in broker.submitted if str(o.get("client_order_id", "")).startswith("velez-runner-stop-")]
+    assert [(o["qty"], o["stop_price"]) for o in stops] == [("50", "497.00")]
+    assert broker.submitted.index(partial_orders(broker)[0]) < broker.submitted.index(stops[0])
+
+
+def test_a_failed_partial_puts_the_whole_stop_back(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    broker.orders = [{"id": "s1", "symbol": "SPY", "type": "stop", "side": "sell", "qty": "100", "stop_price": "497", "status": "new"}]
+
+    def refuse():
+        raise RuntimeError("rejected")
+
+    import pytest
+    with pytest.raises(RuntimeError):
+        engine._velez_partial_with_stop(position(0.6), 50, refuse)
+    stops = [o for o in broker.submitted if str(o.get("client_order_id", "")).startswith("velez-runner-stop-")]
+    assert [(o["qty"], o["stop_price"]) for o in stops] == [("100", "497.00")]

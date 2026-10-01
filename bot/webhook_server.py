@@ -3743,23 +3743,28 @@ class TradingViewWebhookEngine:
 
     @staticmethod
     def _velez_rth_clip(bars: List[dict], session: List[dict], spacing: float) -> List[dict]:
-        """`bars` with any bar that starts before its day's open (it straddles the open, mixing in premarket
-        prints) rebuilt from the session feed's regular-session pieces; dropped when the feed lacks them."""
+        """`bars` on the full tape's regular session: a bar that starts before its day's open (it straddles
+        the open, mixing in premarket prints) is rebuilt from the session feed's pieces from 09:30, and
+        every other bar's high and low widened by the full-tape pieces inside it (a new high printed off
+        the configured feed still counts). [] when a straddling bar's open isn't in the feed."""
         out = []
         for b in bars:
             start = velez_doctrine._local(b["t"])
             if start is None:
                 continue
             open_dt = datetime.combine(start.date(), velez_doctrine.SESSION_OPEN, tzinfo=start.tzinfo)
-            if start >= open_dt:
-                out.append(b)
-                continue
             end = b["t"] + timedelta(seconds=spacing)
-            pieces = [p for p in session if open_dt <= p["t"] < end]
-            first = velez_doctrine._local(pieces[0]["t"]) if pieces else None
-            if first is None or first > open_dt + timedelta(minutes=5):
-                continue  # the open isn't in the feed: the bar's premarket part can't be separated
-            out.append({**b, "o": pieces[0]["o"], "h": max(p["h"] for p in pieces), "l": min(p["l"] for p in pieces)})
+            # Whole 5-minute pieces inside the bar (a 1- or 2-minute bar has none).
+            pieces = [p for p in session if max(b["t"], open_dt) <= p["t"] and p["t"] + timedelta(minutes=5) <= end]
+            if start < open_dt:
+                first = velez_doctrine._local(pieces[0]["t"]) if pieces else None
+                if first is None or first != open_dt:
+                    return []  # the premarket part can't be separated
+                out.append({**b, "o": pieces[0]["o"], "h": max(p["h"] for p in pieces), "l": min(p["l"] for p in pieces)})
+            elif pieces:
+                out.append({**b, "h": max(b["h"], *(p["h"] for p in pieces)), "l": min(b["l"], *(p["l"] for p in pieces))})
+            else:
+                out.append(b)
         return out
 
     def _velez_yahoo_daily_bars(self, symbol: str) -> List[Bar]:
@@ -3843,8 +3848,9 @@ class TradingViewWebhookEngine:
             self._velez_daily_cache[key] = rows
         return rows
 
-    def _velez_session_bars(self, symbol: str) -> List[dict]:
-        """Today's regular-session 5-minute bars (rulebook dicts) for the daily-range rule, cached a minute.
+    def _velez_session_bars(self, symbol: str, since_day=None) -> List[dict]:
+        """Today's regular-session 5-minute bars (rulebook dicts) for the daily-range rule, cached a minute;
+        with `since_day`, every trading day's regular session from that date through today.
 
         The scanner keeps only a rolling window of bars, which on short timeframes no longer holds
         the open by midday; this keeps the day's true high and low in the measurement. The full tape
@@ -3855,11 +3861,13 @@ class TradingViewWebhookEngine:
         if not sym or not self.broker.is_configured():
             return []
         now = datetime.now(timezone.utc)
-        cached = self._velez_session_cache.get(sym)
+        tz = ZoneInfo(velez_doctrine.MARKET_TZ)
+        first_day = since_day or now.astimezone(tz).date()
+        cache_key = sym if since_day is None else (sym, first_day)
+        cached = self._velez_session_cache.get(cache_key)
         if cached is not None and (now - cached[0]).total_seconds() < 60:
             return cached[1]
-        tz = ZoneInfo(velez_doctrine.MARKET_TZ)
-        start = datetime.combine(now.astimezone(tz).date(), velez_doctrine.SESSION_OPEN, tzinfo=tz)
+        start = datetime.combine(first_day, velez_doctrine.SESSION_OPEN, tzinfo=tz)
         feeds = ["sip"]
         configured = str(self.scanner_config.get("stock_feed", "iex")).lower()
         if configured not in feeds:
@@ -3874,7 +3882,7 @@ class TradingViewWebhookEngine:
                         "symbols": sym,
                         "timeframe": "5Min",
                         "start": start.isoformat(),
-                        "limit": 200,
+                        "limit": 200 if since_day is None else 10000,
                         "feed": feed,
                         "adjustment": "raw",
                         "sort": "asc",
@@ -3889,11 +3897,18 @@ class TradingViewWebhookEngine:
                 merged.setdefault(row["t"], row)  # the full-tape bar wins where both feeds have it
         if not fetched:
             return []
-        close = session_close_on(start.date(), start.tzinfo)  # nothing after the bell (13:00 on a half day)
-        rows = sorted((row for row in merged.values() if row["t"] < close), key=lambda row: row["t"])
+        rows = []
+        for row in merged.values():
+            local = velez_doctrine._local(row["t"])
+            if local is None:
+                continue
+            # Each day's regular session only: no premarket, nothing after the bell (13:00 on a half day).
+            if datetime.combine(local.date(), velez_doctrine.SESSION_OPEN, tzinfo=local.tzinfo) <= local < session_close_on(local.date(), local.tzinfo):
+                rows.append(row)
+        rows.sort(key=lambda row: row["t"])
         if len(self._velez_session_cache) > 256:
             self._velez_session_cache.clear()
-        self._velez_session_cache[sym] = (now, rows)
+        self._velez_session_cache[cache_key] = (now, rows)
         return rows
 
     def _velez_position_key(self, position: dict) -> Optional[str]:
@@ -3935,7 +3950,11 @@ class TradingViewWebhookEngine:
         same = isinstance(existing, dict) and existing.get("key") == key
         risk = self._float(existing.get("risk")) if same else self._float(self.journal.get_setting(key, None))
         fill = position.get("entry_fill") or {}
-        opening = None if same else (self._velez_opening_decision(symbol, side, fill) or linked)
+        opening = None
+        if not same:
+            opening = self._velez_opening_decision(symbol, side, fill)
+            if opening is None and self._velez_linked_is_only_entry(position):
+                opening = linked  # the symbol's only entry decision: it can't be a later add
         if same and not existing.get("timeframe"):
             # Recorded before its decision was journaled: look the opening decision up again.
             opening = self._velez_opening_decision(symbol, side, fill)
@@ -4194,15 +4213,76 @@ class TradingViewWebhookEngine:
         direction = 1.0 if str(position.get("side") or "long").lower() == "long" else -1.0
         return (price - entry) * direction / risk
 
+    def _velez_partial_with_stop(self, position: dict, exit_qty: float, submit: Any) -> Any:
+        """Submit a partial exit with the protective stop resized around it. The open stop covers every
+        share: the broker would refuse the exit for want of free shares, or the stop would later sell more
+        than the runner holds. So the symbol's open stops (read from the broker, so a stop moved this pass
+        counts) are cancelled, the exit sent, and one stop placed for the remaining quantity at the most
+        protective cancelled price. If the exit fails, the stop goes back for the whole position."""
+        symbol = str(position.get("symbol") or "")
+        side = str(position.get("side") or "long").lower()
+        held = self._position_qty_number(position)
+        try:
+            orders = self.broker.get_orders_raw(status="open", limit=100, direction="desc", nested=True)
+        except Exception:
+            orders = position.get("open_orders") or []
+        stops = []
+        for order in orders or []:
+            for leg in [order, *(order.get("legs") or [])]:
+                if self._claim_symbol_key(leg.get("symbol")) != self._claim_symbol_key(symbol):
+                    continue
+                if str(leg.get("type") or "").lower() not in {"stop", "stop_limit", "trailing_stop"}:
+                    continue
+                if str(leg.get("status") or "").lower() in {"pending_cancel", "canceled", "cancelled", "filled"}:
+                    continue
+                stops.append(leg)
+        prices = [p for p in (self._float(leg.get("stop_price")) for leg in stops) if p]
+        stop_price = (max(prices) if side == "long" else min(prices)) if prices else None
+        for leg in stops:
+            try:
+                self.broker.cancel_order(str(leg.get("id") or ""))
+            except Exception as exc:
+                log_event(self.logger, "velez_partial_stop_cancel_failed", {"symbol": symbol, "order": leg.get("id"), "reason": str(exc)[:160]})
+
+        def place(qty: float) -> None:
+            if stop_price is None or qty <= 0:
+                return
+            try:
+                self._submit_verified_protective_stop(
+                    symbol=symbol,
+                    qty=self._format_qty(qty),
+                    entry_side="buy" if side == "long" else "sell",
+                    stop_price=stop_price,
+                    client_order_id=f"velez-runner-stop-{symbol.lower()}-{secrets.token_hex(6)}",
+                )
+            except Exception as exc:
+                # The missing-stop guardrail flags the position on the next pass.
+                log_event(self.logger, "velez_partial_stop_replace_failed", {"symbol": symbol, "qty": qty, "reason": str(exc)[:160]})
+
+        try:
+            response = submit()
+        except Exception:
+            place(held)
+            raise
+        place(held - exit_qty)
+        return response
+
     def _velez_partial_qty(self, position: dict, pct: float) -> float:
-        """Quantity for a partial exit: whole units for stocks and futures, 8 decimals for crypto,
-        never rounded up and never the whole position (0 means skip: nothing left to split)."""
+        """Quantity for a partial exit: whole units for stocks and futures, 4 decimals for a fractional long
+        stock position, 8 for crypto; never rounded up and never the whole position (0 means skip)."""
         held = self._position_qty_number(position)
         if held <= 0 or pct <= 0:
             return 0.0
         crypto = self._quote_asset_type(str(position.get("symbol") or "")) == "crypto"
         raw = held * min(pct, 1.0)
-        qty = math.floor(raw * 1e8) / 1e8 if crypto else float(math.floor(raw + 1e-9))
+        long = str(position.get("side") or "long").lower() == "long"
+        fractional = long and not crypto and abs(held - round(held)) > 1e-9  # a fractionable stock held in fractions
+        if crypto:
+            qty = math.floor(raw * 1e8) / 1e8
+        elif fractional:
+            qty = math.floor(raw * 1e4 + 1e-9) / 1e4  # the broker takes 4-decimal sell_to_close quantities
+        else:
+            qty = float(math.floor(raw + 1e-9))
         return qty if 0 < qty < held else 0.0
 
     def _velez_opening_fill(
@@ -4477,10 +4557,15 @@ class TradingViewWebhookEngine:
             # Pushes count in the regular session only: thin premarket / after-hours prints don't.
             spacing = self._timeframe_seconds(timeframe)
             since = regular_session_bars(since, spacing)
-            session = self._velez_session_bars(symbol)
-            since = self._velez_rth_clip(since, session, spacing)
             if not since:
                 return None
+            session = self._velez_session_bars(symbol)
+            entry_day = velez_doctrine._local(since[0]["t"]).date()
+            # Full-tape session pieces for every held day (today's alone can't rebuild earlier opens).
+            hold = session if entry_day >= velez_doctrine._local(since[-1]["t"]).date() else self._velez_session_bars(symbol, since_day=entry_day)
+            since = self._velez_rth_clip(since, hold, spacing)
+            if not since:
+                return None  # an opening bar's premarket part can't be separated: leave it to the R partial
         if equity and self._velez_split_in_hold(symbol, since, daily):
             # Pre- and post-split prices aren't comparable, so pushes and the origin can't be read.
             return None
@@ -4502,7 +4587,7 @@ class TradingViewWebhookEngine:
                 # Held overnight: the move began within the hold, before today's session. Only regular-
                 # session prices count: the hold's RTH bars plus today's session pieces, not after-hours.
                 held = {b["t"]: b for b in since}
-                for b in session:
+                for b in hold:
                     if not since[0]["t"] <= b["t"] < last_end:
                         continue
                     cur = held.get(b["t"])
@@ -11768,7 +11853,7 @@ class TradingViewWebhookEngine:
                             "client_order_id": f"velez-partial-1r-{symbol.lower()}-{secrets.token_hex(6)}",
                         }
                         try:
-                            self.broker.submit_order_payload(partial_payload)
+                            self._velez_partial_with_stop(position, exit_qty, lambda: self.broker.submit_order_payload(partial_payload))
                             self._record_partial_taken(symbol, "first")
                             results.append({"action": "partial_first_r", "symbol": symbol, "pct": first_pct, "status": "submitted"})
                             log_event(self.logger, "auto_partial_1r", {"symbol": symbol, "partial_r": partial_r, "exit_pct": first_pct})
@@ -11791,7 +11876,7 @@ class TradingViewWebhookEngine:
                             "client_order_id": f"velez-partial-2r-{symbol.lower()}-{secrets.token_hex(6)}",
                         }
                         try:
-                            self.broker.submit_order_payload(partial_payload)
+                            self._velez_partial_with_stop(position, exit_qty, lambda: self.broker.submit_order_payload(partial_payload))
                             self._record_partial_taken(symbol, "second")
                             results.append({"action": "partial_second_r", "symbol": symbol, "pct": second_pct, "status": "submitted"})
                             log_event(self.logger, "auto_partial_2r", {"symbol": symbol, "partial_r": partial_r, "exit_pct": second_pct})
