@@ -9,6 +9,7 @@ from .desk_brief import DeskBriefService, brief_owner
 from .desk_workspace import broker_provider as desk_broker_provider
 from .desk_workspace import broadcast_config as desk_broadcast_config, workspace_config
 import os
+import math
 import re
 import secrets
 import threading
@@ -3808,6 +3809,27 @@ class TradingViewWebhookEngine:
         self._velez_session_cache[sym] = (now, rows)
         return rows
 
+    def _velez_initial_r(self, position: dict) -> Optional[float]:
+        """Open R against the initial journaled stop (the current stop may already sit at entry)."""
+        entry = self._float(position.get("entry_price"))
+        stop = self._float((position.get("linked_decision") or {}).get("stop_price"))
+        price = self._float(position.get("current_price"))
+        if entry is None or stop is None or price is None or abs(entry - stop) <= 0:
+            return None
+        direction = 1.0 if str(position.get("side") or "long").lower() == "long" else -1.0
+        return (price - entry) * direction / abs(entry - stop)
+
+    def _velez_partial_qty(self, position: dict, pct: float) -> float:
+        """Quantity for a partial exit: whole units for stocks and futures, 8 decimals for crypto,
+        never rounded up and never the whole position (0 means skip: nothing left to split)."""
+        held = self._position_qty_number(position)
+        if held <= 0 or pct <= 0:
+            return 0.0
+        crypto = self._quote_asset_type(str(position.get("symbol") or "")) == "crypto"
+        raw = held * min(pct, 1.0)
+        qty = math.floor(raw * 1e8) / 1e8 if crypto else float(math.floor(raw + 1e-9))
+        return qty if 0 < qty < held else 0.0
+
     def _velez_opening_fill(self, symbol: str, long: bool, linked: Optional[dict], fills: List[dict]) -> Optional[dict]:
         """The fill that opened the position: the earliest entry-side fill at or after its decision.
 
@@ -3904,6 +3926,8 @@ class TradingViewWebhookEngine:
         # Broker symbols can be aliases of the configured ones (BTCUSD for BTC/USD).
         asset_type = self._quote_asset_type(symbol)
         equity = asset_type in {"equity", "stock", "etf"}
+        if not equity and asset_type not in {"crypto", "future", "futures"}:
+            return None  # no bar feed here (e.g. forex): the R-multiple partial applies instead
         try:
             bars = self._fetch_scanner_bars(symbol=symbol, asset_type=asset_type, timeframe=timeframe)
         except Exception as exc:
@@ -11084,23 +11108,31 @@ class TradingViewWebhookEngine:
             # config.yaml keeps this block beside `exits`, not inside it: read either place.
             strategy_cfg = self.config.get("strategy", {}) or {}
             partials_cfg = (strategy_cfg.get("exits", {}) or {}).get("partials_auto_execute") or strategy_cfg.get("partials_auto_execute") or {}
-            if partials_cfg.get("enabled", True) and current_r is not None and qty:
+            # After the stop moves to breakeven, R from the current stop is undefined: measure it
+            # against the initial (journaled) stop so later partials still fire.
+            partial_r = current_r if current_r is not None else self._velez_initial_r(position)
+            if partials_cfg.get("enabled", True) and partial_r is not None and qty:
                 partials_taken = self._partials_taken_for_symbol(symbol)
-                first_due = current_r >= float(partials_cfg.get("first_r", 1.0)) and current_r < float(partials_cfg.get("second_r", 2.0))
+                first_due = partial_r >= float(partials_cfg.get("first_r", 1.0)) and partial_r < float(partials_cfg.get("second_r", 2.0))
                 if str(partials_cfg.get("trigger", "r_multiple")).lower() == "velez_profit_taking":
                     # Rulebook 2026.10.6: the first partial comes off at the profit-taking verdict
                     # (3+ pushes, or the move past the daily / wide-day ATR), only while in profit.
-                    first_due = False
+                    r_first_due, first_due = first_due, False
                     # Still eligible past second_r: a trade that runs straight through 2R takes its
                     # first partial at the verdict too (the second, at 2R, waits for the next pass).
-                    if "first" not in partials_taken and current_r > 0:
+                    if "first" not in partials_taken and partial_r > 0:
                         verdict = self._velez_profit_taking_verdict(position)
-                        first_due = bool(verdict) and verdict.get("status") in {"take_partial", "take_profits"}
+                        if verdict is None or verdict.get("status") == "unknown":
+                            # The rulebook's inputs can't be read for this position (no bar feed, too
+                            # little history): keep the R-multiple partial rather than none.
+                            first_due = r_first_due
+                        else:
+                            first_due = verdict.get("status") in {"take_partial", "take_profits"}
                         if first_due:
-                            log_event(self.logger, "velez_profit_taking_verdict", {"symbol": symbol, "current_r": current_r, "verdict": verdict})
+                            log_event(self.logger, "velez_profit_taking_verdict", {"symbol": symbol, "partial_r": partial_r, "verdict": verdict})
                 if first_due and "first" not in partials_taken:
                     first_pct = float(partials_cfg.get("first_pct", 0.5))
-                    exit_qty = max(1, int(self._position_qty_number(position) * first_pct))
+                    exit_qty = self._velez_partial_qty(position, first_pct)
                     if exit_qty > 0:
                         exit_side = "sell" if side == "long" else "buy"
                         partial_payload = {
@@ -11113,12 +11145,12 @@ class TradingViewWebhookEngine:
                             self.broker.submit_order_payload(partial_payload)
                             self._record_partial_taken(symbol, "first")
                             results.append({"action": "partial_first_r", "symbol": symbol, "pct": first_pct, "status": "submitted"})
-                            log_event(self.logger, "auto_partial_1r", {"symbol": symbol, "current_r": current_r, "exit_pct": first_pct})
+                            log_event(self.logger, "auto_partial_1r", {"symbol": symbol, "partial_r": partial_r, "exit_pct": first_pct})
                         except Exception as exc:
                             results.append({"action": "partial_first_r", "symbol": symbol, "status": "failed", "error": str(exc)})
-                elif current_r >= float(partials_cfg.get("second_r", 2.0)) and "second" not in partials_taken:
+                elif partial_r >= float(partials_cfg.get("second_r", 2.0)) and "second" not in partials_taken:
                     second_pct = float(partials_cfg.get("second_pct", 0.25))
-                    exit_qty = max(1, int(self._position_qty_number(position) * second_pct))
+                    exit_qty = self._velez_partial_qty(position, second_pct)
                     if exit_qty > 0:
                         exit_side = "sell" if side == "long" else "buy"
                         partial_payload = {
@@ -11131,7 +11163,7 @@ class TradingViewWebhookEngine:
                             self.broker.submit_order_payload(partial_payload)
                             self._record_partial_taken(symbol, "second")
                             results.append({"action": "partial_second_r", "symbol": symbol, "pct": second_pct, "status": "submitted"})
-                            log_event(self.logger, "auto_partial_2r", {"symbol": symbol, "current_r": current_r, "exit_pct": second_pct})
+                            log_event(self.logger, "auto_partial_2r", {"symbol": symbol, "partial_r": partial_r, "exit_pct": second_pct})
                         except Exception as exc:
                             results.append({"action": "partial_second_r", "symbol": symbol, "status": "failed", "error": str(exc)})
 
@@ -11409,7 +11441,12 @@ class TradingViewWebhookEngine:
             claimed = self.journal.decision_by_alert_ref(str(claim.get("alert_ref")))
             if claimed and str(claimed.get("symbol") or "").upper().strip() == wanted:
                 return claimed
-        candidates = [item for item in decisions if str(item.get("symbol") or "").upper().strip() == wanted]
+        # Broker symbols can be aliases of the journaled ones (BTCUSD for BTC/USD).
+        wanted_key = wanted.replace("/", "").replace("-", "")
+        candidates = [
+            item for item in decisions
+            if str(item.get("symbol") or "").upper().strip().replace("/", "").replace("-", "") == wanted_key
+        ]
         side = str(side or "").lower()
         side_values = {"long": "buy", "short": "sell"}
         wanted_side = side_values.get(side)

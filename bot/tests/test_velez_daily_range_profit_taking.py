@@ -169,13 +169,22 @@ def test_profit_taking_trigger_takes_the_first_partial_at_the_verdict(monkeypatc
     assert len(partial_orders(broker)) == 1
 
 
-def test_profit_taking_trigger_holds_on_a_hold_or_unknown_verdict(monkeypatch, tmp_path):
+def test_profit_taking_trigger_holds_on_a_hold_verdict(monkeypatch, tmp_path):
     engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
-    for verdict in ({"status": "hold"}, {"status": "unknown"}, None):
-        monkeypatch.setattr(engine, "_velez_profit_taking_verdict", lambda p, v=verdict: v)
-        engine._auto_lifecycle_actions(positions=[position(1.4)], open_orders=[], guardrails=[])
-    # At 1.4R the R-multiple trigger would have sold; the verdict trigger waits.
+    monkeypatch.setattr(engine, "_velez_profit_taking_verdict", lambda p: {"status": "hold"})
+    engine._auto_lifecycle_actions(positions=[position(1.4)], open_orders=[], guardrails=[])
+    # At 1.4R the R-multiple trigger would have sold; the verdict says hold.
     assert partial_orders(broker) == []
+
+
+def test_unreadable_verdict_falls_back_to_the_r_multiple_partial(monkeypatch, tmp_path):
+    for verdict in ({"status": "unknown"}, None):
+        engine, broker = lifecycle_engine(monkeypatch, tmp_path / str(bool(verdict)), "velez_profit_taking")
+        monkeypatch.setattr(engine, "_velez_profit_taking_verdict", lambda p, v=verdict: v)
+        engine._auto_lifecycle_actions(positions=[position(0.6)], open_orders=[], guardrails=[])
+        assert partial_orders(broker) == []  # below 1R: nothing either way
+        engine._auto_lifecycle_actions(positions=[position(1.4)], open_orders=[], guardrails=[])
+        assert [o["qty"] for o in partial_orders(broker)] == ["50"]
 
 
 def test_profit_taking_trigger_never_sells_a_loser(monkeypatch, tmp_path):

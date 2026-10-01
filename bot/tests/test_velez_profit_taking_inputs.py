@@ -206,3 +206,52 @@ def test_intraday_crypto_reads_daily_bars_for_its_atrs(monkeypatch, tmp_path):
     verdict = engine._velez_profit_taking_verdict(pos)
     assert "1Day" in asked
     assert verdict["daily_atr"] == 2.0 and verdict["wide_day_atr"] == 2.0
+
+
+def test_r_after_breakeven_uses_the_initial_stop(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    monkeypatch.setattr(engine, "_velez_profit_taking_verdict", lambda p: {"status": "take_partial"})
+    pos = position(None)
+    pos.update(stop_price=500.0, current_price=503.0)  # stop already at entry: current R undefined
+    assert engine._velez_initial_r(pos) == 0.6  # (503 - 500) / (500 - 495)
+    engine._auto_lifecycle_actions(positions=[pos], open_orders=[], guardrails=[])
+    assert [o["qty"] for o in partial_orders(broker)] == ["50"]
+
+
+def test_partial_quantities_never_round_up(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    engine.symbol_config["BTC/USD"] = {"symbol": "BTC/USD", "type": "crypto"}
+    qty = lambda symbol, held, pct: engine._velez_partial_qty({"symbol": symbol, "qty": held}, pct)
+    assert qty("SPY", "100", 0.5) == 50
+    assert qty("SPY", "3", 0.5) == 1
+    assert qty("SPY", "1", 0.5) == 0  # one share: no partial, the whole position rides
+    assert qty("BTC/USD", "0.1", 0.5) == 0.05
+    assert qty("BTCUSD", "0.00000001", 0.5) == 0
+
+
+def test_forex_has_no_verdict_so_the_r_partial_applies(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    engine.symbol_config["EUR/USD"] = {"symbol": "EUR/USD", "type": "forex"}
+    monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda **kw: (_ for _ in ()).throw(AssertionError("no forex feed")))
+    pos = position(0.5)
+    pos["symbol"] = "EUR/USD"
+    assert engine._velez_profit_taking_verdict(pos) is None
+
+
+def test_position_links_to_its_decision_through_an_alias(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    decisions = [{"symbol": "BTC/USD", "side": "buy", "status": "submitted", "timestamp": "2026-06-03T14:00:00+00:00"}]
+    assert engine._link_decision_for_symbol("BTCUSD", decisions, side="long") == decisions[0]
+    assert engine._link_decision_for_symbol("ETHUSD", decisions, side="long") is None
+
+
+def test_bare_alert_is_measured_at_its_entry_price():
+    strat = strategy(daily_range=True)
+    strat.daily_bars_provider = lambda symbol: daily_rows()
+    strat.session_bars_provider = lambda symbol: [hour_bar(9, 100, 100.5, 99.0, 100.2), hour_bar(10, 100.2, 100.9, 100.1, 100.8)]
+    at = hour_bar(11, 0, 0, 0, 0)["t"]
+    cached = Bar(timestamp=hour_bar(10, 0, 0, 0, 0)["t"], open=100.2, high=100.9, low=100.1, close=100.8, volume=1)
+    alert = signal()
+    alert.metadata["entry_price"] = 101.4  # price moved after the last scanner bar
+    assert abs(strat._range_used(alert, cached, decision_at=at) - 1.2) < 1e-9
+    assert abs(strat._range_used(signal(), cached, decision_at=at) - 0.9) < 1e-9

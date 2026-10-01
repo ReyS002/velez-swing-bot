@@ -465,6 +465,14 @@ class VelezInstitutionalStrategy:
             if not intraday or intraday[-1]["t"] != current["t"]:
                 intraday.append(current)
         price = bar.close if bar is not None else None
+        if decision_at is not None:
+            # A bare alert is judged where it would enter, not at the last cached bar's close.
+            try:
+                proposed = float(signal.metadata.get("entry_price") or 0)
+            except (TypeError, ValueError):
+                proposed = 0.0
+            if proposed > 0:
+                price = proposed
         feeds = [intraday]
         if self.session_bars_provider is not None:
             try:
