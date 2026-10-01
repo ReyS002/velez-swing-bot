@@ -167,6 +167,53 @@ def split_safe_daily_rows(rows: List[dict]) -> List[dict]:
     return rows
 
 
+_session_close_resolver: Optional[Callable] = None
+
+
+def set_session_close_resolver(resolver: Optional[Callable]) -> None:
+    """Install the exchange calendar's close (day -> aware datetime) for the session helpers; None
+    restores the normal 16:00 close."""
+    global _session_close_resolver
+    _session_close_resolver = resolver
+
+
+def session_close_on(day, tzinfo) -> datetime:
+    """The regular session's close on `day`: the calendar's (13:00 on a half day), else 16:00."""
+    default = datetime.combine(day, doctrine.SESSION_CLOSE, tzinfo=tzinfo)
+    if _session_close_resolver is None:
+        return default
+    try:
+        close = _session_close_resolver(day)
+    except Exception:
+        return default
+    return close.astimezone(tzinfo) if isinstance(close, datetime) else default
+
+
+def _median_spacing(stamps: List[dict]) -> float:
+    recent = stamps[-6:]
+    gaps = sorted((b["t"] - a["t"]).total_seconds() for a, b in zip(recent, recent[1:]) if b["t"] > a["t"])
+    return gaps[len(gaps) // 2] if gaps else 0.0
+
+
+def regular_session_bars(bars: List[dict], spacing_seconds: Optional[float] = None) -> List[dict]:
+    """Bars of every day that fall in that day's regular session (a bar straddling the open counts),
+    dropping premarket, after-hours and post-close prints on a half day."""
+    stamps = [b for b in bars or [] if b.get("t") is not None]
+    if spacing_seconds is None:
+        spacing_seconds = _median_spacing(stamps)
+    out = []
+    for b in stamps:
+        start = doctrine._local(b["t"])
+        if start is None:
+            continue
+        open_dt = datetime.combine(start.date(), doctrine.SESSION_OPEN, tzinfo=start.tzinfo)
+        if start >= session_close_on(start.date(), start.tzinfo):
+            continue
+        if start >= open_dt or start + timedelta(seconds=spacing_seconds) > open_dt:
+            out.append(b)
+    return out
+
+
 def session_overlap_bars(bars: List[dict], as_of=None, spacing_seconds: Optional[float] = None) -> List[dict]:
     """Today's regular-session bars, including a bar that starts before 09:30 and ends after it.
 
@@ -185,7 +232,7 @@ def session_overlap_bars(bars: List[dict], as_of=None, spacing_seconds: Optional
     if last is None:
         return []
     open_dt = datetime.combine(last.date(), doctrine.SESSION_OPEN, tzinfo=last.tzinfo)
-    close_dt = datetime.combine(last.date(), doctrine.SESSION_CLOSE, tzinfo=last.tzinfo)
+    close_dt = session_close_on(last.date(), last.tzinfo)  # 13:00 on a half day
     out = []
     for b in stamps:
         start = doctrine._local(b["t"])

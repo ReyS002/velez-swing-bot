@@ -57,6 +57,9 @@ from .core.velez_strategy import (
     daily_rows_before,
     session_overlap_bars,
     drop_premarket_bars,
+    regular_session_bars,
+    session_close_on,
+    set_session_close_resolver,
     session_feed_covers_open,
     split_safe_daily_rows,
     utc_daily_rows,
@@ -1553,8 +1556,9 @@ def yahoo_download_safe(symbol: str, **kwargs):
 
 # --- END YAHOO-SYMBOL-MAP 2026-09-21 ---
 
-# Raw vs split-adjusted daily close: beyond this the held bars span a split (5-for-4 is 25%).
-SPLIT_EVIDENCE_PCT = 0.10
+# Raw vs split-adjusted daily close: beyond this the held bars span a split (a 5% stock dividend is
+# 4.8%; on a normal day the regular-session close matches its adjusted close to well under 1%).
+SPLIT_EVIDENCE_PCT = 0.03
 
 
 class TradingViewWebhookEngine:
@@ -1628,6 +1632,12 @@ class TradingViewWebhookEngine:
             if hasattr(velez_strategy, "daily_bars_provider"):
                 velez_strategy.daily_bars_provider = self._velez_daily_rows
                 velez_strategy.session_bars_provider = self._velez_session_bars
+                # Session helpers close the day at the exchange calendar's close (half days).
+                set_session_close_resolver(
+                    lambda day: self._velez_session_close(
+                        day, datetime.combine(day, velez_doctrine.SESSION_CLOSE, tzinfo=ZoneInfo(velez_doctrine.MARKET_TZ))
+                    )
+                )
         self.scanner_last_bar: Dict[str, datetime] = {}
         self.scanner_seen_alerts: Deque[str] = deque(maxlen=int(self.scanner_config.get("dedupe_cache_size", 1000) or 1000))
         self.scanner_symbol_cooldowns: Dict[str, datetime] = {}
@@ -3857,7 +3867,8 @@ class TradingViewWebhookEngine:
                 merged.setdefault(row["t"], row)  # the full-tape bar wins where both feeds have it
         if not fetched:
             return []
-        rows = sorted(merged.values(), key=lambda row: row["t"])
+        close = session_close_on(start.date(), start.tzinfo)  # nothing after the bell (13:00 on a half day)
+        rows = sorted((row for row in merged.values() if row["t"] < close), key=lambda row: row["t"])
         if len(self._velez_session_cache) > 256:
             self._velez_session_cache.clear()
         self._velez_session_cache[sym] = (now, rows)
@@ -3947,7 +3958,19 @@ class TradingViewWebhookEngine:
             "opened": fill.get("transaction_time") or fill.get("filled_at"),
             "seen": existing.get("seen") if same else None,
         }
-        record = self._velez_track_split(position, record)
+        # The opening fill carries the verified split factor since the open (fills vs held shares, cost
+        # basis confirmed): the risk is the opening basis risk divided by it. That holds even when an exit
+        # and a split between passes leave the quantity unchanged.
+        record = self._velez_track_split(position, record)  # last-seen quantity and entry
+        if "split_factor" in fill:  # an opening fill rebuilt from the fills: its factor decides the basis
+            factor_now = self._float(fill.get("split_factor")) or 1.0
+            if same and existing.get("base_risk") is not None:
+                base_risk = self._float(existing.get("base_risk"))
+            elif same:
+                base_risk = risk * (self._float(existing.get("factor")) or 1.0)
+            else:
+                base_risk = risk * factor_now  # this pass's risk is on today's share basis
+            record.update(risk=base_risk / factor_now, base_risk=base_risk, factor=factor_now)
         if existing != record:
             self.journal.set_setting(open_key, record)
         index = self.journal.get_setting("velez_initial_risk.open_symbols", []) or []
@@ -3988,7 +4011,7 @@ class TradingViewWebhookEngine:
         """The submitted decision that opened the position: the one whose broker order the opening fill
         belongs to; failing that, the latest same-symbol (aliases included), same-side decision in the day
         before the fill, else the first within 2 minutes after it (a market order can fill before its
-        decision is journaled), else the latest older one."""
+        decision is journaled); None when neither exists."""
         stamp = fill.get("transaction_time") or fill.get("filled_at")
         order_id = str(fill.get("order_id") or "")
         try:
@@ -4019,9 +4042,9 @@ class TradingViewWebhookEngine:
                     older, older_at = decision, decided
             elif decided <= filled + timedelta(minutes=2) and (after_at is None or decided < after_at):
                 after, after_at = decision, decided
-        # A later add is never preferred over the decision before the fill; an old trade's decision
-        # (more than a day before) only when nothing nearer exists.
-        return before or after or older
+        # A later add is never preferred over the decision before the fill. Nothing within those bounds
+        # (e.g. a manual position in a symbol traded long ago): no opening decision rather than a stale one.
+        return before or after
 
     def _velez_prune_open_records(self, open_symbols: set) -> None:
         """Clear the open-position record of every symbol that is now flat, so a later position in the
@@ -4229,8 +4252,8 @@ class TradingViewWebhookEngine:
             ):
                 return None
         opening = dict(opening)
-        if abs(factor - 1.0) > 1e-6:
-            opening["split_factor"] = factor  # a split since: the fills are on the old share basis
+        # 1.0 without a split; otherwise the fills are on the share basis before it.
+        opening["split_factor"] = factor if abs(factor - 1.0) > 1e-6 else 1.0
         # The opening order's weighted price on this side: a split-filled entry's basis isn't its first
         # piece, and a reversal's closing shares aren't part of it.
         if basis_qty:
@@ -4421,6 +4444,11 @@ class TradingViewWebhookEngine:
             return None
         closed_dicts = [velez_doctrine.bar_dict(bar) for bar in closed]
         daily = self._timeframe_seconds(timeframe) >= 86400
+        if equity and not daily:
+            # Pushes count in the regular session only: thin premarket / after-hours prints don't.
+            since = regular_session_bars(since, self._timeframe_seconds(timeframe))
+            if not since:
+                return None
         if equity and self._velez_split_in_hold(symbol, since, daily):
             # Pre- and post-split prices aren't comparable, so pushes and the origin can't be read.
             return None
@@ -11647,7 +11675,17 @@ class TradingViewWebhookEngine:
             # against the initial (journaled) stop so later partials still fire.
             self._velez_record_initial_risk(position)
             initial_r = self._velez_initial_r(position)
-            partial_r = initial_r if initial_r is not None else current_r
+            partial_r = initial_r
+            if partial_r is None:
+                entry_now = self._velez_price(position, "entry_price")
+                stop_now = self._velez_price(position, "stop_price")
+                protective = (
+                    entry_now is not None and stop_now is not None
+                    and ((stop_now < entry_now) if side == "long" else (stop_now > entry_now))
+                )
+                # A trailed stop's distance isn't a risk (entry 100, trail 100.10 reads 60R): without
+                # the initial risk, R-based partials wait.
+                partial_r = current_r if protective else None
             if partials_cfg.get("enabled", True) and partial_r is not None and qty:
                 partials_taken = self._partials_taken_for_symbol(symbol)
                 first_due = partial_r >= float(partials_cfg.get("first_r", 1.0)) and partial_r < float(partials_cfg.get("second_r", 2.0))

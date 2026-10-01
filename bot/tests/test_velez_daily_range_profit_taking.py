@@ -204,18 +204,16 @@ def test_default_trigger_is_unchanged(monkeypatch, tmp_path):
 
 def test_profit_taking_verdict_reads_pushes_and_daily_atr(monkeypatch, tmp_path):
     engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
-    now = datetime.now(timezone.utc)
-    day = now.date()
-    open_utc = datetime(day.year, day.month, day.day, 13, 30, tzinfo=timezone.utc)
-    # Three pushes after the entry bar on 15-minute bars that close before now.
-    start = min(open_utc, now - timedelta(hours=4))
+    # Three pushes after the entry bar on 15-minute bars in Wednesday's session (EDT: 14:00 UTC = 10:00 ET).
+    start = datetime(2026, 6, 3, 14, 0, tzinfo=timezone.utc)
     prices = [(100, 101, 99.5, 100.8), (100.8, 101.5, 100.5, 101.2), (101.2, 101.3, 100.9, 101.0),
               (101.0, 102.0, 100.9, 101.8), (101.8, 101.9, 101.4, 101.5), (101.5, 102.6, 101.4, 102.4)]
     bars = [Bar(timestamp=start + timedelta(minutes=15 * i), open=o, high=h, low=l, close=c, volume=1000)
             for i, (o, h, l, c) in enumerate(prices)]
     engine.scanner_config["timeframe"] = "15Min"
     monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda symbol, asset_type, timeframe=None: bars)
-    monkeypatch.setattr(engine, "_velez_daily_rows", lambda symbol: daily_rows(70, last_day=datetime(day.year, day.month, day.day, tzinfo=timezone.utc) - timedelta(days=1)))
+    monkeypatch.setattr(engine, "_velez_daily_rows", lambda symbol: daily_rows(70))
+    monkeypatch.setattr(engine, "_velez_session_bars", lambda symbol: [])
     pos = position(0.5)
     pos["linked_decision"]["timestamp"] = (start + timedelta(minutes=5)).isoformat()
     verdict = engine._velez_profit_taking_verdict(pos)
