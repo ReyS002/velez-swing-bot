@@ -402,8 +402,10 @@ class VelezInstitutionalStrategy:
         market: dict,
         event_open: Optional[float] = None,
         decision_at: Optional[datetime] = None,
+        entry_at: Optional[float] = None,
     ) -> dict:
-        """`decision_at` overrides the entry time (a bare alert is judged when it arrives, not at the cached bar)."""
+        """`decision_at` overrides the entry time (a bare alert is judged when it arrives, not at the cached bar).
+        `entry_at` is the planned entry price when it isn't the bar's close (a limit at the breakout level)."""
         play = str(signal.metadata.get("play") or signal.reason)
         # Three-finger spread: stretch from the 20 SMA in ATR. Event-bar plays are measured from the
         # event bar's open (an igniting elephant leaving the 20 is not a chase); plays that fire
@@ -432,12 +434,18 @@ class VelezInstitutionalStrategy:
                 if decision_at is not None else self._decision_time(signal.symbol, bar)
             ),
             market_bias=self._market_bias(signal.symbol, decision_at or bar.timestamp),
-            range_used=self._range_used(signal, bar, decision_at),
+            range_used=self._range_used(signal, bar, decision_at, entry_at),
         )
 
     # ── Daily range used (rulebook 2026.10.5) ──
 
-    def _range_used(self, signal: Signal, bar: Optional[Bar], decision_at: Optional[datetime] = None) -> Optional[float]:
+    def _range_used(
+        self,
+        signal: Signal,
+        bar: Optional[Bar],
+        decision_at: Optional[datetime] = None,
+        entry_at: Optional[float] = None,
+    ) -> Optional[float]:
         """Daily ATRs today's move has covered in the signal's direction, for the entry gate.
 
         Today's high and low come from the local bars and, live, from the session feed (the
@@ -500,6 +508,8 @@ class VelezInstitutionalStrategy:
                 freshest = today[-1]
         if price is None and freshest is not None:
             price = freshest["c"]
+        if entry_at is not None and entry_at > 0:
+            price = entry_at  # the planned entry (a limit at the breakout level), not where the bar closed
         if price is None or not highs:
             return None
         side = "long" if signal.side == Side.BUY else "short"
@@ -582,6 +592,10 @@ class VelezInstitutionalStrategy:
         """US equities only: configured futures/FX/crypto (and their ticker shapes) are not."""
         sym = str(symbol).upper()
         configured = {str(s).upper() for s in self._doctrine_cfg().get("non_equity_symbols", [])} | self.non_equity_symbols
+        # Broker aliases drop the separator (EURUSD for EUR/USD, BTCUSD for BTC/USD): compare without it.
+        canonical = {c.replace("/", "").replace("-", "") for c in configured}
+        if sym.replace("/", "").replace("-", "") in canonical:
+            return False
         return not (sym in configured or "/" in sym or sym.startswith("^") or sym.endswith(("=F", "=X", "-USD")))
 
 
@@ -724,18 +738,20 @@ class VelezInstitutionalStrategy:
                     self._log_doctrine("doctrine_setup_expired", original, ["no_break_within_window"])
                 continue
             del ctx.armed[side_key]
-            gate = self._doctrine_gate(original, bar, location, market, event_open=armed.get("event_open"))
-            if not gate["allowed"]:
-                self._log_doctrine("doctrine_entry_blocked", original, gate["reasons"])
-                continue
             max_chase = float(self._doctrine_cfg().get("max_chase_atr", 0.25)) * float(atr or 0.0)
             chase = abs(bar.close - trigger)
-            metadata = dict(original.metadata)
             if chase <= max(max_chase, self._tick_size(symbol)):
                 order_type, entry_price, limit_price = OrderType.MARKET, bar.close, None
             else:
                 # Price already ran past the break: don't chase, bid the breakout level.
                 order_type, entry_price, limit_price = OrderType.LIMIT, trigger, trigger
+            gate = self._doctrine_gate(
+                original, bar, location, market, event_open=armed.get("event_open"), entry_at=entry_price
+            )
+            if not gate["allowed"]:
+                self._log_doctrine("doctrine_entry_blocked", original, gate["reasons"])
+                continue
+            metadata = dict(original.metadata)
             metadata.update(
                 {
                     "entry_type": "break_of_event_bar",

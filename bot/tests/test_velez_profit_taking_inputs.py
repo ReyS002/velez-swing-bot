@@ -364,3 +364,172 @@ def test_initial_risk_is_recorded_once_per_position(monkeypatch, tmp_path):
     fresh.update(entry_fill={"side": "buy", "transaction_time": "2026-06-04T14:30:00+00:00"}, stop_price=498.0)
     engine._velez_record_initial_risk(fresh)
     assert engine._velez_position_key(fresh) != engine._velez_position_key(first)
+
+
+def test_opening_fill_tracks_signed_inventory_across_directions(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    t0 = datetime(2026, 6, 3, 14, 0, tzinfo=timezone.utc)
+    at = lambda minutes: (t0 + timedelta(minutes=minutes)).isoformat()
+    # A closed long (buy 50, sell 50), then the current short: its closing sell is not an entry.
+    fills = [{"symbol": "SPY", "side": "sell", "qty": "20", "transaction_time": at(60)},
+             {"symbol": "SPY", "side": "sell", "qty": "50", "transaction_time": at(30)},
+             {"symbol": "SPY", "side": "buy", "qty": "50", "transaction_time": at(0)}]
+    assert engine._velez_opening_fill("SPY", False, None, fills, 20)["transaction_time"] == at(60)
+    # One fill that flips a long into a short opens the short.
+    flip = [{"symbol": "SPY", "side": "sell", "qty": "70", "transaction_time": at(30)},
+            {"symbol": "SPY", "side": "buy", "qty": "50", "transaction_time": at(0)}]
+    assert engine._velez_opening_fill("SPY", False, None, flip, 20)["transaction_time"] == at(30)
+    assert engine._velez_opening_fill("SPY", True, None, flip, 20) is None  # we're short, not long
+
+
+def test_lifecycle_finds_the_opening_fill_of_a_fractional_position(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    item = {"symbol": "BTCUSD", "qty": "0.1", "side": "long", "avg_entry_price": "60000.5", "current_price": "60500.25"}
+    fills = [{"symbol": "BTCUSD", "side": "buy", "qty": "0.1", "transaction_time": "2026-06-03T14:00:00+00:00"}]
+    built = engine._position_lifecycle(item, decisions=[], orders=[], fills=fills)
+    assert built["entry_fill"] == fills[0]  # 0.1 held, not truncated to 0
+    assert built["velez_entry_price"] == 60000.5 and built["velez_current_price"] == 60500.25
+
+
+def test_entry_time_is_the_opening_fill_even_when_an_add_is_linked(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    opened = datetime(2026, 6, 3, 14, 0, tzinfo=timezone.utc)
+    pos = position(0.5)
+    pos["linked_decision"]["timestamp"] = (opened + timedelta(hours=2)).isoformat()  # the add's decision
+    pos["entry_fill"] = {"side": "buy", "transaction_time": opened.isoformat()}
+    assert engine._velez_entry_time(pos) == opened
+
+
+def test_partial_r_uses_the_initial_risk_once_the_stop_trails(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    monkeypatch.setattr(engine, "_velez_profit_taking_verdict", lambda p: {"status": "hold"})
+    opening = {"side": "buy", "transaction_time": "2026-06-03T14:30:00+00:00"}
+    first = position(0.2)
+    first.update(entry_fill=opening, current_price=501.0)
+    engine._velez_record_initial_risk(first)  # risk 5.0
+    # Later the stop trails to 500.10: current R reads 60, the trade is really 1.2R.
+    trailed = position(60.0)
+    trailed.update(entry_fill=opening, stop_price=500.10, current_price=506.0)
+    assert abs(engine._velez_initial_r(trailed) - 1.2) < 1e-9
+    engine._auto_lifecycle_actions(positions=[trailed], open_orders=[], guardrails=[])
+    assert partial_orders(broker) == []  # neither the 2R partial nor the first (verdict: hold)
+
+
+def test_recorded_risk_outlives_the_fill_lookback(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    first = position(0.2)
+    first.update(entry_fill={"side": "buy", "transaction_time": "2026-05-20T14:30:00+00:00"}, current_price=501.0)
+    engine._velez_record_initial_risk(first)  # risk 5.0
+    # Weeks later the opening fill is out of the fill snapshot, the stop is at entry, and the
+    # linked decision is an add with a tighter stop.
+    aged = position(None)
+    aged.update(stop_price=500.0, current_price=505.0)
+    aged["linked_decision"]["stop_price"] = 503.0
+    assert engine._velez_initial_r(aged) == 1.0  # / 5.0 recorded, not / 3.0
+    aged["side"] = "short"  # a different position on the other side doesn't inherit it
+    assert engine._velez_recorded_risk(aged) is None
+
+
+def test_recorded_risk_keeps_sub_cent_precision(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    pos = {"symbol": "ADAUSD", "qty": "1000", "side": "long", "entry_price": 0.51, "stop_price": 0.51,
+           "current_price": 0.52, "velez_entry_price": 0.51234, "velez_stop_price": 0.50734,
+           "velez_current_price": 0.52234, "entry_fill": {"side": "buy", "transaction_time": "2026-06-03T14:30:00+00:00"},
+           "linked_decision": {}}
+    engine._velez_record_initial_risk(pos)
+    assert abs(engine._velez_recorded_risk(pos) - 0.005) < 1e-12
+    assert abs(engine._velez_initial_r(pos) - 2.0) < 1e-9
+
+
+def test_configured_non_equity_aliases_skip_equity_rules():
+    strat = strategy(daily_range=True, non_equity_symbols=["EUR/USD", "BTC/USD"])
+    assert strat._is_equity("EURUSD") is False and strat._is_equity("BTCUSD") is False
+    assert strat._is_equity("SPY") is True
+
+
+def test_alias_claim_links_after_the_decision_leaves_the_window(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    decision = {"symbol": "BTC/USD", "side": "buy", "status": "submitted", "alert_ref": "a1",
+                "timestamp": "2026-06-03T14:00:00+00:00"}
+    engine._set_lifecycle_claim("BTC/USD", decision)
+    monkeypatch.setattr(engine.journal, "decision_by_alert_ref", lambda ref: decision if ref == "a1" else None)
+    # The decision is no longer in the recent list, but the claim (stored as BTC/USD) still links BTCUSD.
+    assert engine._link_decision_for_symbol("BTCUSD", [], side="long") == decision
+    assert engine._claim_candidates_for_symbol("BTCUSD", [decision], side="long") == [decision]
+
+
+def test_session_feed_is_full_tape_first(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    monkeypatch.setattr(engine.broker, "is_configured", lambda: True, raising=False)
+    t = lambda minutes: (datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=minutes)).isoformat()
+    feeds = []
+
+    def data(path, params):
+        feeds.append(params["feed"])
+        if params["feed"] == "sip":  # delayed 15 minutes, but the true low
+            return {"bars": {"SPY": [{"t": t(40), "o": 100, "h": 101, "l": 98.5, "c": 100.5, "v": 1}]}}
+        return {"bars": {"SPY": [{"t": t(40), "o": 100, "h": 101, "l": 99.5, "c": 100.5, "v": 1},
+                                 {"t": t(5), "o": 100.5, "h": 101.5, "l": 100.4, "c": 101.2, "v": 1}]}}
+
+    monkeypatch.setattr(engine, "_alpaca_data_request", data)
+    rows = engine._velez_session_bars("SPY")
+    assert feeds[0] == "sip"
+    assert [r["l"] for r in rows] == [98.5, 100.4]  # SIP's bar where both have one, the feed's latest after
+
+
+def test_daily_fallback_is_split_adjusted(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    monkeypatch.setattr(engine.broker, "is_configured", lambda: True, raising=False)
+    monkeypatch.setattr(engine, "_alpaca_data_request", lambda path, params: (_ for _ in ()).throw(RuntimeError("no sip")))
+    asked = {}
+
+    def top_down(symbol, days=120, adjustment="raw"):
+        asked["adjustment"] = adjustment
+        return [Bar(timestamp=datetime(2026, 6, 1, tzinfo=timezone.utc), open=1, high=2, low=0.5, close=1.5, volume=1)]
+
+    monkeypatch.setattr(engine, "_fetch_top_down_daily_bars", top_down)
+    rows = engine._velez_daily_rows("SPY")
+    assert asked["adjustment"] == "split" and all(r["split_adjusted"] for r in rows)
+
+
+def test_split_inside_the_hold_falls_back_to_the_r_partial(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    engine.scanner_config["timeframe"] = "15Min"
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(hours=2)
+    prices = [(200, 201, 199, 200.5), (200.5, 201.5, 200, 201), (100.5, 101, 100, 100.8), (100.8, 101.4, 100.6, 101.2)]
+    bars = [Bar(timestamp=start + timedelta(minutes=15 * i), open=o, high=h, low=l, close=c, volume=1)
+            for i, (o, h, l, c) in enumerate(prices)]
+    monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda symbol, asset_type, timeframe=None: bars)
+    monkeypatch.setattr(engine, "_velez_daily_rows", lambda symbol: daily_rows(70))
+    pos = position(0.5)
+    pos["linked_decision"]["timestamp"] = (start - timedelta(minutes=1)).isoformat()
+    assert engine._velez_profit_taking_verdict(pos) is None
+
+
+def test_range_is_measured_at_the_planned_entry():
+    strat = strategy(daily_range=True)
+    strat.daily_bars_provider = lambda symbol: daily_rows()
+    strat.session_bars_provider = lambda symbol: [hour_bar(9, 100, 100.5, 99.0, 100.2), hour_bar(10, 100.2, 101.8, 100.1, 101.6)]
+    spike = Bar(timestamp=hour_bar(10, 0, 0, 0, 0)["t"], open=100.2, high=101.8, low=100.1, close=101.6, volume=1)
+    assert abs(strat._range_used(signal(), spike) - 1.3) < 1e-9  # at the close
+    assert abs(strat._range_used(signal(), spike, entry_at=100.8) - 0.9) < 1e-9  # at the limit
+
+
+def test_armed_runaway_break_is_gated_at_its_limit(monkeypatch):
+    strat = strategy(daily_range=True)
+    seen = {}
+
+    def gate(original, bar, location, market, event_open=None, decision_at=None, entry_at=None):
+        seen["entry_at"] = entry_at
+        return {"allowed": False, "reasons": ["test"]}
+
+    monkeypatch.setattr(strat, "_doctrine_gate", gate)
+    ctx = strat._get_context("SPY")
+    original = signal()
+    original.metadata["stop_price"] = 98.0
+    ctx.armed["long"] = {"signal": original, "trigger": 100.0, "bars_left": 3, "event_open": 99.0,
+                         "event_high": 100.0, "event_low": 99.0, "armed_at": hour_bar(9, 0, 0, 0, 0)["t"]}
+    runaway = Bar(timestamp=hour_bar(10, 0, 0, 0, 0)["t"], open=100.0, high=103.2, low=99.9, close=103.0, volume=1)
+    strat._fire_armed("SPY", runaway, ctx, None, {}, 0.5)
+    assert seen["entry_at"] == 100.0  # the limit at the breakout level, not the 103 close
