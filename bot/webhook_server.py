@@ -3830,34 +3830,46 @@ class TradingViewWebhookEngine:
         qty = math.floor(raw * 1e8) / 1e8 if crypto else float(math.floor(raw + 1e-9))
         return qty if 0 < qty < held else 0.0
 
-    def _velez_opening_fill(self, symbol: str, long: bool, linked: Optional[dict], fills: List[dict]) -> Optional[dict]:
-        """The fill that opened the position: the earliest entry-side fill at or after its decision.
+    def _velez_opening_fill(
+        self,
+        symbol: str,
+        long: bool,
+        linked: Optional[dict],
+        fills: List[dict],
+        held_qty: Optional[float] = None,
+    ) -> Optional[dict]:
+        """The fill that opened the position, rebuilt from the fill history.
 
-        Later same-side fills (a split fill, a pyramid add) never move the entry; exit fills never
-        count. None when the fill window doesn't reach back to the entry.
+        Walks this symbol's fills oldest first, tracking the position: the opening fill is the first
+        entry-side fill after the position was last flat. Split fills, pyramid adds and partial exits
+        never move it, whichever decision the lifecycle linked. Trusted only when the fills add up to
+        `held_qty` (a window that starts mid-trade can't see the open); otherwise None.
         """
-        decided = (linked or {}).get("timestamp")
-        try:
-            floor = self._timestamp(decided) - timedelta(minutes=2) if decided else None
-        except Exception:
-            floor = None
-        sides = {"buy"} if long else {"sell", "sell_short"}
-        best, best_ts = None, None
+        entry_sides = {"buy"} if long else {"sell", "sell_short"}
+        timed = []
         for fill in fills or []:
-            if str(fill.get("symbol") or "").upper() != symbol or str(fill.get("side") or "").lower() not in sides:
+            if str(fill.get("symbol") or "").upper() != symbol:
                 continue
             stamp = fill.get("transaction_time") or fill.get("filled_at")
-            if not stamp:
+            qty = self._float(fill.get("qty"))
+            if not stamp or not qty:
                 continue
             try:
-                ts = self._timestamp(stamp)
+                timed.append((self._timestamp(stamp), fill, abs(qty)))
             except Exception:
                 continue
-            if floor is not None and ts < floor:
-                continue
-            if best_ts is None or ts < best_ts:
-                best, best_ts = fill, ts
-        return best
+        timed.sort(key=lambda item: item[0])
+        running, opening = 0.0, None
+        for _, fill, qty in timed:
+            entry_side = str(fill.get("side") or "").lower() in entry_sides
+            if entry_side and running <= 1e-9:
+                opening = fill
+            running = max(0.0, running + (qty if entry_side else -qty))
+            if running <= 1e-9:
+                opening = None
+        if opening is None or held_qty is None or abs(running - abs(held_qty)) > 1e-6:
+            return None
+        return opening
 
     @staticmethod
     def _velez_alpaca_timeframe(value: Any) -> Optional[str]:
@@ -3940,6 +3952,10 @@ class TradingViewWebhookEngine:
         since = [velez_doctrine.bar_dict(bar) for bar in closed if self._velez_bar_end(bar, timeframe, equity) > entry_ts]
         if len(since) < 2:
             return None
+        # A rolling window that starts after the entry can't count pushes since entry (an earlier,
+        # higher extreme is out of view): measure the move against the ATRs only.
+        covers_entry = bool(closed) and (closed[0].timestamp if closed[0].timestamp.tzinfo
+                                         else closed[0].timestamp.replace(tzinfo=timezone.utc)) <= entry_ts
         closed_dicts = [velez_doctrine.bar_dict(bar) for bar in closed]
         daily = self._timeframe_seconds(timeframe) >= 86400
         origin_bars = session_overlap_bars(closed_dicts) if equity and not daily else since
@@ -3959,14 +3975,17 @@ class TradingViewWebhookEngine:
                         log_event(self.logger, "velez_profit_taking_daily_fallback", {"symbol": symbol, "reason": str(exc)[:160]})
                 rows = utc_daily_rows(daily_source, last.astimezone(timezone.utc).date())
             rows = split_safe_daily_rows(rows)
-            return velez_doctrine.profit_taking(
+            verdict = velez_doctrine.profit_taking(
                 side,
-                since,
+                since if covers_entry else since[-1:],
                 since[-1]["c"],
                 velez_doctrine.move_origin(origin_bars or since, side),
                 daily_atr_from_rows(rows),
                 velez_doctrine.wide_day_atr(rows),
             )
+            if not covers_entry:
+                verdict["pushes_unavailable"] = "bar history starts after the entry"
+            return verdict
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             log_event(self.logger, "velez_profit_taking_skipped", {"symbol": symbol, "reason": str(exc)[:160]})
             return None
@@ -10511,7 +10530,7 @@ class TradingViewWebhookEngine:
         multiplier = self._float(sym_cfg.get("contract_multiplier")) or 1.0
         initial_risk = risk_per_unit * qty_abs * multiplier if risk_per_unit and qty_abs else None
         latest_fill = next((fill for fill in fills if str(fill.get("symbol") or "").upper() == symbol), None)
-        entry_fill = self._velez_opening_fill(symbol, direction > 0, linked, fills)
+        entry_fill = self._velez_opening_fill(symbol, direction > 0, linked, fills, qty_abs)
         management = self._position_management_actions(
             side=side,
             entry_price=entry_price,

@@ -79,20 +79,51 @@ def test_entry_time_is_the_opening_fill_not_the_decision(monkeypatch, tmp_path):
 
 def test_opening_fill_ignores_adds_exits_and_older_trades(monkeypatch, tmp_path):
     engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
-    decided = datetime(2026, 6, 3, 14, 0, tzinfo=timezone.utc)
-    at = lambda minutes: (decided + timedelta(minutes=minutes)).isoformat()
+    t0 = datetime(2026, 6, 3, 14, 0, tzinfo=timezone.utc)
+    at = lambda minutes: (t0 + timedelta(minutes=minutes)).isoformat()
     fills = [  # newest first, as the lifecycle reads them
-        {"symbol": "SPY", "side": "sell", "transaction_time": at(200)},   # a partial exit
-        {"symbol": "SPY", "side": "buy", "transaction_time": at(120)},    # a pyramid add
-        {"symbol": "SPY", "side": "buy", "transaction_time": at(31)},     # second piece of a split fill
-        {"symbol": "SPY", "side": "buy", "transaction_time": at(30)},     # the opening fill
-        {"symbol": "QQQ", "side": "buy", "transaction_time": at(10)},
-        {"symbol": "SPY", "side": "buy", "transaction_time": at(-600)},   # a previous trade
+        {"symbol": "SPY", "side": "sell", "qty": "30", "transaction_time": at(200)},   # a partial exit
+        {"symbol": "SPY", "side": "buy", "qty": "20", "transaction_time": at(120)},    # a pyramid add
+        {"symbol": "SPY", "side": "buy", "qty": "40", "transaction_time": at(31)},     # second piece of a split fill
+        {"symbol": "SPY", "side": "buy", "qty": "60", "transaction_time": at(30)},     # the opening fill
+        {"symbol": "QQQ", "side": "buy", "qty": "10", "transaction_time": at(10)},
+        {"symbol": "SPY", "side": "sell", "qty": "50", "transaction_time": at(-300)},  # a previous trade, closed
+        {"symbol": "SPY", "side": "buy", "qty": "50", "transaction_time": at(-600)},
     ]
-    opening = engine._velez_opening_fill("SPY", True, {"timestamp": decided.isoformat()}, fills)
+    # Whatever decision the lifecycle linked (here the add's), the open is found from the fills.
+    linked_to_add = {"timestamp": at(119)}
+    opening = engine._velez_opening_fill("SPY", True, linked_to_add, fills, 90)
     assert opening["transaction_time"] == at(30)
-    short = engine._velez_opening_fill("SPY", False, {"timestamp": decided.isoformat()}, fills)
-    assert short["transaction_time"] == at(200)
+    # A window that starts mid-trade can't see the open: no answer rather than a wrong one.
+    assert engine._velez_opening_fill("SPY", True, linked_to_add, fills[:3], 90) is None
+    assert engine._velez_opening_fill("SPY", True, linked_to_add, fills, 75) is None
+
+
+def test_short_opening_fill(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    t0 = datetime(2026, 6, 3, 14, 0, tzinfo=timezone.utc)
+    at = lambda minutes: (t0 + timedelta(minutes=minutes)).isoformat()
+    fills = [{"symbol": "SPY", "side": "sell_short", "qty": "10", "transaction_time": at(40)},
+             {"symbol": "SPY", "side": "sell", "qty": "10", "transaction_time": at(5)}]
+    assert engine._velez_opening_fill("SPY", False, None, fills, 20)["transaction_time"] == at(5)
+
+
+def test_pushes_not_counted_when_history_starts_after_entry(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    engine.scanner_config["timeframe"] = "15Min"
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(hours=3)
+    prices = [(100, 101, 99.5, 100.8), (100.8, 101.5, 100.5, 101.2), (101.2, 101.3, 100.9, 101.0),
+              (101.0, 102.0, 100.9, 101.8), (101.8, 101.9, 101.4, 101.5), (101.5, 102.6, 101.4, 102.4)]
+    bars = [Bar(timestamp=start + timedelta(minutes=15 * i), open=o, high=h, low=l, close=c, volume=1)
+            for i, (o, h, l, c) in enumerate(prices)]
+    monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda symbol, asset_type, timeframe=None: bars)
+    monkeypatch.setattr(engine, "_velez_daily_rows", lambda symbol: daily_rows(70, last_day=now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)))
+    pos = position(0.5)
+    pos["linked_decision"]["timestamp"] = (start - timedelta(days=2)).isoformat()  # entered long before the window
+    verdict = engine._velez_profit_taking_verdict(pos)
+    assert verdict["pushes"] == 0 and verdict["pushes_unavailable"]
+    assert verdict["daily_atr"] == 2.0  # the ATR measure still runs
 
 
 def test_verdict_reads_bars_on_the_decision_timeframe(monkeypatch, tmp_path):
