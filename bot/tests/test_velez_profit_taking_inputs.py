@@ -286,3 +286,54 @@ def test_bare_alert_is_measured_at_its_entry_price():
     alert.metadata["entry_price"] = 101.4  # price moved after the last scanner bar
     assert abs(strat._range_used(alert, cached, decision_at=at) - 1.2) < 1e-9
     assert abs(strat._range_used(signal(), cached, decision_at=at) - 0.9) < 1e-9
+
+
+def test_split_adjusted_history_keeps_a_real_big_gap():
+    from bot.core.velez_strategy import daily_atr_from_rows, split_safe_daily_rows
+    rows = daily_rows(20)
+    rows[12:] = [{**r, "o": r["o"] * 1.4, "h": r["h"] * 1.4, "l": r["l"] * 1.4, "c": r["c"] * 1.4} for r in rows[12:]]
+    assert split_safe_daily_rows(rows) == rows[12:]  # raw feed: treated as a split
+    adjusted = [{**r, "split_adjusted": True} for r in rows]
+    assert split_safe_daily_rows(adjusted) == adjusted  # adjusted feed: a 40% gap is a real move
+    assert daily_atr_from_rows(adjusted) is not None
+
+
+def test_round_the_clock_rows_are_never_split_guarded():
+    t0 = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    bars = [{"o": 100.0, "h": 101.0, "l": 99.0, "c": 100.0, "v": 1, "t": t0 + timedelta(days=i)} for i in range(20)]
+    bars[10] = {**bars[10], "o": 140.0, "h": 141.0, "l": 139.0, "c": 140.0}
+    rows = utc_daily_rows(bars, before=datetime(2026, 6, 1, tzinfo=timezone.utc).date())
+    assert all(r["split_adjusted"] for r in rows)
+
+
+def test_bare_alert_without_a_price_uses_the_freshest_feed_close():
+    strat = strategy(daily_range=True)
+    strat.daily_bars_provider = lambda symbol: daily_rows()
+    ctx = strat._get_context("SPY")
+    stale = hour_bar(9, 100, 100.5, 99.0, 100.2)
+    ctx.bars.append(Bar(timestamp=stale["t"], open=100, high=100.5, low=99.0, close=100.2, volume=1))
+    # The feed has moved on to 101.6 since the cached hourly bar closed.
+    strat.session_bars_provider = lambda symbol: [stale, hour_bar(10, 100.2, 101.7, 100.1, 101.6)]
+    cached = ctx.bars[-1]
+    used = strat._range_used(signal(), cached, decision_at=hour_bar(11, 0, 0, 0, 0)["t"])
+    assert abs(used - 1.3) < 1e-9  # (101.6 - 99.0) / 2.0, not the stale 100.2
+
+
+def test_profit_taking_origin_uses_the_full_session_feed(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    engine.scanner_config["timeframe"] = "15Min"
+    # Wed 2026-06-03 (EDT): bars from 11:00 ET; the rolling window no longer holds the morning.
+    start = datetime(2026, 6, 3, 15, 0, tzinfo=timezone.utc)
+    prices = [(101, 101.5, 100.8, 101.2), (101.2, 101.6, 101.0, 101.4), (101.4, 101.9, 101.2, 101.8)]
+    bars = [Bar(timestamp=start + timedelta(minutes=15 * i), open=o, high=h, low=l, close=c, volume=1)
+            for i, (o, h, l, c) in enumerate(prices)]
+    monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda symbol, asset_type, timeframe=None: bars)
+    monkeypatch.setattr(engine, "_velez_daily_rows", lambda symbol: daily_rows(70))
+    # The 09:40 ET low (99.6) is only in the full-session feed.
+    morning = {"o": 100.0, "h": 100.2, "l": 99.6, "c": 100.1, "v": 1, "t": datetime(2026, 6, 3, 13, 40, tzinfo=timezone.utc)}
+    monkeypatch.setattr(engine, "_velez_session_bars", lambda symbol: [morning])
+    pos = position(0.5)
+    pos["linked_decision"]["timestamp"] = (start + timedelta(minutes=5)).isoformat()
+    verdict = engine._velez_profit_taking_verdict(pos)
+    assert verdict["origin"] == 99.6
+    assert verdict["move_from_origin"] == 2.2

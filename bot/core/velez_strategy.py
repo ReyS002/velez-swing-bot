@@ -152,8 +152,14 @@ def daily_rows_before(rows: List[dict], day) -> List[dict]:
 
 
 def split_safe_daily_rows(rows: List[dict]) -> List[dict]:
-    """Daily rows after the latest split-sized gap (a split is not volatility)."""
+    """Daily rows after the latest split-sized gap (a split is not volatility).
+
+    Rows already adjusted for splits (`split_adjusted`) are kept whole: a big gap there is a
+    real move (earnings, news), and dropping the history would blind the ATR rules for weeks.
+    """
     rows = list(rows)
+    if rows and all(row.get("split_adjusted") for row in rows):
+        return rows
     for i in range(len(rows) - 1, 0, -1):
         prior_close = rows[i - 1]["c"]
         if prior_close and abs(rows[i]["o"] / prior_close - 1.0) > DAILY_DISCONTINUITY_PCT:
@@ -211,8 +217,9 @@ def utc_daily_rows(bars: List[dict], before) -> List[dict]:
             row = rows[-1]
             row.update(h=max(row["h"], b["h"]), l=min(row["l"], b["l"]), c=b["c"])
         else:
+            # Crypto and futures have no share splits: every gap in their history is real.
             rows.append({"o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": 0.0, "_day": day,
-                         "t": datetime(day.year, day.month, day.day, tzinfo=timezone.utc)})
+                         "split_adjusted": True, "t": datetime(day.year, day.month, day.day, tzinfo=timezone.utc)})
     for row in rows:
         row.pop("_day", None)
     return rows
@@ -466,19 +473,20 @@ class VelezInstitutionalStrategy:
                 intraday.append(current)
         price = bar.close if bar is not None else None
         if decision_at is not None:
-            # A bare alert is judged where it would enter, not at the last cached bar's close.
+            # A bare alert is judged where it would enter: its proposed price, else the freshest
+            # close in the local bars or the session feed (the cached chart bar can be an hour old).
             try:
                 proposed = float(signal.metadata.get("entry_price") or 0)
             except (TypeError, ValueError):
                 proposed = 0.0
-            if proposed > 0:
-                price = proposed
+            price = proposed if proposed > 0 else None
         feeds = [intraday]
         if self.session_bars_provider is not None:
             try:
                 feeds.append(list(self.session_bars_provider(symbol) or []))
             except Exception:
                 pass
+        freshest = None
         for series in feeds:
             if not series:
                 continue
@@ -487,9 +495,11 @@ class VelezInstitutionalStrategy:
                 continue
             highs.append(high)
             lows.append(low)
-            if price is None:
-                today = session_overlap_bars(series, as_of=at)
-                price = today[-1]["c"] if today else None
+            today = session_overlap_bars(series, as_of=at)
+            if today and (freshest is None or today[-1]["t"] > freshest["t"]):
+                freshest = today[-1]
+        if price is None and freshest is not None:
+            price = freshest["c"]
         if price is None or not highs:
             return None
         side = "long" if signal.side == Side.BUY else "short"

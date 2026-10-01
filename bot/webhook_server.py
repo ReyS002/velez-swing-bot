@@ -3742,6 +3742,7 @@ class TradingViewWebhookEngine:
         if cached is not None:
             return cached
         bars: List[Bar] = []
+        adjusted = False
         if self.broker.is_configured():
             try:
                 data = self._alpaca_data_request(
@@ -3751,11 +3752,14 @@ class TradingViewWebhookEngine:
                         "start": (today - timedelta(days=140)).isoformat(),
                         "end": (today + timedelta(days=1)).isoformat(),
                         "limit": 120,
-                        "adjustment": "raw",
+                        # Split-adjusted to today's share basis: a split never fakes a range, so a
+                        # genuine big gap (earnings, news) stays in the ATR history.
+                        "adjustment": "split",
                         "feed": "sip",
                     },
                 )
                 bars = [self._bar_from_alpaca(item) for item in data.get("bars") or []]
+                adjusted = bool(bars)
             except Exception as exc:
                 log_event(self.logger, "velez_daily_rows_sip_fallback", {"symbol": sym, "reason": str(exc)[:160]})
         if not bars:
@@ -3765,6 +3769,8 @@ class TradingViewWebhookEngine:
                 log_event(self.logger, "velez_daily_rows_failed", {"symbol": sym, "reason": str(exc)[:160]})
                 return []
         rows = [velez_doctrine.bar_dict(bar) for bar in bars]
+        for row in rows:
+            row["split_adjusted"] = adjusted  # the fallback feeds are raw: the split guard applies
         if rows:
             if len(self._velez_daily_cache) > 256:
                 self._velez_daily_cache.clear()
@@ -3958,7 +3964,14 @@ class TradingViewWebhookEngine:
                                          else closed[0].timestamp.replace(tzinfo=timezone.utc)) <= entry_ts
         closed_dicts = [velez_doctrine.bar_dict(bar) for bar in closed]
         daily = self._timeframe_seconds(timeframe) >= 86400
-        origin_bars = session_overlap_bars(closed_dicts) if equity and not daily else since
+        if equity and not daily:
+            # The rolling window can lose the morning on short timeframes: add the full-session feed
+            # (through the last closed bar) so the move's origin is the day's true low / high.
+            merged = {b["t"]: b for b in self._velez_session_bars(symbol) if b["t"] <= since[-1]["t"]}
+            merged.update({b["t"]: b for b in closed_dicts})
+            origin_bars = session_overlap_bars(sorted(merged.values(), key=lambda b: b["t"]))
+        else:
+            origin_bars = since
         try:
             if equity:
                 last_day = velez_doctrine.daily_bar_date(since[-1]["t"]) if daily else velez_doctrine._local(since[-1]["t"]).date()
