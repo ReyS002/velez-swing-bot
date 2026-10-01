@@ -4274,7 +4274,19 @@ class TradingViewWebhookEngine:
                 stops.append(leg)
         return stops
 
-    def _velez_place_stop(self, symbol: str, side: str, qty: float, stop_price: float) -> dict:
+    def _velez_order_known(self, client_order_id: str) -> Optional[bool]:
+        """Whether the broker has an order with this client order id (any status); None if it can't tell."""
+        try:
+            orders = self.broker.get_orders_raw(status="all", limit=100, direction="desc", nested=True)
+        except Exception:
+            return None
+        for order in orders or []:
+            for leg in [order, *(order.get("legs") or [])]:
+                if str(leg.get("client_order_id") or "") == client_order_id:
+                    return True
+        return False
+
+    def _velez_place_stop(self, symbol: str, side: str, qty: float, stop_price: float, client_order_id: Optional[str] = None) -> dict:
         """Submit a protective stop for `qty` straight to the broker. Not through the verified-stop helper:
         that one treats any open same-side stop (even one pending cancellation, or one covering less) as
         enough, and would skip the order."""
@@ -4285,7 +4297,7 @@ class TradingViewWebhookEngine:
             "type": "stop",
             "time_in_force": "gtc",
             "stop_price": f"{float(stop_price):.2f}",
-            "client_order_id": f"velez-runner-stop-{symbol.lower()}-{secrets.token_hex(6)}",
+            "client_order_id": client_order_id or f"velez-runner-stop-{symbol.lower()}-{secrets.token_hex(6)}",
         }
         if self._quote_asset_type(symbol) in {"equity", "stock", "etf"}:
             payload["position_intent"] = "sell_to_close" if side == "long" else "buy_to_close"
@@ -4359,7 +4371,8 @@ class TradingViewWebhookEngine:
         log_event(self.logger, "velez_partial_stop_restore", result)
         return result
 
-    def _velez_partial_with_stop(self, position: dict, exit_qty: float, submit: Any, level: Optional[str] = None) -> Optional[str]:
+    def _velez_partial_with_stop(self, position: dict, exit_qty: float, submit: Any, level: Optional[str] = None,
+                                 client_order_id: Optional[str] = None) -> Optional[str]:
         """Submit a partial exit with the protective stop resized around it. The open stop covers every
         share: the broker would refuse the exit for want of free shares, or the stop would later sell more
         than the runner holds. So the position's protective stops (exit-side stops, read from the broker so
@@ -4393,7 +4406,7 @@ class TradingViewWebhookEngine:
         def remember(response: Optional[dict] = None) -> None:
             response = response if isinstance(response, dict) else {}
             self.journal.set_setting(resize_key, {
-                "order_id": response.get("id"), "client_order_id": response.get("client_order_id"),
+                "order_id": response.get("id"), "client_order_id": response.get("client_order_id") or client_order_id,
                 "full_qty": held, "exit_qty": exit_qty, "stop_price": stop_price, "level": level,
                 "position": self._velez_position_key(position),
                 "at": datetime.now(timezone.utc).isoformat(),
@@ -4406,12 +4419,17 @@ class TradingViewWebhookEngine:
             if stop_price is None or qty <= 0:
                 return None
             error = None
+            client_id = f"velez-runner-stop-{symbol.lower()}-{secrets.token_hex(6)}"  # one key for the retries
             for _ in range(2):
                 try:
-                    self._velez_place_stop(symbol, side, qty, stop_price)
+                    self._velez_place_stop(symbol, side, qty, stop_price, client_order_id=client_id)
                     return None
                 except Exception as exc:
                     error = str(exc)[:160]
+                    if self._velez_order_known(client_id) is not False:
+                        # Accepted despite the error, or the broker can't say: don't send a second stop.
+                        # The follow-up checks the coverage on the next pass.
+                        return None if self._velez_order_known(client_id) else error
             log_event(self.logger, "velez_partial_stop_replace_failed", {"symbol": symbol, "qty": qty, "stop_price": stop_price, "reason": error})
             self._notify_event(
                 key=f"velez-runner-stop:{symbol}",
@@ -4440,12 +4458,28 @@ class TradingViewWebhookEngine:
                 remember()
             raise RuntimeError(f"protective stop cancel failed: {failed}")
         if stop_price is not None:
-            remember()  # before the exit: a failure past this point is still followed up
+            remember()  # before the exit, with its client order id: a failure past this point is followed up
+        if level:
+            # Marked before the exit goes out, so a timeout can't lead to a second sale; the follow-up
+            # unmarks it if the exit ends without a share coming off.
+            self._record_partial_taken(symbol, level)
         try:
             response = submit()
-        except Exception:
-            place(held)
-            raise
+        except Exception as exc:
+            known = self._velez_order_known(client_order_id) if client_order_id else False
+            if known is False:
+                # Definitely not at the broker: the stop goes back for the whole position, the level unmarked.
+                if level:
+                    taken = self._partials_taken_for_symbol(symbol)
+                    taken.discard(level)
+                    self.journal.set_setting(f"partials_taken.{symbol.upper()}", json.dumps(sorted(taken)))
+                self.journal.set_setting(resize_key, None)
+                place(held)
+                raise
+            # Accepted despite the error, or the broker can't say: treated as sent. The runner gets its stop
+            # and the follow-up settles the rest (and unmarks the level if nothing came off).
+            log_event(self.logger, "velez_partial_submit_ambiguous", {"symbol": symbol, "client_order_id": client_order_id, "reason": str(exc)[:160]})
+            return place(held - exit_qty) or f"exit submission unconfirmed: {str(exc)[:120]}"
         if stop_price is not None:
             remember(response)
         return place(held - exit_qty)
@@ -4586,6 +4620,9 @@ class TradingViewWebhookEngine:
             new = round(factor * old)
             if 1 <= new <= 200 and abs(new / old - factor) < 1e-6:
                 return (new, old)
+        old = round(1.0 / factor) if factor > 0 else 0
+        if 20 < old <= 200 and abs(1.0 / old - factor) < 1e-9:
+            return (1, old)  # a reverse split such as 1-for-25 or 1-for-50
         return None
 
     @staticmethod
@@ -12067,6 +12104,7 @@ class TradingViewWebhookEngine:
                 if (
                     first_due and "first" not in partials_taken and not self._velez_partial_pending(symbol, open_orders, "2r")
                     and self._velez_partial_window_open(symbol)
+                    and not self.journal.get_setting(f"velez_partial_resize.{symbol.upper()}", None)
                 ):
                     first_pct = float(partials_cfg.get("first_pct", 0.5))
                     exit_qty = self._velez_partial_qty(position, first_pct)
@@ -12079,11 +12117,11 @@ class TradingViewWebhookEngine:
                             "client_order_id": f"velez-partial-1r-{symbol.lower()}-{secrets.token_hex(6)}",
                         }
                         try:
-                            stop_error = self._velez_partial_with_stop(position, exit_qty, level="first", submit=lambda: self.broker.submit_order_payload(partial_payload))
+                            stop_error = self._velez_partial_with_stop(position, exit_qty, level="first", client_order_id=partial_payload["client_order_id"], submit=lambda: self.broker.submit_order_payload(partial_payload))
                             self._record_partial_taken(symbol, "first")  # the exit went out: never sent twice
                             results.append({"action": "partial_first_r", "symbol": symbol, "pct": first_pct, "status": "submitted"}
                                            if stop_error is None else
-                                           {"action": "partial_first_r", "symbol": symbol, "pct": first_pct, "status": "failed", "error": f"runner stop not placed: {stop_error}"})
+                                           {"action": "partial_first_r", "symbol": symbol, "pct": first_pct, "status": "failed", "error": f"partial needs follow-up (runner stop not confirmed): {stop_error}"})
                             log_event(self.logger, "auto_partial_1r", {"symbol": symbol, "partial_r": partial_r, "exit_pct": first_pct})
                         except Exception as exc:
                             results.append({"action": "partial_first_r", "symbol": symbol, "status": "failed", "error": str(exc)})
@@ -12095,6 +12133,7 @@ class TradingViewWebhookEngine:
                     and ("first" in partials_taken or str(partials_cfg.get("trigger", "r_multiple")).lower() != "velez_profit_taking")
                     and not self._velez_partial_pending(symbol, open_orders, "1r")
                     and self._velez_partial_window_open(symbol)
+                    and not self.journal.get_setting(f"velez_partial_resize.{symbol.upper()}", None)
                 ):
                     second_pct = float(partials_cfg.get("second_pct", 0.25))
                     exit_qty = self._velez_partial_qty(position, second_pct)
@@ -12107,11 +12146,11 @@ class TradingViewWebhookEngine:
                             "client_order_id": f"velez-partial-2r-{symbol.lower()}-{secrets.token_hex(6)}",
                         }
                         try:
-                            stop_error = self._velez_partial_with_stop(position, exit_qty, level="second", submit=lambda: self.broker.submit_order_payload(partial_payload))
+                            stop_error = self._velez_partial_with_stop(position, exit_qty, level="second", client_order_id=partial_payload["client_order_id"], submit=lambda: self.broker.submit_order_payload(partial_payload))
                             self._record_partial_taken(symbol, "second")  # the exit went out: never sent twice
                             results.append({"action": "partial_second_r", "symbol": symbol, "pct": second_pct, "status": "submitted"}
                                            if stop_error is None else
-                                           {"action": "partial_second_r", "symbol": symbol, "pct": second_pct, "status": "failed", "error": f"runner stop not placed: {stop_error}"})
+                                           {"action": "partial_second_r", "symbol": symbol, "pct": second_pct, "status": "failed", "error": f"partial needs follow-up (runner stop not confirmed): {stop_error}"})
                             log_event(self.logger, "auto_partial_2r", {"symbol": symbol, "partial_r": partial_r, "exit_pct": second_pct})
                         except Exception as exc:
                             results.append({"action": "partial_second_r", "symbol": symbol, "status": "failed", "error": str(exc)})

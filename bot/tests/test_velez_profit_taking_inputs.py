@@ -1597,3 +1597,64 @@ def test_stop_moves_wait_while_a_partial_is_working(monkeypatch, tmp_path):
     before = len(broker.submitted)
     engine._auto_lifecycle_actions(positions=[position(1.5)], open_orders=[], guardrails=[])  # breakeven would fire
     assert not [o for o in broker.submitted[before:] if o.get("type") == "stop"]
+
+
+def test_a_timed_out_exit_the_broker_has_is_not_sold_again(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    broker.orders = [_stop("s1", "sell", "497")]
+
+    def timeout():
+        broker.orders = [{"id": "x1", "client_order_id": "velez-partial-1r-abc", "symbol": "SPY", "type": "market", "side": "sell", "status": "new"}]
+        raise TimeoutError("read timed out")
+
+    error = engine._velez_partial_with_stop(position(0.6), 50, timeout, level="first", client_order_id="velez-partial-1r-abc")
+    assert "unconfirmed" in error
+    assert "first" in engine._partials_taken_for_symbol("SPY")  # treated as sent: not sold twice
+    assert [o["qty"] for o in _runner_stops(broker)] == ["50"]
+    assert engine.journal.get_setting("velez_partial_resize.SPY", None)["client_order_id"] == "velez-partial-1r-abc"
+
+
+def test_a_refused_exit_unmarks_its_level_and_restores_the_stop(monkeypatch, tmp_path):
+    import pytest
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    broker.orders = [_stop("s1", "sell", "497")]
+
+    def refuse():
+        raise RuntimeError("insufficient qty")
+
+    with pytest.raises(RuntimeError):
+        engine._velez_partial_with_stop(position(0.6), 50, refuse, level="first", client_order_id="velez-partial-1r-def")
+    assert "first" not in engine._partials_taken_for_symbol("SPY")
+    assert [o["qty"] for o in _runner_stops(broker)] == ["100"]
+    assert not engine.journal.get_setting("velez_partial_resize.SPY", None)
+
+
+def test_a_timed_out_stop_the_broker_has_is_not_sent_twice(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    broker.orders = [_stop("s1", "sell", "497")]
+    sent = []
+
+    def place(symbol, side, qty, stop_price, client_order_id=None):
+        sent.append(client_order_id)
+        broker.orders = [{"id": "r1", "client_order_id": client_order_id, "symbol": "SPY", "type": "stop", "side": "sell", "qty": "50", "status": "new"}]
+        raise TimeoutError("read timed out")
+
+    monkeypatch.setattr(engine, "_velez_place_stop", place)
+    assert engine._velez_partial_with_stop(position(0.6), 50, lambda: {"id": "x1"}) is None
+    assert len(sent) == 1
+
+
+def test_no_new_partial_while_a_previous_one_is_followed_up(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    monkeypatch.setattr(engine, "_velez_profit_taking_verdict", lambda p: {"status": "take_partial"})
+    engine.journal.set_setting("velez_partial_resize.SPY", {"full_qty": 100, "exit_qty": 50, "stop_price": 497.0, "order_id": "x1"})
+    broker.orders = [{"id": "x1", "symbol": "SPY", "type": "market", "side": "sell", "status": "new"}]
+    engine._auto_lifecycle_actions(positions=[position(0.6)], open_orders=[], guardrails=[])
+    assert partial_orders(broker) == []
+
+
+def test_a_one_for_twenty_five_reverse_split_is_read():
+    from bot.webhook_server import TradingViewWebhookEngine
+    assert TradingViewWebhookEngine._velez_split_ratio(1 / 25) == (1, 25)
+    assert TradingViewWebhookEngine._velez_split_ratio(1 / 50) == (1, 50)
+    assert TradingViewWebhookEngine._velez_split_ratio(0.0371) is None
