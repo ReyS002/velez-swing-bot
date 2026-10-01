@@ -3741,12 +3741,34 @@ class TradingViewWebhookEngine:
             )
         return bars
 
+    @staticmethod
+    def _velez_rth_clip(bars: List[dict], session: List[dict], spacing: float) -> List[dict]:
+        """`bars` with any bar that starts before its day's open (it straddles the open, mixing in premarket
+        prints) rebuilt from the session feed's regular-session pieces; dropped when the feed lacks them."""
+        out = []
+        for b in bars:
+            start = velez_doctrine._local(b["t"])
+            if start is None:
+                continue
+            open_dt = datetime.combine(start.date(), velez_doctrine.SESSION_OPEN, tzinfo=start.tzinfo)
+            if start >= open_dt:
+                out.append(b)
+                continue
+            end = b["t"] + timedelta(seconds=spacing)
+            pieces = [p for p in session if open_dt <= p["t"] < end]
+            first = velez_doctrine._local(pieces[0]["t"]) if pieces else None
+            if first is None or first > open_dt + timedelta(minutes=5):
+                continue  # the open isn't in the feed: the bar's premarket part can't be separated
+            out.append({**b, "o": pieces[0]["o"], "h": max(p["h"] for p in pieces), "l": min(p["l"] for p in pieces)})
+        return out
+
     def _velez_yahoo_daily_bars(self, symbol: str) -> List[Bar]:
-        """Daily bars from Yahoo (~9 months, oldest first), explicitly split- and dividend-adjusted."""
+        """Daily bars from Yahoo (~9 months, oldest first), split-adjusted only: Yahoo's OHLC already carries
+        split adjustments, and dividend adjustment would read as a split against raw intraday closes."""
         import yfinance as yf
 
         def download(yahoo: str, _timeframe: str):
-            frame = yf.download(yahoo, period="9mo", interval="1d", auto_adjust=True, progress=False)
+            frame = yf.download(yahoo, period="9mo", interval="1d", auto_adjust=False, progress=False)
             if frame is not None and hasattr(frame.columns, "nlevels") and frame.columns.nlevels > 1:
                 frame.columns = frame.columns.get_level_values(0)
             return frame
@@ -3769,7 +3791,7 @@ class TradingViewWebhookEngine:
         Cached per symbol and New York trading date: completed days don't change during the
         session. Alpaca SIP first (completed days are past the free plan's 15-minute delay,
         and the full tape gives the true range), then the configured feed, both split-adjusted,
-        then Yahoo auto-adjusted. A failed or empty fetch is not cached, so the next call retries.
+        then Yahoo (split-adjusted). A failed or empty fetch is not cached, so the next call retries.
         """
         sym = str(symbol or "").upper().strip()
         if not sym:
@@ -4444,9 +4466,13 @@ class TradingViewWebhookEngine:
             return None
         closed_dicts = [velez_doctrine.bar_dict(bar) for bar in closed]
         daily = self._timeframe_seconds(timeframe) >= 86400
+        session: List[dict] = []
         if equity and not daily:
             # Pushes count in the regular session only: thin premarket / after-hours prints don't.
-            since = regular_session_bars(since, self._timeframe_seconds(timeframe))
+            spacing = self._timeframe_seconds(timeframe)
+            since = regular_session_bars(since, spacing)
+            session = self._velez_session_bars(symbol)
+            since = self._velez_rth_clip(since, session, spacing)
             if not since:
                 return None
         if equity and self._velez_split_in_hold(symbol, since, daily):
@@ -4455,7 +4481,6 @@ class TradingViewWebhookEngine:
         if equity and not daily:
             # The rolling window can lose the morning on short timeframes: add the full-session feed
             # (through the last closed bar) so the move's origin is the day's true low / high.
-            session = self._velez_session_bars(symbol)
             base = drop_premarket_bars(closed_dicts) if session_feed_covers_open(session, since[-1]["t"]) else closed_dicts
             merged = {b["t"]: b for b in base}
             last_end = since[-1]["t"] + timedelta(seconds=self._timeframe_seconds(timeframe))
@@ -4468,8 +4493,15 @@ class TradingViewWebhookEngine:
             ordered = sorted(merged.values(), key=lambda b: b["t"])
             entry_day = velez_doctrine._local(since[0]["t"]).date()
             if entry_day < velez_doctrine._local(since[-1]["t"]).date():
-                # Held overnight: the move began within the hold, before today's session.
-                origin_bars = [b for b in ordered if b["t"] >= since[0]["t"]]
+                # Held overnight: the move began within the hold, before today's session. Only regular-
+                # session prices count: the hold's RTH bars plus today's session pieces, not after-hours.
+                held = {b["t"]: b for b in since}
+                for b in session:
+                    if not since[0]["t"] <= b["t"] < last_end:
+                        continue
+                    cur = held.get(b["t"])
+                    held[b["t"]] = b if cur is None else {**cur, "h": max(cur["h"], b["h"]), "l": min(cur["l"], b["l"])}
+                origin_bars = sorted(held.values(), key=lambda b: b["t"])
             else:
                 origin_bars = session_overlap_bars(ordered)
         else:
@@ -11686,18 +11718,29 @@ class TradingViewWebhookEngine:
                 # A trailed stop's distance isn't a risk (entry 100, trail 100.10 reads 60R): without
                 # the initial risk, R-based partials wait.
                 partial_r = current_r if protective else None
-            if partials_cfg.get("enabled", True) and partial_r is not None and qty:
+            if partials_cfg.get("enabled", True) and qty:
                 partials_taken = self._partials_taken_for_symbol(symbol)
-                first_due = partial_r >= float(partials_cfg.get("first_r", 1.0)) and partial_r < float(partials_cfg.get("second_r", 2.0))
+                first_due = (
+                    partial_r is not None
+                    and float(partials_cfg.get("first_r", 1.0)) <= partial_r < float(partials_cfg.get("second_r", 2.0))
+                )
                 if str(partials_cfg.get("trigger", "r_multiple")).lower() == "velez_profit_taking":
                     # Rulebook 2026.10.6: the first partial comes off at the profit-taking verdict
                     # (3+ pushes, or the move past the daily / wide-day ATR), only while in profit.
                     # The fallback is eligible past second_r too: the first partial comes before the second.
-                    r_first_due = partial_r >= float(partials_cfg.get("first_r", 1.0))
+                    r_first_due = partial_r is not None and partial_r >= float(partials_cfg.get("first_r", 1.0))
                     first_due = False
+                    entry_now = self._velez_price(position, "entry_price")
+                    price_now = self._velez_price(position, "current_price")
+                    # In profit from entry and price: R can be unknown (no initial risk, stop trailed).
+                    in_profit = (
+                        (price_now > entry_now if side == "long" else price_now < entry_now)
+                        if entry_now is not None and price_now is not None
+                        else partial_r is not None and partial_r > 0
+                    )
                     # Still eligible past second_r: a trade that runs straight through 2R takes its
                     # first partial at the verdict too (the second, at 2R, waits for the next pass).
-                    if "first" not in partials_taken and partial_r > 0:
+                    if "first" not in partials_taken and in_profit:
                         verdict = self._velez_profit_taking_verdict(position)
                         if verdict is None or verdict.get("status") == "unknown":
                             # The rulebook's inputs can't be read for this position (no bar feed, too
@@ -11726,7 +11769,8 @@ class TradingViewWebhookEngine:
                         except Exception as exc:
                             results.append({"action": "partial_first_r", "symbol": symbol, "status": "failed", "error": str(exc)})
                 elif (
-                    partial_r >= float(partials_cfg.get("second_r", 2.0))
+                    partial_r is not None
+                    and partial_r >= float(partials_cfg.get("second_r", 2.0))
                     and "second" not in partials_taken
                     and not self._velez_partial_pending(symbol, open_orders, "1r")
                 ):

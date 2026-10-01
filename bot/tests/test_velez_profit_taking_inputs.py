@@ -727,7 +727,7 @@ def test_keyless_position_rejects_a_recent_record(monkeypatch, tmp_path):
     assert engine._velez_open_record(position(0.3)) is not None  # the same position as last pass
 
 
-def test_daily_rows_fall_back_to_yahoo_auto_adjusted(monkeypatch, tmp_path):
+def test_daily_rows_fall_back_to_yahoo_split_adjusted(monkeypatch, tmp_path):
     engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
     monkeypatch.setattr(engine.broker, "is_configured", lambda: True, raising=False)
     monkeypatch.setattr(engine, "_alpaca_data_request", lambda path, params: (_ for _ in ()).throw(RuntimeError("down")))
@@ -742,7 +742,7 @@ def test_daily_rows_fall_back_to_yahoo_auto_adjusted(monkeypatch, tmp_path):
 
     monkeypatch.setattr(yfinance, "download", fake_download)
     rows = engine._velez_daily_rows("SPY")
-    assert asked["auto_adjust"] is True and asked["period"] == "9mo"
+    assert asked["auto_adjust"] is False and asked["period"] == "9mo"  # split-adjusted, not dividend
     assert len(rows) == 90 and all(r["split_adjusted"] for r in rows)
 
 
@@ -1175,3 +1175,45 @@ def test_no_bounded_opening_decision_means_none(monkeypatch, tmp_path):
     old = {"symbol": "SPY", "side": "buy", "status": "submitted", "timestamp": "2026-05-01T14:00:00+00:00"}
     monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: [old])
     assert engine._velez_opening_decision("SPY", "long", {"transaction_time": "2026-06-03T14:30:00+00:00"}) is None
+
+
+def test_readable_verdict_takes_the_first_partial_without_r(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    monkeypatch.setattr(engine, "_velez_profit_taking_verdict", lambda p: {"status": "take_partial"})
+    decisions = [{"symbol": "SPY", "side": "buy", "status": "submitted", "timestamp": "2026-06-03T14:00:00+00:00"},
+                 {"symbol": "SPY", "side": "buy", "status": "submitted", "timestamp": "2026-06-04T14:00:00+00:00"}]
+    monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: decisions)
+    pos = position(60.0)  # no initial risk, stop trailed past entry: R is unknown
+    pos.update(entry_price=500.0, stop_price=500.10, current_price=506.0)
+    engine._auto_lifecycle_actions(positions=[pos], open_orders=[], guardrails=[])
+    # The verdict reads profit off entry and price: the first partial comes off, the 2R one doesn't.
+    assert [o["client_order_id"].split("-")[2] for o in partial_orders(broker)] == ["1r"]
+
+
+def test_the_bar_straddling_the_open_is_rebuilt_from_the_session_feed():
+    from bot.webhook_server import TradingViewWebhookEngine
+    hour = hour_bar(9, 100.0, 105.0, 95.0, 100.8)  # 09:00-10:00 ET with premarket extremes
+    pieces = [{"o": 100.2 + 0.1 * i, "h": 100.9, "l": 100.1, "c": 100.5, "v": 1.0,
+               "t": datetime(2026, 6, 3, 13, 30, tzinfo=timezone.utc) + timedelta(minutes=5 * i)} for i in range(6)]
+    clipped = TradingViewWebhookEngine._velez_rth_clip([hour], pieces, 3600)
+    assert [(b["o"], b["h"], b["l"]) for b in clipped] == [(100.2, 100.9, 100.1)]
+    # Without the open in the feed the premarket part can't be separated: the bar is left out.
+    assert TradingViewWebhookEngine._velez_rth_clip([hour], [], 3600) == []
+
+
+def test_overnight_origin_ignores_after_hours_prints(monkeypatch, tmp_path):
+    import bot.webhook_server as ws
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    yesterday = [(100.0, 100.4, 99.8, 100.2)] * 8 + [(100.2, 100.3, 90.0, 100.1)]  # 16:00 ET: after hours
+    pos = _two_day_hold(monkeypatch, engine, yesterday, [(100.4, 101.0, 100.3, 100.9), (100.9, 101.5, 100.8, 101.4)],
+                        adjusted_yesterday_close=100.2)
+    seen = {}
+    original = ws.velez_doctrine.move_origin
+
+    def capture(bars, side):
+        seen["low"] = min(b["l"] for b in bars)
+        return original(bars, side)
+
+    monkeypatch.setattr(ws.velez_doctrine, "move_origin", capture)
+    assert engine._velez_profit_taking_verdict(pos) is not None
+    assert seen["low"] >= 99.8
