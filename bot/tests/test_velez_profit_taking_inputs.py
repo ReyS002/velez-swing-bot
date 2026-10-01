@@ -1381,17 +1381,20 @@ def test_a_failed_stop_cancel_holds_the_partial(monkeypatch, tmp_path):
 
     monkeypatch.setattr(broker, "cancel_order", cancel)
     sent = []
+    pos = position(0.6)
     with pytest.raises(RuntimeError):
-        engine._velez_partial_with_stop(position(0.6), 50, lambda: sent.append(1))
+        engine._velez_partial_with_stop(pos, 50, lambda: sent.append(1))
     assert sent == []  # the exit never went out
-    assert [o["qty"] for o in _runner_stops(broker)] == ["60"]  # what was cancelled is put back
+    # The follow-up tops the stops back up: s2 still covers 40, so 60 more at the cancelled price.
+    assert engine._velez_reconcile_partial_stop(pos)["status"] == "submitted"
+    assert [(o["qty"], o["stop_price"]) for o in _runner_stops(broker)] == [("60", "496.00")]
 
 
 def test_a_runner_left_without_its_stop_is_a_failed_action(monkeypatch, tmp_path):
     engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
     monkeypatch.setattr(engine, "_velez_profit_taking_verdict", lambda p: {"status": "take_partial"})
     broker.orders = [_stop("s1", "sell", "497")]
-    monkeypatch.setattr(engine, "_submit_verified_protective_stop", lambda **kw: (_ for _ in ()).throw(RuntimeError("rejected")))
+    monkeypatch.setattr(engine, "_velez_place_stop", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("rejected")))
     alerts = []
     monkeypatch.setattr(engine, "_notify_event", lambda **kw: alerts.append(kw))
     actions = engine._auto_lifecycle_actions(positions=[position(0.6)], open_orders=[], guardrails=[])
@@ -1465,11 +1468,11 @@ def test_an_exit_that_never_fills_gets_its_full_stop_back(monkeypatch, tmp_path)
     # Still working: wait.
     broker.orders = [runner, {"id": "x1", "symbol": "SPY", "type": "market", "side": "sell", "status": "new"}]
     assert engine._velez_reconcile_partial_stop(pos) is None
-    # Rejected: the position is still 100, the runner stop covers 50 - the full stop goes back.
+    # Rejected: the position is still 100, the runner stop covers 50 - topped up by 50 at the same price.
     broker.orders = [runner]
     result = engine._velez_reconcile_partial_stop(pos)
-    assert result["status"] == "submitted" and "r1" in broker.canceled
-    assert [o["qty"] for o in _runner_stops(broker)] == ["50", "100"]
+    assert result["status"] == "submitted" and result["qty"] == 50
+    assert [(o["qty"], o["stop_price"]) for o in _runner_stops(broker)] == [("50", "497.00"), ("50", "497.00")]
     assert engine._velez_reconcile_partial_stop(pos) is None  # done
 
 
@@ -1477,6 +1480,7 @@ def test_a_filled_exit_clears_the_follow_up(monkeypatch, tmp_path):
     engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
     broker.orders = [_stop("s1", "sell", "497")]
     engine._velez_partial_with_stop(position(0.6), 50, lambda: {"id": "x1"})
+    broker.orders = [dict(_runner_stops(broker)[0], id="r1", status="new")]  # the runner covers the 50 left
     after = position(0.6)
     after["qty"] = "50"
     assert engine._velez_reconcile_partial_stop(after) is None
@@ -1498,3 +1502,36 @@ def test_a_failed_calendar_read_is_not_retried_for_every_bar(monkeypatch, tmp_pa
     for _ in range(50):
         assert engine._velez_session_close(day, default) == default
     assert len(calls) == 1
+
+
+def test_a_stop_still_pending_cancellation_holds_the_exit(monkeypatch, tmp_path):
+    import pytest
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    monkeypatch.setattr(broker, "cancel_order", lambda order_id: broker.canceled.append(order_id) or {})  # acknowledged only
+    broker.orders = [_stop("s1", "sell", "497")]
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    sent = []
+    with pytest.raises(RuntimeError):
+        engine._velez_partial_with_stop(position(0.6), 50, lambda: sent.append(1))
+    assert sent == []  # still holding the shares: no exit
+
+
+def test_a_partly_filled_exit_gets_the_rest_covered(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    broker.orders = [_stop("s1", "sell", "497")]
+    engine._velez_partial_with_stop(position(0.6), 50, lambda: {"id": "x1"})
+    broker.orders = [dict(_runner_stops(broker)[0], id="r1", status="new")]  # runner: 50; exit ended after 20
+    after = position(0.6)
+    after["qty"] = "80"
+    assert engine._velez_reconcile_partial_stop(after)["qty"] == 30
+
+
+def test_a_bar_past_the_close_is_rebuilt_from_session_pieces():
+    from bot.webhook_server import TradingViewWebhookEngine
+    clip = TradingViewWebhookEngine._velez_rth_clip
+    four = {"o": 100.0, "h": 104.0, "l": 96.0, "c": 103.0, "v": 1.0, "t": datetime(2026, 6, 3, 17, 0, tzinfo=timezone.utc)}  # 13:00-17:00 ET
+    pieces = [{"o": 100.0 + i * 0.01, "h": 101.0, "l": 99.5, "c": 100.5, "v": 1.0,
+               "t": datetime(2026, 6, 3, 17, 0, tzinfo=timezone.utc) + timedelta(minutes=5 * i)} for i in range(36)]  # 13:00-16:00
+    rebuilt = clip([four], pieces, 4 * 3600)
+    assert [(b["h"], b["l"], b["c"]) for b in rebuilt] == [(101.0, 99.5, 100.5)]  # no after-hours 104 / 96
+    assert clip([four], pieces[:30], 4 * 3600) == []  # the last half hour missing: can't be separated
