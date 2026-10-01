@@ -337,3 +337,30 @@ def test_profit_taking_origin_uses_the_full_session_feed(monkeypatch, tmp_path):
     verdict = engine._velez_profit_taking_verdict(pos)
     assert verdict["origin"] == 99.6
     assert verdict["move_from_origin"] == 2.2
+
+
+def test_r_fallback_first_partial_is_eligible_past_second_r(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    monkeypatch.setattr(engine, "_velez_profit_taking_verdict", lambda p: None)  # e.g. forex: no feed
+    engine._auto_lifecycle_actions(positions=[position(2.4)], open_orders=[], guardrails=[])
+    engine._auto_lifecycle_actions(positions=[position(2.4)], open_orders=[], guardrails=[])
+    assert [o["client_order_id"].split("-")[2] for o in partial_orders(broker)] == ["1r", "2r"]
+
+
+def test_initial_risk_is_recorded_once_per_position(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    opening = {"side": "buy", "transaction_time": "2026-06-03T14:30:00+00:00"}
+    first = position(0.4)
+    first.update(entry_fill=opening, stop_price=495.0, current_price=502.0)  # risk 5.0
+    engine._velez_record_initial_risk(first)
+    # Later: a pyramid add (its decision has a tighter stop), and the stop is at breakeven.
+    later = position(None)
+    later.update(entry_fill=opening, stop_price=500.0, current_price=505.0)
+    later["linked_decision"]["stop_price"] = 503.0
+    engine._velez_record_initial_risk(later)  # breakeven stop: nothing new recorded
+    assert engine._velez_initial_r(later) == 1.0  # (505 - 500) / 5.0, not / 3.0 from the add
+    # A new position (a different opening fill) gets its own risk.
+    fresh = position(0.2)
+    fresh.update(entry_fill={"side": "buy", "transaction_time": "2026-06-04T14:30:00+00:00"}, stop_price=498.0)
+    engine._velez_record_initial_risk(fresh)
+    assert engine._velez_position_key(fresh) != engine._velez_position_key(first)

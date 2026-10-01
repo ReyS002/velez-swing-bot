@@ -3815,15 +3815,41 @@ class TradingViewWebhookEngine:
         self._velez_session_cache[sym] = (now, rows)
         return rows
 
-    def _velez_initial_r(self, position: dict) -> Optional[float]:
-        """Open R against the initial journaled stop (the current stop may already sit at entry)."""
+    def _velez_position_key(self, position: dict) -> Optional[str]:
+        """A stable id for the open position: its opening fill (adds and exits don't change it)."""
+        fill = position.get("entry_fill") or {}
+        opened = fill.get("transaction_time") or fill.get("filled_at") or fill.get("id")
+        symbol = str(position.get("symbol") or "").upper()
+        return f"velez_initial_risk.{symbol}.{opened}" if symbol and opened else None
+
+    def _velez_record_initial_risk(self, position: dict) -> None:
+        """Remember the position's risk per unit the first time it is seen with a real stop, so R stays
+        measurable after the stop moves to breakeven (and isn't read off a later add's decision)."""
+        key = self._velez_position_key(position)
+        if key is None or self.journal.get_setting(key, None) is not None:
+            return
         entry = self._float(position.get("entry_price"))
-        stop = self._float((position.get("linked_decision") or {}).get("stop_price"))
+        stop = self._float(position.get("stop_price"))
+        if entry is None or stop is None or abs(entry - stop) <= 0:
+            return
+        self.journal.set_setting(key, abs(entry - stop))
+
+    def _velez_initial_r(self, position: dict) -> Optional[float]:
+        """Open R against the position's initial risk: the risk recorded when it was first seen (keyed by
+        its opening fill), else the journaled decision's stop. The current stop may already sit at entry."""
+        entry = self._float(position.get("entry_price"))
         price = self._float(position.get("current_price"))
-        if entry is None or stop is None or price is None or abs(entry - stop) <= 0:
+        if entry is None or price is None:
+            return None
+        key = self._velez_position_key(position)
+        risk = self._float(self.journal.get_setting(key, None)) if key else None
+        if not risk:
+            stop = self._float((position.get("linked_decision") or {}).get("stop_price"))
+            risk = abs(entry - stop) if stop is not None else None
+        if not risk or risk <= 0:
             return None
         direction = 1.0 if str(position.get("side") or "long").lower() == "long" else -1.0
-        return (price - entry) * direction / abs(entry - stop)
+        return (price - entry) * direction / risk
 
     def _velez_partial_qty(self, position: dict, pct: float) -> float:
         """Quantity for a partial exit: whole units for stocks and futures, 8 decimals for crypto,
@@ -11142,6 +11168,7 @@ class TradingViewWebhookEngine:
             partials_cfg = (strategy_cfg.get("exits", {}) or {}).get("partials_auto_execute") or strategy_cfg.get("partials_auto_execute") or {}
             # After the stop moves to breakeven, R from the current stop is undefined: measure it
             # against the initial (journaled) stop so later partials still fire.
+            self._velez_record_initial_risk(position)
             partial_r = current_r if current_r is not None else self._velez_initial_r(position)
             if partials_cfg.get("enabled", True) and partial_r is not None and qty:
                 partials_taken = self._partials_taken_for_symbol(symbol)
@@ -11149,7 +11176,9 @@ class TradingViewWebhookEngine:
                 if str(partials_cfg.get("trigger", "r_multiple")).lower() == "velez_profit_taking":
                     # Rulebook 2026.10.6: the first partial comes off at the profit-taking verdict
                     # (3+ pushes, or the move past the daily / wide-day ATR), only while in profit.
-                    r_first_due, first_due = first_due, False
+                    # The fallback is eligible past second_r too: the first partial comes before the second.
+                    r_first_due = partial_r >= float(partials_cfg.get("first_r", 1.0))
+                    first_due = False
                     # Still eligible past second_r: a trade that runs straight through 2R takes its
                     # first partial at the verdict too (the second, at 2R, waits for the next pass).
                     if "first" not in partials_taken and partial_r > 0:
