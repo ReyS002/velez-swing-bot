@@ -1420,3 +1420,81 @@ def test_the_open_record_is_kept_without_an_initial_risk(monkeypatch, tmp_path):
     record = engine._velez_open_record(pos)
     assert record is not None and record["risk"] is None and record["opened"] == "2026-06-03T14:30:00+00:00"
     assert engine._velez_recorded_risk(pos) is None
+
+
+def test_a_stop_without_a_readable_price_is_never_cancelled(monkeypatch, tmp_path):
+    import pytest
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    trailing = {"id": "t1", "symbol": "SPY", "type": "trailing_stop", "side": "sell", "qty": "100", "trail_percent": "2", "status": "new"}
+    broker.orders = [trailing]
+    sent = []
+    with pytest.raises(RuntimeError):
+        engine._velez_partial_with_stop(position(0.6), 50, lambda: sent.append(1))
+    assert broker.canceled == [] and sent == []
+
+
+def test_a_sub_cent_stop_is_never_cancelled(monkeypatch, tmp_path):
+    import pytest
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    broker.orders = [_stop("s1", "sell", "0.000009")]
+    with pytest.raises(RuntimeError):
+        engine._velez_partial_with_stop(position(0.6), 50, lambda: None)
+    assert broker.canceled == []
+
+
+def test_equity_partials_wait_for_the_regular_session(monkeypatch, tmp_path):
+    import bot.webhook_server as ws
+    from bot.webhook_server import TradingViewWebhookEngine
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    window = lambda now: TradingViewWebhookEngine._velez_partial_window_open(engine, "SPY") if not monkeypatch.setattr(
+        ws, "datetime", type("FrozenDatetime", (datetime,), {"now": staticmethod(lambda tz=None: now if tz is None else now.astimezone(tz))})) else None
+    monkeypatch.setattr(engine, "_velez_session_close", lambda day, default: default)
+    assert window(datetime(2026, 6, 3, 15, 0, tzinfo=timezone.utc)) is True    # Wed 11:00 ET
+    assert window(datetime(2026, 6, 3, 12, 0, tzinfo=timezone.utc)) is False   # 08:00 ET premarket
+    assert window(datetime(2026, 6, 3, 19, 58, tzinfo=timezone.utc)) is False  # 15:58 ET: too close to the bell
+    assert window(datetime(2026, 6, 6, 15, 0, tzinfo=timezone.utc)) is False   # Saturday
+
+
+def test_an_exit_that_never_fills_gets_its_full_stop_back(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    broker.orders = [_stop("s1", "sell", "497")]
+    pos = position(0.6)
+    engine._velez_partial_with_stop(pos, 50, lambda: {"id": "x1", "client_order_id": "velez-partial-1r-x"})
+    assert [o["qty"] for o in _runner_stops(broker)] == ["50"]
+    runner = dict(_runner_stops(broker)[0], id="r1", status="new", stop_price="497")
+    # Still working: wait.
+    broker.orders = [runner, {"id": "x1", "symbol": "SPY", "type": "market", "side": "sell", "status": "new"}]
+    assert engine._velez_reconcile_partial_stop(pos) is None
+    # Rejected: the position is still 100, the runner stop covers 50 - the full stop goes back.
+    broker.orders = [runner]
+    result = engine._velez_reconcile_partial_stop(pos)
+    assert result["status"] == "submitted" and "r1" in broker.canceled
+    assert [o["qty"] for o in _runner_stops(broker)] == ["50", "100"]
+    assert engine._velez_reconcile_partial_stop(pos) is None  # done
+
+
+def test_a_filled_exit_clears_the_follow_up(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    broker.orders = [_stop("s1", "sell", "497")]
+    engine._velez_partial_with_stop(position(0.6), 50, lambda: {"id": "x1"})
+    after = position(0.6)
+    after["qty"] = "50"
+    assert engine._velez_reconcile_partial_stop(after) is None
+    assert not engine.journal.get_setting("velez_partial_resize.SPY", None)
+
+
+def test_a_failed_calendar_read_is_not_retried_for_every_bar(monkeypatch, tmp_path):
+    from zoneinfo import ZoneInfo
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    calls = []
+
+    def calendar(**kw):
+        calls.append(kw)
+        raise RuntimeError("calendar down")
+
+    broker.get_calendar_raw = calendar
+    day = datetime(2026, 6, 3).date()
+    default = datetime(2026, 6, 3, 16, 0, tzinfo=ZoneInfo("America/New_York"))
+    for _ in range(50):
+        assert engine._velez_session_close(day, default) == default
+    assert len(calls) == 1

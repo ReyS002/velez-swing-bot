@@ -4215,6 +4215,83 @@ class TradingViewWebhookEngine:
         direction = 1.0 if str(position.get("side") or "long").lower() == "long" else -1.0
         return (price - entry) * direction / risk
 
+    def _velez_partial_window_open(self, symbol: str) -> bool:
+        """Whether a market partial fills at once: always for crypto and futures; for equities only in the
+        regular session of a trading day (outside it a market exit queues, and the stop resized around it
+        would leave its shares unprotected until the open)."""
+        if self._quote_asset_type(symbol) not in {"equity", "stock", "etf"}:
+            return True
+        tz = ZoneInfo(velez_doctrine.MARKET_TZ)
+        now = datetime.now(tz)
+        if now.weekday() >= 5:
+            return False
+        today = now.date()
+        open_dt = datetime.combine(today, velez_doctrine.SESSION_OPEN, tzinfo=tz)
+        close = self._velez_session_close(today, datetime.combine(today, velez_doctrine.SESSION_CLOSE, tzinfo=tz))
+        if today in self.__dict__.get("_velez_closed_days", set()):
+            return False
+        # A few minutes' margin at the bell: the exit must fill before the session ends.
+        return open_dt <= now < close - timedelta(minutes=5)
+
+    def _velez_exit_stops(self, symbol: str, side: str, orders: List[dict]) -> List[dict]:
+        """The position's open protective stops: exit-side stop orders (bracket legs included)."""
+        exit_side = "sell" if side == "long" else "buy"
+        stops = []
+        for order in orders or []:
+            for leg in [order, *(order.get("legs") or [])]:
+                if self._claim_symbol_key(leg.get("symbol")) != self._claim_symbol_key(symbol):
+                    continue
+                if str(leg.get("type") or "").lower() not in {"stop", "stop_limit", "trailing_stop"}:
+                    continue
+                if str(leg.get("side") or "").lower() != exit_side:
+                    continue  # a stop-entry or stop-add order on the entry side isn't protection
+                if str(leg.get("status") or "").lower() in {"pending_cancel", "canceled", "cancelled", "filled"}:
+                    continue
+                stops.append(leg)
+        return stops
+
+    def _velez_reconcile_partial_stop(self, position: dict) -> Optional[dict]:
+        """Follow up a partial whose stop was resized: once the exit fills, nothing to do; while it's still
+        working, wait; if it ended without filling (rejected, cancelled, expired), the runner stop covers
+        too little, so the stop is put back for what is actually held."""
+        symbol = str(position.get("symbol") or "").upper()
+        key = f"velez_partial_resize.{symbol}"
+        pending = self.journal.get_setting(key, None)
+        if not isinstance(pending, dict) or not pending.get("full_qty"):
+            return None  # nothing pending (a cleared setting reads back as {})
+        held = self._position_qty_number(position)
+        full = self._float(pending.get("full_qty")) or 0.0
+        exit_qty = self._float(pending.get("exit_qty")) or 0.0
+        if held <= 0 or held <= full - exit_qty + 1e-9:
+            self.journal.set_setting(key, None)  # the exit filled (or the position closed)
+            return None
+        try:
+            orders = self.broker.get_orders_raw(status="open", limit=100, direction="desc", nested=True)
+        except Exception:
+            return None  # can't tell yet: next pass
+        ids = {str(pending.get("order_id") or ""), str(pending.get("client_order_id") or "")} - {""}
+        if any(str(o.get("id") or "") in ids or str(o.get("client_order_id") or "") in ids for o in orders or []):
+            return None  # still working
+        side = str(position.get("side") or "long").lower()
+        stop_price = self._float(pending.get("stop_price"))
+        result = {"action": "velez_partial_stop_restore", "symbol": symbol, "qty": held, "stop_price": stop_price}
+        try:
+            for leg in self._velez_exit_stops(symbol, side, orders):
+                self.broker.cancel_order(str(leg.get("id") or ""))
+            self._submit_verified_protective_stop(
+                symbol=symbol,
+                qty=self._format_qty(held),
+                entry_side="buy" if side == "long" else "sell",
+                stop_price=stop_price,
+                client_order_id=f"velez-runner-stop-{symbol.lower()}-{secrets.token_hex(6)}",
+            )
+            result["status"] = "submitted"
+            self.journal.set_setting(key, None)
+        except Exception as exc:
+            result.update(status="failed", error=str(exc)[:160])  # retried next pass
+        log_event(self.logger, "velez_partial_stop_restore", result)
+        return result
+
     def _velez_partial_with_stop(self, position: dict, exit_qty: float, submit: Any) -> Optional[str]:
         """Submit a partial exit with the protective stop resized around it. The open stop covers every
         share: the broker would refuse the exit for want of free shares, or the stop would later sell more
@@ -4229,25 +4306,19 @@ class TradingViewWebhookEngine:
         """
         symbol = str(position.get("symbol") or "")
         side = str(position.get("side") or "long").lower()
-        exit_side = "sell" if side == "long" else "buy"
         held = self._position_qty_number(position)
         try:
             orders = self.broker.get_orders_raw(status="open", limit=100, direction="desc", nested=True)
         except Exception:
             orders = position.get("open_orders") or []
-        stops = []
-        for order in orders or []:
-            for leg in [order, *(order.get("legs") or [])]:
-                if self._claim_symbol_key(leg.get("symbol")) != self._claim_symbol_key(symbol):
-                    continue
-                if str(leg.get("type") or "").lower() not in {"stop", "stop_limit", "trailing_stop"}:
-                    continue
-                if str(leg.get("side") or "").lower() != exit_side:
-                    continue  # a stop-entry or stop-add order on the entry side isn't protection
-                if str(leg.get("status") or "").lower() in {"pending_cancel", "canceled", "cancelled", "filled"}:
-                    continue
-                stops.append(leg)
-        prices = [p for p in (self._float(leg.get("stop_price")) for leg in stops) if p]
+        stops = self._velez_exit_stops(symbol, side, orders)
+        prices = [self._float(leg.get("stop_price")) for leg in stops]
+        # Checked before anything is cancelled: the replacement must be placeable at the same price.
+        if any(not p for p in prices):
+            # e.g. a trailing stop reported without its current stop price: it can't be re-placed.
+            raise RuntimeError("a protective stop has no readable stop price: partial skipped")
+        if any(abs(round(p, 2) - p) > 1e-9 for p in prices):
+            raise RuntimeError("a protective stop price needs more than 2 decimals: partial skipped")
         stop_price = (max(prices) if side == "long" else min(prices)) if prices else None
 
         def place(qty: float) -> Optional[str]:
@@ -4291,10 +4362,18 @@ class TradingViewWebhookEngine:
             place(min(cancelled_qty, held))
             raise RuntimeError(f"protective stop cancel failed: {failed}")
         try:
-            submit()
+            response = submit()
         except Exception:
             place(held)
             raise
+        if stop_price is not None:
+            # The exit may not have filled yet: followed up each pass until it does (or the stop goes back).
+            response = response if isinstance(response, dict) else {}
+            self.journal.set_setting(f"velez_partial_resize.{symbol.upper()}", {
+                "order_id": response.get("id"), "client_order_id": response.get("client_order_id"),
+                "full_qty": held, "exit_qty": exit_qty, "stop_price": stop_price,
+                "at": datetime.now(timezone.utc).isoformat(),
+            })
         return place(held - exit_qty)
 
     def _velez_partial_qty(self, position: dict, pct: float) -> float:
@@ -4439,6 +4518,9 @@ class TradingViewWebhookEngine:
         cache = self.__dict__.setdefault("_velez_close_cache", {})
         if day in cache:
             return cache[day]
+        failed = self.__dict__.setdefault("_velez_close_failed", {})
+        if day in failed and datetime.now(timezone.utc) < failed[day]:
+            return default  # the calendar just failed: don't ask again for every bar
         close = default
         if self.broker.is_configured() and hasattr(self.broker, "get_calendar_raw"):
             try:
@@ -4449,7 +4531,10 @@ class TradingViewWebhookEngine:
                     close = default.replace(hour=hour, minute=minute)
             except Exception as exc:
                 log_event(self.logger, "velez_calendar_failed", {"day": day.isoformat(), "reason": str(exc)[:160]})
-                return default  # not cached: retried next pass
+                failed[day] = datetime.now(timezone.utc) + timedelta(minutes=5)  # retried after that
+                return default
+            if not rows or row is None:
+                self.__dict__.setdefault("_velez_closed_days", set()).add(day)  # a holiday: no session
         if len(cache) > 32:
             cache.clear()
         cache[day] = close
@@ -11831,6 +11916,9 @@ class TradingViewWebhookEngine:
             partials_cfg = (strategy_cfg.get("exits", {}) or {}).get("partials_auto_execute") or strategy_cfg.get("partials_auto_execute") or {}
             # After the stop moves to breakeven, R from the current stop is undefined: measure it
             # against the initial (journaled) stop so later partials still fire.
+            restored = self._velez_reconcile_partial_stop(position)
+            if restored is not None:
+                results.append(restored)
             self._velez_record_initial_risk(position)
             initial_r = self._velez_initial_r(position)
             partial_r = initial_r
@@ -11876,7 +11964,10 @@ class TradingViewWebhookEngine:
                             first_due = verdict.get("status") in {"take_partial", "take_profits"}
                         if first_due:
                             log_event(self.logger, "velez_profit_taking_verdict", {"symbol": symbol, "partial_r": partial_r, "verdict": verdict})
-                if first_due and "first" not in partials_taken and not self._velez_partial_pending(symbol, open_orders, "2r"):
+                if (
+                    first_due and "first" not in partials_taken and not self._velez_partial_pending(symbol, open_orders, "2r")
+                    and self._velez_partial_window_open(symbol)
+                ):
                     first_pct = float(partials_cfg.get("first_pct", 0.5))
                     exit_qty = self._velez_partial_qty(position, first_pct)
                     if exit_qty > 0:
@@ -11903,6 +11994,7 @@ class TradingViewWebhookEngine:
                     # With the rulebook trigger the first partial comes first, at its verdict.
                     and ("first" in partials_taken or str(partials_cfg.get("trigger", "r_multiple")).lower() != "velez_profit_taking")
                     and not self._velez_partial_pending(symbol, open_orders, "1r")
+                    and self._velez_partial_window_open(symbol)
                 ):
                     second_pct = float(partials_cfg.get("second_pct", 0.25))
                     exit_qty = self._velez_partial_qty(position, second_pct)

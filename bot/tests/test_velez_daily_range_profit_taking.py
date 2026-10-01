@@ -142,6 +142,7 @@ def lifecycle_engine(monkeypatch, tmp_path, trigger):
     broker = FakeBroker()
     engine = TradingViewWebhookEngine(cfg, broker=broker)
     monkeypatch.setattr(engine, "_velez_live_management", lambda position: None)
+    monkeypatch.setattr(engine, "_velez_partial_window_open", lambda symbol: True)  # tests run at any hour
     return engine, broker
 
 
