@@ -147,6 +147,11 @@ strategy:
     minutes_before_close: 15
   partials_auto_execute:
     enabled: true
+    # First partial trigger: r_multiple (at first_r) or velez_profit_taking (rulebook 2026.10.6:
+    # 3+ pushes since entry, or the move past the daily / wide-day ATR; only while in profit).
+    # The swarm backtest: half off at this verdict with the runner at breakeven kept the profit
+    # at a higher profit factor and ~40% less drawdown. Second partial stays at second_r.
+    trigger: velez_profit_taking
     first_r: 1.0
     first_pct: 0.5
     second_r: 2.0
@@ -332,6 +337,10 @@ velez_strategy:
     session_windows: false  # daily-bar bot: the intraday session windows don't apply
     market_bias: true
     market_indexes: [SPY, QQQ]
+    # Rulebook 2026.10.5 daily range used: off here. On daily bars the signal bar is the day
+    # itself, so "today's move" would veto the very elephants this bot trades.
+    daily_range: false
+    range_block: 1.0
     # Velez management: 1R -> breakeven, bar-by-bar trail, 3-bar rule.
     exits: true        # backtest / replay engine
     live_exits: true   # live lifecycle (still gated by VELEZ_LIFECYCLE_AUTO_EXECUTE)

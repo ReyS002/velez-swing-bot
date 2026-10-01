@@ -25,7 +25,7 @@ velez-swing-bot, bull-pilot, bull-swarm) vendor it byte-for-byte as
 from __future__ import annotations
 
 import json
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Iterable, Optional
 
 try:
@@ -33,7 +33,7 @@ try:
 except Exception:  # pragma: no cover
     ZoneInfo = None
 
-DOCTRINE_VERSION = "2026.10.4"
+DOCTRINE_VERSION = "2026.10.6"
 
 # ── Defaults (mirror bot/config.yaml → velez_strategy where one exists) ──
 
@@ -65,6 +65,20 @@ NRB_LOOKBACK = 7
 # Three-finger spread: distance from the 20 SMA in ATRs of the chart being traded.
 TFS_CAUTION_ATR = 2.0
 TFS_BLOCK_ATR = 3.0
+# Daily range used: how much of the stock's daily ATR (14 completed days) today's
+# move has already covered in the trade's direction. Velez: don't buy a stock
+# that has already made its move for the day. Starting points -- backtest first.
+DAILY_ATR_PERIOD = 14
+RANGE_USED_CAUTION = 0.8
+RANGE_USED_BLOCK = 1.0
+# Profit taking by counting and measuring (Velez, "when and how to cover"): three or more pushes
+# after entry earn the right to take profits; a move from its origin past the daily ATR is near
+# its end, past the wide-range-day ATR a reversal is close. The wide-day ATR is the average true
+# range of the stock's biggest days (top 20% of the last 60 completed days). A gap at the open
+# beyond the wide-day ATR is not a buy (not a short, for a gap down). Starting points -- backtest first.
+PROFIT_PUSHES = 3
+WIDE_DAY_LOOKBACK = 60
+WIDE_DAY_TOP_PCT = 0.2
 MIDDAY_START = time(11, 30)
 MIDDAY_END = time(13, 30)
 SESSION_OPEN = time(9, 30)
@@ -489,6 +503,8 @@ def entry_gate(
     extension_side: Optional[str] = None,
     decision_time: Optional[datetime] = None,
     market_bias: Optional[str] = None,
+    range_used: Optional[float] = None,
+    gap_wide_atr: Optional[float] = None,
 ) -> dict[str, Any]:
     """The hard Velez rules every bot applies before an entry. Returns {allowed, reasons, family}.
 
@@ -503,6 +519,13 @@ def entry_gate(
     With `market_bias` ("long"/"short"/"none" from market_bias()), trade with
     the market: no trend entries against it or when it has no side, and no
     reversal against it unless the stock is at its 200.
+
+    With `range_used` (daily ATRs already moved in the trade's direction today,
+    from daily_range_used()), no trend entry once the day's move is made.
+
+    With `gap_wide_atr` (today's opening gap in the trade's direction, in wide-day
+    ATRs, from gap_vs_atr(); 0 or negative for a gap against the trade), no trend
+    entry on a gap past a big day's whole range.
     """
     long = _norm_side(side) == "long"
     family = play_family(play, metadata)
@@ -534,6 +557,10 @@ def entry_gate(
                 reasons.append("market_no_side")
         elif market_bias != wanted and not (family == "reversal" and near_200):
             reasons.append("against_market")
+    if range_used is not None and family == "continuation" and range_used >= RANGE_USED_BLOCK:
+        reasons.append("daily_range_exhausted")
+    if gap_wide_atr is not None and family == "continuation" and gap_wide_atr >= 1.0:
+        reasons.append("gap_beyond_wide_day_atr")
     return {"allowed": not reasons, "reasons": reasons, "family": family}
 
 
@@ -576,6 +603,237 @@ def three_finger_spread(
     if with_stretch and extension >= TFS_CAUTION_ATR:
         return {"status": "caution", "reason": f"Stretched {extension} ATR from the 20; wait for a pullback toward it."}
     return {"status": "ok", "reason": "Not stretched in the trade's direction."}
+
+
+def daily_range_used(
+    daily_atr: Optional[float],
+    day_high: Optional[float],
+    day_low: Optional[float],
+    price: Optional[float],
+    side: Optional[str] = None,
+) -> dict[str, Any]:
+    """How much of the daily ATR today's move has used (1.0 = a full average day).
+
+    `used_in_direction` is the move from today's low (longs) or high (shorts)
+    to `price`, in daily ATRs. Continuation entries at RANGE_USED_BLOCK or more
+    are chasing a stock that has already made its move; reversals are exempt.
+    """
+    if not daily_atr or daily_atr <= 0 or None in (day_high, day_low, price) or day_high < day_low:
+        return {"status": "unknown", "reason": "Need the daily ATR and today's high, low and price."}
+    up, down = (price - day_low) / daily_atr, (day_high - price) / daily_atr
+    out: dict[str, Any] = {
+        "daily_atr": _r(daily_atr),
+        "range_used": _r((day_high - day_low) / daily_atr, 2),
+        "up_from_low": _r(up, 2),
+        "down_from_high": _r(down, 2),
+    }
+    if side is None:
+        out.update(status="ok", reason=f"Today's range is {out['range_used']} daily ATRs.")
+        return out
+    long = _norm_side(side) == "long"
+    raw = up if long else down  # thresholds and room use the unrounded ratio
+    used = _r(raw, 2)
+    out["used_in_direction"] = used
+    out["used_in_direction_raw"] = raw
+    out["room_left"] = _r(max(0.0, 1.0 - raw) * daily_atr)
+    if raw >= RANGE_USED_BLOCK:
+        out.update(status="block", reason=f"Already moved {used} daily ATRs {'up' if long else 'down'} today: the move is made, don't chase it.")
+    elif raw >= RANGE_USED_CAUTION:
+        out.update(status="caution", reason=f"{used} daily ATRs used {'up' if long else 'down'} today; little room left.")
+    else:
+        out.update(status="ok", reason=f"{used} daily ATRs used in the trade's direction; room to run.")
+    return out
+
+
+def session_bars(bars: list[dict[str, Any]], as_of: Optional[datetime] = None) -> list[dict[str, Any]]:
+    """Today's regular-session bars from intraday bars, up to `as_of` (default: the last bar)."""
+    stamps = [b for b in bars if b.get("t") is not None]
+    if not stamps:
+        return []
+    last = _local(as_of or stamps[-1]["t"])
+    return [
+        b for b in stamps
+        if (local := _local(b["t"])) is not None and local.date() == last.date()
+        and SESSION_OPEN <= local.time() < SESSION_CLOSE and local <= last
+    ]
+
+
+def session_high_low(bars: list[dict[str, Any]], as_of: Optional[datetime] = None) -> tuple[Optional[float], Optional[float]]:
+    """Today's regular-session high and low from intraday bars, up to `as_of` (default: the last bar)."""
+    today = session_bars(bars, as_of)
+    if not today:
+        return None, None
+    return max(b["h"] for b in today), min(b["l"] for b in today)
+
+
+def daily_bar_date(ts: datetime) -> Optional[date]:
+    """The trading date a daily bar is labeled with.
+
+    Feeds label daily bars either at midnight UTC or at midnight New York time
+    (04:00/05:00 UTC); both mean the same calendar day, so a midnight-UTC label
+    is read as its UTC date rather than shifted back into the prior day.
+    """
+    if ts is None:
+        return None
+    utc = ts.astimezone(timezone.utc) if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+    if (utc.hour, utc.minute, utc.second) == (0, 0, 0):
+        return utc.date()
+    local = _local(ts)
+    return local.date() if local is not None else None
+
+
+def true_ranges(bars: list[dict[str, Any]]) -> list[float]:
+    """True range of each bar after the first (high-low widened by the prior close)."""
+    return [
+        max(cur["h"] - cur["l"], abs(cur["h"] - prev["c"]), abs(cur["l"] - prev["c"]))
+        for prev, cur in zip(bars[:-1], bars[1:])
+    ]
+
+
+def wide_day_atr(
+    daily_bars: list[dict[str, Any]],
+    lookback: int = WIDE_DAY_LOOKBACK,
+    top_pct: float = WIDE_DAY_TOP_PCT,
+) -> Optional[float]:
+    """The stock's average true range on its big days: the mean of the top `top_pct` true ranges over
+    the last `lookback` completed days (Velez's "average true range on a wide-range day")."""
+    ranges = true_ranges(daily_bars[-(lookback + 1):])
+    if len(ranges) < lookback:
+        return None  # a full window only: a short sample's "biggest days" aren't the stock's big days
+    top = sorted(ranges, reverse=True)[:max(1, round(len(ranges) * top_pct))]
+    return sum(top) / len(top)
+
+
+def count_pushes(bars: list[dict[str, Any]], side: str) -> dict[str, Any]:
+    """Pushes in the trade's direction since entry (`bars` starts with the entry bar).
+
+    A push is a run of bars each making a new high (long) / new low (short) beyond everything since
+    entry; a bar that fails to extend ends the push, and the next new extreme starts another. Three or
+    more pushes earn the right to take profits.
+    """
+    if not bars:
+        return {"pushes": 0, "push_extremes": []}
+    long = _norm_side(side) == "long"
+    extreme = bars[0]["h"] if long else bars[0]["l"]
+    pushes, extremes, extending = 0, [], False
+    for bar in bars[1:]:
+        value = bar["h"] if long else bar["l"]
+        if (value > extreme) if long else (value < extreme):
+            if not extending:
+                pushes += 1
+                extremes.append(value)
+            else:
+                extremes[-1] = value
+            extreme, extending = value, True
+        else:
+            extending = False
+    return {"pushes": pushes, "push_extremes": [_r(x) for x in extremes]}
+
+
+def move_origin(bars: list[dict[str, Any]], side: str) -> Optional[float]:
+    """Where the move being ridden began: the lowest low (long) / highest high (short) before its
+    latest extreme, among `bars` (e.g. today's session bars)."""
+    if not bars:
+        return None
+    long = _norm_side(side) == "long"
+    # The latest occurrence of the extreme: a retest of the same high still starts from the newer low.
+    values = [b["h"] if long else b["l"] for b in bars]
+    target = max(values) if long else min(values)
+    peak = max(i for i, v in enumerate(values) if v == target)
+    before = bars[:peak + 1]
+    return min(b["l"] for b in before) if long else max(b["h"] for b in before)
+
+
+def profit_taking(
+    side: str,
+    bars_since_entry: list[dict[str, Any]],
+    price: float,
+    origin: Optional[float],
+    daily_atr: Optional[float],
+    wide_atr: Optional[float],
+) -> dict[str, Any]:
+    """Velez profit taking by counting and measuring.
+
+    * 3+ pushes since entry: the right to take profits.
+    * The move from its origin past the daily ATR: most of a normal day's move is in; take profits.
+    * Past the wide-range-day ATR: a reversal is statistically close; take profits, don't look for more.
+
+    Returns status hold / take_partial / take_profits with the numbers behind it.
+    """
+    long = _norm_side(side) == "long"
+    pushes = count_pushes(bars_since_entry, side)
+    out: dict[str, Any] = {**pushes, "origin": _r(origin), "daily_atr": _r(daily_atr), "wide_day_atr": _r(wide_atr)}
+    move = None
+    if origin is not None and price is not None:
+        move = (price - origin) if long else (origin - price)
+        out["move_from_origin"] = _r(move)
+    move_atr = move / daily_atr if move is not None and daily_atr else None
+    move_wide = move / wide_atr if move is not None and wide_atr else None
+    out["move_in_daily_atr"] = _r(move_atr, 2)
+    out["move_in_wide_day_atr"] = _r(move_wide, 2)
+    reasons: list[str] = []
+    level = 0
+    if move_wide is not None and move_wide >= 1.0:
+        level = 2
+        reasons.append(f"The move is {out['move_in_wide_day_atr']} wide-day ATRs from its origin: past even a big day's "
+                       "range, a reversal is close. Take profits; don't look for more.")
+    elif move_atr is not None and move_atr >= 1.0:
+        level = max(level, 1)
+        reasons.append(f"The move is {out['move_in_daily_atr']} daily ATRs from its origin: a normal day's move is in. Take profits.")
+    if pushes["pushes"] >= PROFIT_PUSHES:
+        level = max(level, 1)
+        reasons.append(f"{pushes['pushes']} pushes since entry: you've earned the right to take profits.")
+    if level == 1 and pushes["pushes"] >= PROFIT_PUSHES and move_atr is not None and move_atr >= 1.0:
+        level = 2  # both the count and the measure say the move is spent
+    if not reasons:
+        if move_atr is None:
+            # "Within the daily ATR" needs a daily ATR (a zero one is bad data): say so rather than advise
+            # holding on half the rule.
+            out["status"] = "unknown"
+            out["reasons"] = [f"{pushes['pushes']} push(es) since entry; the daily ATR couldn't be read, so the "
+                              "move from its origin can't be measured. Send daily bars (15+ completed days)."]
+            return out
+        reasons.append(f"{pushes['pushes']} push(es), move within the daily ATR: let it work.")
+    out["status"] = ("hold", "take_partial", "take_profits")[level]
+    out["reasons"] = reasons
+    return out
+
+
+def gap_vs_atr(
+    open_price: float,
+    prior_close: float,
+    daily_atr: Optional[float],
+    wide_atr: Optional[float],
+    side: Optional[str] = None,
+) -> dict[str, Any]:
+    """The opening gap measured in daily and wide-day ATRs. A gap in the trade's direction beyond the
+    wide-day ATR is past even a big day's range: not a buy (not a short, for a gap down)."""
+    gap = open_price - prior_close
+    out: dict[str, Any] = {
+        "gap": _r(gap), "gap_pct": _r(gap / prior_close * 100, 2) if prior_close else None,
+        "gap_in_daily_atr": _r(abs(gap) / daily_atr, 2) if daily_atr else None,
+        "gap_in_wide_day_atr": _r(abs(gap) / wide_atr, 2) if wide_atr else None,
+    }
+    # For entry_gate(gap_wide_atr=...): the gap in the trade's direction in wide-day ATRs, negative when
+    # the gap is against the trade (unsigned when no side is given).
+    if wide_atr:
+        signed = abs(gap) if side is None else (gap if _norm_side(side) == "long" else -gap)
+        out["gap_in_direction_wide_day_atr"] = signed / wide_atr
+    else:
+        out["gap_in_direction_wide_day_atr"] = None
+    if not wide_atr or not daily_atr:
+        # Both checks need a real range (a zero ATR is bad data, not a quiet stock): don't report a
+        # softer verdict as if the gap had been checked.
+        out.update(status="unknown", reason="Need 61+ completed daily bars with a nonzero daily and wide-day ATR.")
+        return out
+    in_direction = side is None or ((gap > 0) == (_norm_side(side) == "long"))
+    if abs(gap) >= wide_atr and in_direction:
+        out.update(status="block", reason=f"Gapped {out['gap_in_wide_day_atr']} wide-day ATRs: past a big day's whole range at the open. Not a {'buy' if gap > 0 else 'short'}.")
+    elif abs(gap) >= daily_atr and in_direction:
+        out.update(status="caution", reason=f"Gapped {out['gap_in_daily_atr']} daily ATRs: a normal day's move is already in.")
+    else:
+        out.update(status="ok", reason="Gap within the stock's normal range.")
+    return out
 
 
 def trend_position(extension: Optional[float], breakout: bool = False, follow_through: bool = True) -> str:
@@ -1227,6 +1485,7 @@ PRINCIPLES = [
     "The 200 does not create trades — it removes them. Don't buy under a falling 200, don't short over a rising one.",
     "Trade with the slope of the 20. Buy pullbacks to a rising 20; short rallies to a falling 20.",
     "Three states: narrow (the coil) — play the explosion; trending (the move) — play color changes at the 20; wide (the climax) — don't trade the trend, take profits or fade.",
+    "Take profits by counting and measuring, not guessing: 3+ pushes since entry earn the right to take profits; a move from its origin past the daily ATR is near its end, past the big-day (wide-range) ATR a reversal is close. Know your stock's average true range.",
     "Location first, pattern second. The same candle means different things at the 20, extended from the 20, or at the 200.",
     "Inside the Fab 4 trap zone nobody has control. Do less there.",
     "Enter on the break of the event bar; stop one tick beyond its other end (the event stop).",

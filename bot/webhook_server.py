@@ -48,7 +48,14 @@ from .core.utils import get_logger, log_event
 from .core.trifecta import score_webhook_confluence
 from .core.bull_mentor import BullMentorEngine
 from .core.post_trade_autopsy import PostTradeAutopsyEngine
-from .core.velez_strategy import VelezInstitutionalStrategy, VelezPlay, calculate_pyramid_add_qty
+from .core.velez_strategy import (
+    VelezInstitutionalStrategy,
+    VelezPlay,
+    calculate_pyramid_add_qty,
+    daily_atr_from_rows,
+    daily_rows_before,
+    split_safe_daily_rows,
+)
 from .core.velez_extensions import run_extensions
 from .core.market_regime import classify_regime, regime_lot_multiplier
 from .core.top_down_brain import build_top_down_state, merged_top_down_config
@@ -1605,6 +1612,11 @@ class TradingViewWebhookEngine:
         self.calendar = CalendarFeedService(self.broker, self.config, self.recent_decisions, journal=self.journal)
         self.scanner_strategy = VelezInstitutionalStrategy(config.get("velez_strategy", config.get("strategy", {})), self.logger)
         self.scanner_strategy.set_symbol_types(config.get("symbols", []))
+        # Completed daily bars for the rulebook's daily range and profit taking (2026.10.5/10.6).
+        self._velez_daily_cache: Dict[tuple, List[dict]] = {}
+        for velez_strategy in (self.strategy, self.scanner_strategy):
+            if hasattr(velez_strategy, "daily_bars_provider"):
+                velez_strategy.daily_bars_provider = self._velez_daily_rows
         self.scanner_last_bar: Dict[str, datetime] = {}
         self.scanner_seen_alerts: Deque[str] = deque(maxlen=int(self.scanner_config.get("dedupe_cache_size", 1000) or 1000))
         self.scanner_symbol_cooldowns: Dict[str, datetime] = {}
@@ -3707,6 +3719,99 @@ class TradingViewWebhookEngine:
                 )
             )
         return bars
+
+    def _velez_daily_rows(self, symbol: str) -> List[dict]:
+        """Completed daily bars (rulebook dicts, oldest first) for the daily-range and profit-taking rules.
+
+        Cached per symbol and New York trading date: completed days don't change during the
+        session. Alpaca SIP first (completed days are past the free plan's 15-minute delay,
+        and the full tape gives the true range), then the configured feed and yfinance via
+        the top-down fetch. A failed or empty fetch is not cached, so the next call retries.
+        """
+        sym = str(symbol or "").upper().strip()
+        if not sym:
+            return []
+        today = datetime.now(ZoneInfo("America/New_York")).date()
+        key = (sym, today)
+        cached = self._velez_daily_cache.get(key)
+        if cached is not None:
+            return cached
+        bars: List[Bar] = []
+        if self.broker.is_configured():
+            try:
+                data = self._alpaca_data_request(
+                    f"/v2/stocks/{sym}/bars",
+                    params={
+                        "timeframe": "1Day",
+                        "start": (today - timedelta(days=140)).isoformat(),
+                        "end": (today + timedelta(days=1)).isoformat(),
+                        "limit": 120,
+                        "adjustment": "raw",
+                        "feed": "sip",
+                    },
+                )
+                bars = [self._bar_from_alpaca(item) for item in data.get("bars") or []]
+            except Exception as exc:
+                log_event(self.logger, "velez_daily_rows_sip_fallback", {"symbol": sym, "reason": str(exc)[:160]})
+        if not bars:
+            try:
+                bars = self._fetch_top_down_daily_bars(sym, days=90)
+            except Exception as exc:
+                log_event(self.logger, "velez_daily_rows_failed", {"symbol": sym, "reason": str(exc)[:160]})
+                return []
+        rows = [velez_doctrine.bar_dict(bar) for bar in bars]
+        if rows:
+            if len(self._velez_daily_cache) > 256:
+                self._velez_daily_cache.clear()
+            self._velez_daily_cache[key] = rows
+        return rows
+
+    def _velez_profit_taking_verdict(self, position: dict) -> Optional[dict]:
+        """The rulebook's profit-taking verdict (2026.10.6) for a live position, or None.
+
+        The same inputs as the backtested scale-out: pushes since the entry bar, the move from
+        today's session origin (the whole hold for non-equities), and the daily and wide-day
+        ATRs from completed daily bars. None when the entry time, bars or price are missing.
+        """
+        symbol = str(position.get("symbol") or "").upper()
+        side = str(position.get("side") or "long")
+        entered_at = (position.get("linked_decision") or {}).get("timestamp")
+        if not symbol or not entered_at:
+            return None
+        try:
+            entry_ts = self._timestamp(entered_at)
+            asset_type = str((self.symbol_config.get(symbol) or {}).get("type") or "equity").lower()
+            bars = self._fetch_scanner_bars(symbol=symbol, asset_type=asset_type)
+        except Exception as exc:
+            log_event(self.logger, "velez_profit_taking_skipped", {"symbol": symbol, "reason": str(exc)[:160]})
+            return None
+        now = datetime.now(timezone.utc)
+        closed = [bar for bar in bars if self._scanner_bar_is_closed(bar, now)]
+        first_after = next((i for i, bar in enumerate(closed) if bar.timestamp >= entry_ts), None)
+        if first_after is None:
+            return None
+        # bars_since_entry starts with the entry bar: the bar the fill happened in.
+        since = [velez_doctrine.bar_dict(bar) for bar in closed[max(0, first_after - 1):]]
+        if len(since) < 2:
+            return None
+        equity = asset_type in {"equity", "stock", "etf"}
+        origin_bars = velez_doctrine.session_bars([velez_doctrine.bar_dict(b) for b in closed]) if equity else since
+        rows: List[dict] = []
+        if equity:
+            local = velez_doctrine._local(since[-1]["t"])
+            rows = split_safe_daily_rows(daily_rows_before(self._velez_daily_rows(symbol), local.date())) if local else []
+        try:
+            return velez_doctrine.profit_taking(
+                side,
+                since,
+                since[-1]["c"],
+                velez_doctrine.move_origin(origin_bars or since, side),
+                daily_atr_from_rows(rows),
+                velez_doctrine.wide_day_atr(rows),
+            )
+        except (ValueError, KeyError, TypeError) as exc:
+            log_event(self.logger, "velez_profit_taking_skipped", {"symbol": symbol, "reason": str(exc)[:160]})
+            return None
 
     def market_close_payload(self, symbol: str) -> dict:
         cleaned = self._clean_quote_symbol(symbol)
@@ -10840,10 +10945,22 @@ class TradingViewWebhookEngine:
                         results.append({"action": "breakeven_stop_move", "symbol": symbol, "status": "failed", "error": str(exc)})
 
             # #2: Auto-execute partial profit-taking at 1R and 2R
-            partials_cfg = self.config.get("strategy", {}).get("exits", {}).get("partials_auto_execute", {})
+            # config.yaml keeps this block beside `exits`, not inside it: read either place.
+            strategy_cfg = self.config.get("strategy", {}) or {}
+            partials_cfg = (strategy_cfg.get("exits", {}) or {}).get("partials_auto_execute") or strategy_cfg.get("partials_auto_execute") or {}
             if partials_cfg.get("enabled", True) and current_r is not None and qty:
                 partials_taken = self._partials_taken_for_symbol(symbol)
-                if current_r >= float(partials_cfg.get("first_r", 1.0)) and "first" not in partials_taken and current_r < float(partials_cfg.get("second_r", 2.0)):
+                first_due = current_r >= float(partials_cfg.get("first_r", 1.0)) and current_r < float(partials_cfg.get("second_r", 2.0))
+                if str(partials_cfg.get("trigger", "r_multiple")).lower() == "velez_profit_taking":
+                    # Rulebook 2026.10.6: the first partial comes off at the profit-taking verdict
+                    # (3+ pushes, or the move past the daily / wide-day ATR), only while in profit.
+                    first_due = False
+                    if "first" not in partials_taken and 0 < current_r < float(partials_cfg.get("second_r", 2.0)):
+                        verdict = self._velez_profit_taking_verdict(position)
+                        first_due = bool(verdict) and verdict.get("status") in {"take_partial", "take_profits"}
+                        if first_due:
+                            log_event(self.logger, "velez_profit_taking_verdict", {"symbol": symbol, "current_r": current_r, "verdict": verdict})
+                if first_due and "first" not in partials_taken:
                     first_pct = float(partials_cfg.get("first_pct", 0.5))
                     exit_qty = max(1, int(self._position_qty_number(position) * first_pct))
                     if exit_qty > 0:

@@ -47,6 +47,11 @@ need that, stop and ask the owner.
 10. **Trade with the market.** SPY/QQQ above a rising 20 = longs only; below a falling 20 =
    shorts only; mixed or flat = no trend entries. A reversal may go against the market only
    at the stock's 200. (Intraday session windows don't apply to this daily-bar bot.)
+11. **Profit taking by counting and measuring.** With `partials_auto_execute.trigger:
+   velez_profit_taking`, the first partial comes off at the rulebook's verdict (3+ pushes since
+   entry, or the move from its origin in the hold past the daily or wide-day ATR), only while the
+   trade is in profit. The rest follows the normal management. (The rulebook's daily-range entry
+   rule is off here: on daily bars the signal bar is the day itself.)
 
 ## Where it's enforced
 
@@ -56,7 +61,8 @@ need that, stop and ask the owner.
 | Tail at a rising/falling 20 | `bot/core/velez_strategy.py` → `_tail_signals` (`continuation_at_20`) |
 | Backtest exits (breakeven, bar-by-bar trail, 3-bar rule) | `bot/backtest/engine.py` → `_velez_manage` |
 | Live exits | `bot/webhook_server.py` → `_velez_live_management` (inside `_auto_lifecycle_actions`, still gated by `VELEZ_LIFECYCLE_AUTO_EXECUTE`) |
-| Config | `bot/config.yaml` → `velez_strategy.doctrine` |
+| Profit-taking partial | `bot/webhook_server.py` → `_velez_profit_taking_verdict` (inside `_auto_lifecycle_actions`) |
+| Config | `bot/config.yaml` → `velez_strategy.doctrine`, `strategy.partials_auto_execute.trigger` |
 | Lock-in tests | `bot/tests/test_velez_doctrine.py` |
 
 ## Changing things safely

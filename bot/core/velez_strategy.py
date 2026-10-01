@@ -4,7 +4,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Deque, Dict, List, Optional
+from typing import Callable, Deque, Dict, List, Optional
 
 try:
     from zoneinfo import ZoneInfo
@@ -137,6 +137,42 @@ def candle_shape(bar: Bar) -> CandleShape:
     )
 
 
+# A day opening this far from the prior close is a split or bad print, not volatility.
+DAILY_DISCONTINUITY_PCT = 0.30
+
+
+def daily_rows_before(rows: List[dict], day) -> List[dict]:
+    """Completed daily rows (rulebook dicts, oldest first) labeled before trading date `day`."""
+    out = []
+    for row in rows or []:
+        label = doctrine.daily_bar_date(row.get("t")) if row.get("t") is not None else None
+        if label is not None and label < day:
+            out.append(row)
+    return out
+
+
+def split_safe_daily_rows(rows: List[dict]) -> List[dict]:
+    """Daily rows after the latest split-sized gap (a split is not volatility)."""
+    rows = list(rows)
+    for i in range(len(rows) - 1, 0, -1):
+        prior_close = rows[i - 1]["c"]
+        if prior_close and abs(rows[i]["o"] / prior_close - 1.0) > DAILY_DISCONTINUITY_PCT:
+            return rows[i:]
+    return rows
+
+
+def daily_atr_from_rows(rows: List[dict]) -> Optional[float]:
+    """The rulebook's daily ATR from completed daily rows, or None without a full reading.
+
+    A full ATR needs DAILY_ATR_PERIOD + 1 rows after the latest split-sized gap; a partial
+    average never arms a rule.
+    """
+    rows = split_safe_daily_rows(rows)
+    if len(rows) <= doctrine.DAILY_ATR_PERIOD:
+        return None
+    return doctrine.atr(rows[-(doctrine.DAILY_ATR_PERIOD + 1):], doctrine.DAILY_ATR_PERIOD)
+
+
 class VelezInstitutionalStrategy:
     """Oliver Velez candle-play engine with strict SMA location gating."""
 
@@ -148,6 +184,9 @@ class VelezInstitutionalStrategy:
         self.market_bars: Dict[str, List[dict]] = {}
         # Configured futures/FX/crypto symbols: the equity session windows don't apply.
         self.non_equity_symbols: set = set()
+        # Completed daily bars for the daily-range rule (rulebook 2026.10.5), as rulebook dicts.
+        # Set by the live server; None in backtests and replays, where the rule is not enforced.
+        self.daily_bars_provider: Optional[Callable[[str], List[dict]]] = None
         self._validate_setup_allowlist()
 
     def _get_context(self, symbol: str) -> VelezContext:
@@ -326,7 +365,48 @@ class VelezInstitutionalStrategy:
                 if decision_at is not None else self._decision_time(signal.symbol, bar)
             ),
             market_bias=self._market_bias(signal.symbol, decision_at or bar.timestamp),
+            range_used=self._range_used(signal, bar, decision_at),
         )
+
+    # ── Daily range used (rulebook 2026.10.5) ──
+
+    def _range_used(self, signal: Signal, bar: Bar, decision_at: Optional[datetime] = None) -> Optional[float]:
+        """Daily ATRs today's move has covered in the signal's direction, for the entry gate.
+
+        None (not enforced) when the rule is off, for non-equities, without a live daily-bar
+        source, or when the daily ATR or today's session can't be read. `range_block` moves
+        the veto: the value is scaled so the rulebook's 1.0 threshold lands on it.
+        """
+        cfg = self._doctrine_cfg()
+        if not cfg.get("daily_range", False) or self.daily_bars_provider is None:
+            return None
+        symbol = str(signal.symbol).upper()
+        if not self._is_equity(symbol):
+            return None
+        at = decision_at or bar.timestamp
+        local = doctrine._local(at)
+        if local is None:
+            return None
+        try:
+            rows = self.daily_bars_provider(symbol) or []
+        except Exception:
+            return None
+        atr_value = daily_atr_from_rows(daily_rows_before(rows, local.date()))
+        if not atr_value:
+            return None
+        ctx = self.symbols.get(signal.symbol) or self.symbols.get(symbol)
+        intraday = [doctrine.bar_dict(b) for b in ctx.bars] if ctx is not None else []
+        current = doctrine.bar_dict(bar)
+        if not intraday or intraday[-1]["t"] != current["t"]:
+            intraday.append(current)
+        high, low = doctrine.session_high_low(intraday, as_of=at)
+        side = "long" if signal.side == Side.BUY else "short"
+        # The unrounded ratio: 0.996 has not covered the daily ATR yet.
+        used = doctrine.daily_range_used(atr_value, high, low, bar.close, side).get("used_in_direction_raw")
+        if used is None:
+            return None
+        block = float(cfg.get("range_block", doctrine.RANGE_USED_BLOCK) or doctrine.RANGE_USED_BLOCK)
+        return used * doctrine.RANGE_USED_BLOCK / block if block > 0 else None
 
     # ── Session windows and trading with the market (rulebook 2026.10.1) ──
 
@@ -391,12 +471,16 @@ class VelezInstitutionalStrategy:
 
     def _session_applies(self, symbol: str) -> bool:
         """Session windows are for equities; configured futures/FX/crypto are exempt."""
-        cfg = self._doctrine_cfg()
-        if not cfg.get("session_windows", False):
+        if not self._doctrine_cfg().get("session_windows", False):
             return False
+        return self._is_equity(symbol)
+
+    def _is_equity(self, symbol: str) -> bool:
+        """US equities only: configured futures/FX/crypto (and their ticker shapes) are not."""
         sym = str(symbol).upper()
-        configured = {str(s).upper() for s in cfg.get("non_equity_symbols", [])} | self.non_equity_symbols
+        configured = {str(s).upper() for s in self._doctrine_cfg().get("non_equity_symbols", [])} | self.non_equity_symbols
         return not (sym in configured or "/" in sym or sym.startswith("^") or sym.endswith(("=F", "=X", "-USD")))
+
 
     def _decision_time(self, symbol: str, bar: Bar) -> Optional[datetime]:
         """When an entry off this bar would be taken (its close), for the session windows.
