@@ -832,12 +832,16 @@ def test_an_incomplete_fill_snapshot_keeps_a_recent_record(monkeypatch, tmp_path
     first = position(0.2)
     first.update(entry_fill={"side": "buy", "transaction_time": recent})
     engine._velez_record_initial_risk(first)
-    other = position(0.3)
-    other.update(entry_price=505.0)  # an add since (no opening fill on the truncated page)
-    engine._velez_fills_complete = False
-    assert engine._velez_open_record(other) is not None
+    added = position(0.3)
+    added.update(qty="150", entry_price=503.3333333333)  # an add of 50 @ 510 since the last pass
+    engine._velez_fills_complete = False  # its fills are missing from a truncated page
+    assert engine._velez_open_record(added) is not None
     engine._velez_fills_complete = True
-    assert engine._velez_open_record(other) is None
+    assert engine._velez_open_record(added) is None
+    reopened = position(0.3)
+    reopened.update(qty="80", entry_price=505.0)  # closed and reopened between passes
+    engine._velez_fills_complete = False
+    assert engine._velez_open_record(reopened) is None  # neither an add nor an exit of the old trade
 
 
 def test_opening_decision_never_picks_a_post_fill_add(monkeypatch, tmp_path):
@@ -890,3 +894,79 @@ def test_daily_bar_closes_early_on_a_half_day(monkeypatch, tmp_path):
         assert (end.hour, end.minute) == (13, 0)
     else:
         assert (end.hour, end.minute) == (16, 0)  # past the normal close: no calendar lookup needed
+
+
+def test_opening_decision_is_matched_by_its_order(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    fill = {"transaction_time": "2026-06-03T14:30:00+00:00", "order_id": "ord-7"}
+    old_trade = {"symbol": "SPY", "side": "buy", "status": "submitted", "timestamp": "2026-05-20T14:00:00+00:00",
+                 "execution_quality": {"order_id": "ord-1"}}
+    current = {"symbol": "SPY", "side": "buy", "status": "submitted", "timestamp": "2026-06-03T14:30:01+00:00",
+               "execution_quality": {"order_id": "ord-7"}}
+    monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: [current, old_trade])
+    assert engine._velez_opening_decision("SPY", "long", fill) == current
+    # Without order ids, the decision closest to the fill wins over an older trade.
+    for d in (current, old_trade):
+        d.pop("execution_quality")
+    assert engine._velez_opening_decision("SPY", "long", fill) == current
+
+
+def test_whole_day_minute_counts_are_daily(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    assert engine._velez_alpaca_timeframe("1440") == "1Day"
+    assert engine._velez_alpaca_timeframe("120") == "2Hour"
+
+
+def test_an_ambiguous_linked_decision_is_not_the_entry(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    pos = position(0.5)  # no opening fill, no record (opened before its fills were in view)
+    assert engine._velez_entry_time(pos) is not None  # the journal holds no other entry: unambiguous
+    decisions = [{"symbol": "SPY", "side": "buy", "status": "submitted", "timestamp": "2026-06-03T14:00:00+00:00"},
+                 {"symbol": "SPY", "side": "buy", "status": "submitted", "timestamp": "2026-06-04T14:00:00+00:00"}]
+    monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: decisions)
+    assert engine._velez_entry_time(pos) is None  # the linked one may be an add
+    pos.update(current_price=506.0)
+    assert engine._velez_initial_r(pos) is None
+
+
+def test_cold_start_uses_the_opening_orders_weighted_price(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    at = "2026-06-03T14:30:{:02d}+00:00"
+    fills = [{"symbol": "SPY", "side": "buy", "qty": "50", "price": "106", "order_id": "o1", "transaction_time": at.format(2)},
+             {"symbol": "SPY", "side": "buy", "qty": "50", "price": "100", "order_id": "o1", "transaction_time": at.format(1)}]
+    opening = engine._velez_opening_fill("SPY", True, None, fills, 100)
+    assert opening["transaction_time"] == at.format(1) and opening["basis_price"] == 103.0
+    decision = {"symbol": "SPY", "side": "buy", "status": "submitted", "stop_price": 95.0, "timestamp": at.format(0)}
+    monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: [decision])
+    pos = position(None)
+    pos.update(entry_fill=opening, entry_price=103.0, stop_price=104.0, current_price=111.0)  # stop trailed
+    pos["linked_decision"] = dict(decision)
+    engine._velez_record_initial_risk(pos)
+    assert engine._velez_recorded_risk(pos) == 8.0  # 103 average to the 95 stop, not 100 to 95
+
+
+def test_cold_start_after_a_split_finds_the_opening_on_the_new_basis(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    fills = [{"symbol": "SPY", "side": "buy", "qty": "100", "price": "200", "order_id": "o1",
+              "transaction_time": "2026-06-03T14:30:00+00:00"}]
+    opening = engine._velez_opening_fill("SPY", True, None, fills, 200, 100.0)  # 2-for-1: 200 @ 100
+    assert opening is not None and opening["split_factor"] == 2.0
+    assert engine._velez_opening_fill("SPY", True, None, fills, 137, 100.0) is None  # not a split ratio
+    assert engine._velez_opening_fill("SPY", True, None, fills, 200, 200.0) is None  # cost basis disagrees
+    decision = {"symbol": "SPY", "side": "buy", "status": "submitted", "stop_price": 190.0,
+                "timestamp": "2026-06-03T14:29:00+00:00"}
+    monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: [decision])
+    pos = position(None)
+    pos.update(entry_fill=opening, qty="200", entry_price=100.0, stop_price=101.0, current_price=106.0)
+    pos["linked_decision"] = dict(decision)
+    engine._velez_record_initial_risk(pos)
+    assert engine._velez_recorded_risk(pos) == 5.0  # (200 - 190) / 2 on today's shares
+
+
+def test_first_partial_waits_while_a_second_is_pending(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    monkeypatch.setattr(engine, "_velez_profit_taking_verdict", lambda p: {"status": "take_partial"})
+    engine._record_partial_taken("SPY", "second")  # submitted on an earlier pass, not filled yet
+    pending = [{"symbol": "SPY", "client_order_id": "velez-partial-2r-spy-abc", "status": "accepted"}]
+    engine._auto_lifecycle_actions(positions=[position(2.4)], open_orders=pending, guardrails=[])
+    assert partial_orders(broker) == []  # sized off the old quantity: wait for the 2R order

@@ -3927,9 +3927,11 @@ class TradingViewWebhookEngine:
             if protective(current, entry):
                 distances.append(abs(entry - current))
             opening_stop = self._float((opening or {}).get("stop_price"))
-            base = self._float(fill.get("price")) or entry
+            base = self._float(fill.get("basis_price")) or self._float(fill.get("price")) or entry
+            factor = self._float(fill.get("split_factor")) or 1.0
             if protective(opening_stop, base):
-                distances.append(abs(base - opening_stop))
+                # The fill and the journaled stop are on the share basis before any split since.
+                distances.append(abs(base - opening_stop) / factor)
             if not distances:
                 return
             risk = max(distances)
@@ -3980,33 +3982,37 @@ class TradingViewWebhookEngine:
         return None
 
     def _velez_opening_decision(self, symbol: str, side: str, fill: dict) -> Optional[dict]:
-        """The submitted decision that opened the position: the latest one for this symbol (aliases
-        included) and side at or before the opening fill; failing that, the first one within 2 minutes
-        after it (a market order can fill before its decision is journaled)."""
+        """The submitted decision that opened the position: the one whose broker order the opening fill
+        belongs to; failing that, the same-symbol (aliases included), same-side decision closest to the
+        fill, at most 2 minutes after it (a market order can fill before its decision is journaled)."""
         stamp = fill.get("transaction_time") or fill.get("filled_at")
-        if not stamp:
-            return None
+        order_id = str(fill.get("order_id") or "")
         try:
-            filled = self._timestamp(stamp)
+            filled = self._timestamp(stamp) if stamp else None
         except Exception:
-            return None
+            filled = None
         want_side = "buy" if side == "long" else "sell"
-        best, best_at, after, after_at = None, None, None, None
+        best, best_gap = None, None
         for decision in self.journal.decision_entries(limit=1000):
             if self._claim_symbol_key(decision.get("symbol")) != self._claim_symbol_key(symbol):
                 continue
             if str(decision.get("side") or "").lower() != want_side or str(decision.get("status") or "").lower() != "submitted":
                 continue
+            quality = decision.get("execution_quality") if isinstance(decision.get("execution_quality"), dict) else {}
+            if order_id and str(quality.get("order_id") or "") == order_id:
+                return decision
+            if filled is None:
+                continue
             try:
                 decided = self._timestamp(decision.get("timestamp"))
             except Exception:
                 continue
-            if decided <= filled:
-                if best_at is None or decided > best_at:
-                    best, best_at = decision, decided
-            elif decided <= filled + timedelta(minutes=2) and (after_at is None or decided < after_at):
-                after, after_at = decision, decided
-        return best or after
+            if decided > filled + timedelta(minutes=2):
+                continue
+            gap = abs((filled - decided).total_seconds())
+            if best_gap is None or gap < best_gap:
+                best, best_gap = decision, gap
+        return best
 
     def _velez_prune_open_records(self, open_symbols: set) -> None:
         """Clear the open-position record of every symbol that is now flat, so a later position in the
@@ -4038,18 +4044,25 @@ class TradingViewWebhookEngine:
         days = self._int_env("VELEZ_LIFECYCLE_FILL_LOOKBACK_DAYS", 7, minimum=1, maximum=30)
         if opened is not None and opened <= datetime.now(timezone.utc) - timedelta(days=days):
             return record
-        if not getattr(self, "_velez_fills_complete", False):
-            # The fill snapshot failed or was cut off at its page size: it can't disprove the record.
-            return record
         # Recent: accept it only when the position is the one last seen (same quantity and entry) or a
-        # split explains the change (a split moves the quantity without a fill).
+        # split explains the change (a split moves the quantity without a fill). When the fill snapshot
+        # failed or was cut off, an add or a partial exit since the last pass is accepted too: the fills
+        # that would confirm it may be missing, but a closed-and-reopened trade doesn't fit either shape.
         qty = abs(self._position_qty_number(position))
         entry = self._velez_price(position, "entry_price")
         seen = record.get("seen") or []
         if len(seen) == 2 and qty and entry:
             last_qty, last_entry = (self._float(seen[0]) or 0.0), (self._float(seen[1]) or 0.0)
-            if last_qty and last_entry and abs(qty - last_qty) <= 1e-9 and abs(entry / last_entry - 1.0) <= 1e-4:
-                return record
+            if last_qty and last_entry:
+                if abs(qty - last_qty) <= 1e-9 and abs(entry / last_entry - 1.0) <= 1e-4:
+                    return record
+                if not getattr(self, "_velez_fills_complete", False):
+                    if qty < last_qty and abs(entry / last_entry - 1.0) <= 1e-4:
+                        return record  # a partial exit: the average entry doesn't move
+                    if qty > last_qty:
+                        added_at = (qty * entry - last_qty * last_entry) / (qty - last_qty)
+                        if 0.5 * entry <= added_at <= 2.0 * entry:
+                            return record  # an add at a plausible price
         if self._velez_split_factor(seen, qty, entry) is not None:
             return record
         return None
@@ -4064,6 +4077,22 @@ class TradingViewWebhookEngine:
         key = self._velez_position_key(position)
         return self._float(self.journal.get_setting(key, None)) if key else None
 
+    def _velez_linked_is_only_entry(self, position: dict) -> bool:
+        """Whether the linked decision can stand for the opening: it's the only submitted decision for the
+        symbol (aliases included) and side in the journal, so it can't be a later add."""
+        linked = position.get("linked_decision") or {}
+        if not linked:
+            return False
+        symbol = str(position.get("symbol") or "")
+        want_side = "buy" if str(position.get("side") or "long").lower() == "long" else "sell"
+        entries = [
+            decision for decision in self.journal.decision_entries(limit=200)
+            if self._claim_symbol_key(decision.get("symbol")) == self._claim_symbol_key(symbol)
+            and str(decision.get("side") or "").lower() == want_side
+            and str(decision.get("status") or "").lower() == "submitted"
+        ]
+        return len(entries) <= 1
+
     def _velez_initial_r(self, position: dict) -> Optional[float]:
         """Open R against the position's initial risk: the risk recorded when it was first seen, else the
         journaled decision's stop. The current stop may sit at entry or trail past it."""
@@ -4072,7 +4101,7 @@ class TradingViewWebhookEngine:
         if entry is None or price is None:
             return None
         risk = self._velez_recorded_risk(position)  # rebased across splits by _velez_track_split
-        if not risk:
+        if not risk and self._velez_linked_is_only_entry(position):
             stop = self._float((position.get("linked_decision") or {}).get("stop_price"))
             risk = abs(entry - stop) if stop is not None else None
         if not risk or risk <= 0:
@@ -4098,6 +4127,7 @@ class TradingViewWebhookEngine:
         linked: Optional[dict],
         fills: List[dict],
         held_qty: Optional[float] = None,
+        held_entry: Optional[float] = None,
     ) -> Optional[dict]:
         """The fill that opened the position, rebuilt from the fill history.
 
@@ -4105,7 +4135,9 @@ class TradingViewWebhookEngine:
         the opening fill is the one that took the position from flat, or across zero, into its current
         direction. Split fills, pyramid adds, partial exits and earlier trades in either direction
         never move it, whichever decision the lifecycle linked. Trusted only when the fills add up to
-        `held_qty` (a window that starts mid-trade can't see the open); otherwise None.
+        `held_qty` (a window that starts mid-trade can't see the open), or to a split of it that the
+        cost basis confirms (`held_entry` x held = the fills' average entry x their quantity); otherwise
+        None.
         """
         timed = []
         for fill in fills or []:
@@ -4123,6 +4155,7 @@ class TradingViewWebhookEngine:
         timed.sort(key=lambda item: item[0])
         direction = 1.0 if long else -1.0
         inventory, opening = 0.0, None
+        cost, bought = 0.0, 0.0  # entry-side fills since the open, for the average entry
         for _, fill, signed in timed:
             before = inventory
             inventory += signed
@@ -4130,11 +4163,49 @@ class TradingViewWebhookEngine:
                 inventory, opening = 0.0, None
             elif before * direction <= 1e-9 and inventory * direction > 1e-9:
                 opening = fill  # from flat (or the other side) into this position's direction
+                cost, bought = 0.0, 0.0
             elif inventory * direction <= 0:
                 opening = None
-        if opening is None or held_qty is None or abs(inventory * direction - abs(held_qty)) > 1e-6:
+            if opening is not None and signed * direction > 0:
+                price = self._float(fill.get("price"))
+                if price:
+                    cost += abs(signed) * price
+                    bought += abs(signed)
+        if opening is None or held_qty is None or inventory * direction <= 0:
             return None
+        factor = abs(held_qty) / (inventory * direction)
+        if abs(factor - 1.0) > 1e-6:
+            # A split since is accepted only when the cost basis confirms it: the broker's average
+            # entry is the fills' average divided by the split factor. A window that merely starts
+            # mid-trade fails this.
+            average = cost / bought if bought else None
+            if (
+                self._velez_split_ratio(factor) is None
+                or not held_entry or not average
+                or abs(held_entry * factor / average - 1.0) > 0.01
+            ):
+                return None
+        opening = dict(opening)
+        if abs(factor - 1.0) > 1e-6:
+            opening["split_factor"] = factor  # a split since: the fills are on the old share basis
+        # The opening order's weighted price: a split-filled entry's basis isn't its first piece.
+        order_id = str(opening.get("order_id") or "")
+        pieces = [fill for _, fill, _ in timed if order_id and str(fill.get("order_id") or "") == order_id]
+        sized = [(self._float(f.get("qty")) or 0.0, self._float(f.get("price"))) for f in pieces]
+        sized = [(abs(q), px) for q, px in sized if q and px]
+        if sized:
+            opening["basis_price"] = sum(q * px for q, px in sized) / sum(q for q, _ in sized)
         return opening
+
+    @staticmethod
+    def _velez_split_ratio(factor: float) -> Optional[tuple]:
+        """(new, old) shares when `factor` is a split ratio of small whole numbers (2-for-1, 5-for-4,
+        1-for-10, ...), else None."""
+        for old in range(1, 21):
+            new = round(factor * old)
+            if 1 <= new <= 200 and abs(new / old - factor) < 1e-6:
+                return (new, old)
+        return None
 
     @staticmethod
     def _velez_alpaca_timeframe(value: Any) -> Optional[str]:
@@ -4152,6 +4223,8 @@ class TradingViewWebhookEngine:
             return f"{count}Day"
         if unit in {"hour", "h"}:
             return f"{count}Hour"
+        if count % 1440 == 0:
+            return f"{count // 1440}Day"
         return f"{count // 60}Hour" if count % 60 == 0 else f"{count}Min"
 
     def _velez_session_close(self, day, default: datetime) -> datetime:
@@ -4209,7 +4282,9 @@ class TradingViewWebhookEngine:
             except Exception:
                 pass
         decided = (position.get("linked_decision") or {}).get("timestamp")
-        return self._timestamp(decided) if decided else None
+        if not decided or not self._velez_linked_is_only_entry(position):
+            return None  # e.g. an add's decision on a position opened before its fills were in view
+        return self._timestamp(decided)
 
     @staticmethod
     def _velez_partial_pending(symbol: str, open_orders: List[dict], level: str) -> bool:
@@ -10896,7 +10971,9 @@ class TradingViewWebhookEngine:
         latest_fill = next((fill for fill in fills if str(fill.get("symbol") or "").upper() == symbol), None)
         # Untruncated: a 0.1 BTC position must match its fills (qty_abs is whole units).
         held_qty = abs(self._float(item.get("qty")) or 0.0)
-        entry_fill = self._velez_opening_fill(symbol, direction > 0, linked, fills, held_qty)
+        entry_fill = self._velez_opening_fill(
+            symbol, direction > 0, linked, fills, held_qty, self._float(item.get("avg_entry_price"))
+        )
         management = self._position_management_actions(
             side=side,
             entry_price=entry_price,
@@ -11540,7 +11617,7 @@ class TradingViewWebhookEngine:
                             first_due = verdict.get("status") in {"take_partial", "take_profits"}
                         if first_due:
                             log_event(self.logger, "velez_profit_taking_verdict", {"symbol": symbol, "partial_r": partial_r, "verdict": verdict})
-                if first_due and "first" not in partials_taken:
+                if first_due and "first" not in partials_taken and not self._velez_partial_pending(symbol, open_orders, "2r"):
                     first_pct = float(partials_cfg.get("first_pct", 0.5))
                     exit_qty = self._velez_partial_qty(position, first_pct)
                     if exit_qty > 0:
