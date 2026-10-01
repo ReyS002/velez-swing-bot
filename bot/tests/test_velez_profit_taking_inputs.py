@@ -970,3 +970,72 @@ def test_first_partial_waits_while_a_second_is_pending(monkeypatch, tmp_path):
     pending = [{"symbol": "SPY", "client_order_id": "velez-partial-2r-spy-abc", "status": "accepted"}]
     engine._auto_lifecycle_actions(positions=[position(2.4)], open_orders=pending, guardrails=[])
     assert partial_orders(broker) == []  # sized off the old quantity: wait for the 2R order
+
+
+def test_an_aged_record_is_not_inherited_by_a_reopened_trade(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    first = position(0.2)
+    first.update(entry_fill={"side": "buy", "transaction_time": "2026-05-20T14:30:00+00:00"})
+    engine._velez_record_initial_risk(first)  # 100 @ 500, opened weeks ago
+    held = position(0.3)  # the same trade, its open aged out of the fills
+    assert engine._velez_open_record(held) is not None
+    reopened = position(0.3)
+    reopened.update(qty="70", entry_price=520.0)  # closed and reopened between polls
+    assert engine._velez_open_record(reopened) is None
+
+
+def test_hourly_opening_bar_is_measured_at_its_close():
+    strat = strategy(daily_range=True)
+    strat.daily_bars_provider = lambda symbol: daily_rows()
+    ctx = strat._get_context("SPY")
+    prior = hour_bar(8, 100, 100.2, 99.9, 100.0)  # spacing: an hour
+    ctx.bars.append(Bar(timestamp=prior["t"], open=100, high=100.2, low=99.9, close=100.0, volume=1))
+    five = lambda minute, low: {"o": 100, "h": 100.4, "l": low, "c": 100.2, "v": 1,
+                                "t": datetime(2026, 6, 3, 13, 30, tzinfo=timezone.utc) + timedelta(minutes=minute)}
+    strat.session_bars_provider = lambda symbol: [five(0, 99.4), five(25, 99.6)]
+    # The 09:00 hourly bar (closing 10:00) carries a 98.0 premarket low; the feed's 09:30 bars are in view.
+    opening = Bar(timestamp=hour_bar(9, 0, 0, 0, 0)["t"], open=100.0, high=101.4, low=98.0, close=101.2, volume=1)
+    assert abs(strat._range_used(signal(), opening) - 0.9) < 1e-9  # from 99.4, not the premarket 98.0
+
+
+def test_reversal_basis_counts_only_the_new_side(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    at = "2026-06-03T14:30:{:02d}+00:00"
+    fills = [{"symbol": "SPY", "side": "buy", "qty": "100", "price": "102", "order_id": "o2", "transaction_time": at.format(3)},
+             {"symbol": "SPY", "side": "buy", "qty": "100", "price": "100", "order_id": "o2", "transaction_time": at.format(2)},
+             {"symbol": "SPY", "side": "sell", "qty": "100", "price": "99", "order_id": "o1", "transaction_time": at.format(1)}]
+    # Short 100, then one 200-share buy order covers at 100 and opens the long at 102.
+    opening = engine._velez_opening_fill("SPY", True, None, fills, 100)
+    assert opening["transaction_time"] == at.format(3) and opening["basis_price"] == 102.0
+    # One fill that both covers and opens: only the 100 past zero is the long's.
+    flip = [{"symbol": "SPY", "side": "buy", "qty": "200", "price": "101", "order_id": "o3", "transaction_time": at.format(5)},
+            {"symbol": "SPY", "side": "sell", "qty": "100", "price": "99", "order_id": "o1", "transaction_time": at.format(1)}]
+    assert engine._velez_opening_fill("SPY", True, None, flip, 100)["basis_price"] == 101.0
+
+
+def test_opening_decision_prefers_the_one_before_the_fill(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    fill = {"transaction_time": "2026-06-03T14:30:00+00:00"}
+    opening = {"symbol": "SPY", "side": "buy", "status": "submitted", "timestamp": "2026-06-03T14:29:30+00:00"}
+    add = {"symbol": "SPY", "side": "buy", "status": "submitted", "timestamp": "2026-06-03T14:30:01+00:00"}
+    old = {"symbol": "SPY", "side": "buy", "status": "submitted", "timestamp": "2026-05-20T14:00:00+00:00"}
+    monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: [add, opening, old])
+    assert engine._velez_opening_decision("SPY", "long", fill) == opening  # not the add a second later
+    monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: [add, old])
+    assert engine._velez_opening_decision("SPY", "long", fill) == add  # journaled just after: not the old trade
+
+
+def test_opening_timeframe_is_backfilled_when_its_decision_arrives(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    fill = {"side": "buy", "transaction_time": "2026-06-03T14:30:00+00:00"}
+    monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: [])
+    first = position(0.2)
+    first.update(entry_fill=fill)
+    first["linked_decision"] = {"timestamp": "2026-06-03T14:30:00+00:00", "stop_price": 495.0}  # no timeframe yet
+    engine._velez_record_initial_risk(first)
+    assert engine._velez_open_record(first)["timeframe"] is None
+    decision = {"symbol": "SPY", "side": "buy", "status": "submitted", "timeframe": "15",
+                "timestamp": "2026-06-03T14:30:01+00:00"}
+    monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: [decision])
+    engine._velez_record_initial_risk(first)
+    assert engine._velez_open_record(first)["timeframe"] == "15"
