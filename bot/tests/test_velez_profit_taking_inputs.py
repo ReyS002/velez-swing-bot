@@ -1401,8 +1401,10 @@ def test_a_runner_left_without_its_stop_is_a_failed_action(monkeypatch, tmp_path
     partial = [a for a in actions if a["action"] == "partial_first_r"]
     assert partial and partial[0]["status"] == "failed" and "runner stop" in partial[0]["error"]
     assert alerts and alerts[0]["severity"] == "critical"
-    # The exit itself went out once and is recorded: the next pass doesn't sell again.
-    engine._auto_lifecycle_actions(positions=[position(0.6)], open_orders=[], guardrails=[])
+    # The exit itself went out (and filled) and is recorded: the next pass doesn't sell again.
+    filled = position(0.6)
+    filled["qty"] = "50"
+    engine._auto_lifecycle_actions(positions=[filled], open_orders=[], guardrails=[])
     assert len(partial_orders(broker)) == 1
 
 
@@ -1452,6 +1454,8 @@ def test_equity_partials_wait_for_the_regular_session(monkeypatch, tmp_path):
     window = lambda now: TradingViewWebhookEngine._velez_partial_window_open(engine, "SPY") if not monkeypatch.setattr(
         ws, "datetime", type("FrozenDatetime", (datetime,), {"now": staticmethod(lambda tz=None: now if tz is None else now.astimezone(tz))})) else None
     monkeypatch.setattr(engine, "_velez_session_close", lambda day, default: default)
+    assert window(datetime(2026, 6, 3, 15, 0, tzinfo=timezone.utc)) is False   # the calendar didn't confirm today
+    engine._velez_open_days = {datetime(2026, 6, 3).date(), datetime(2026, 6, 6).date()}
     assert window(datetime(2026, 6, 3, 15, 0, tzinfo=timezone.utc)) is True    # Wed 11:00 ET
     assert window(datetime(2026, 6, 3, 12, 0, tzinfo=timezone.utc)) is False   # 08:00 ET premarket
     assert window(datetime(2026, 6, 3, 19, 58, tzinfo=timezone.utc)) is False  # 15:58 ET: too close to the bell
@@ -1535,3 +1539,61 @@ def test_a_bar_past_the_close_is_rebuilt_from_session_pieces():
     rebuilt = clip([four], pieces, 4 * 3600)
     assert [(b["h"], b["l"], b["c"]) for b in rebuilt] == [(101.0, 99.5, 100.5)]  # no after-hours 104 / 96
     assert clip([four], pieces[:30], 4 * 3600) == []  # the last half hour missing: can't be separated
+
+
+def test_futures_and_forex_partials_respect_their_closures(monkeypatch, tmp_path):
+    import bot.webhook_server as ws
+    from bot.webhook_server import TradingViewWebhookEngine
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+
+    def window(asset, now):
+        monkeypatch.setattr(engine, "_quote_asset_type", lambda symbol: asset)
+        monkeypatch.setattr(ws, "datetime", type("FrozenDatetime", (datetime,), {"now": staticmethod(lambda tz=None: now if tz is None else now.astimezone(tz))}))
+        return TradingViewWebhookEngine._velez_partial_window_open(engine, "X")
+
+    assert window("futures", datetime(2026, 6, 3, 15, 0, tzinfo=timezone.utc)) is True    # Wed 11:00 ET
+    assert window("futures", datetime(2026, 6, 3, 21, 30, tzinfo=timezone.utc)) is False  # 17:30 ET daily halt
+    assert window("futures", datetime(2026, 6, 6, 15, 0, tzinfo=timezone.utc)) is False   # Saturday
+    assert window("forex", datetime(2026, 6, 5, 22, 0, tzinfo=timezone.utc)) is False     # Friday 18:00 ET
+    assert window("forex", datetime(2026, 6, 3, 21, 30, tzinfo=timezone.utc)) is True
+    assert window("crypto", datetime(2026, 6, 6, 15, 0, tzinfo=timezone.utc)) is True
+
+
+def test_an_unfilled_first_partial_can_fire_again(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    broker.orders = [_stop("s1", "sell", "497")]
+    engine._velez_partial_with_stop(position(0.6), 50, level="first", submit=lambda: {"id": "x1"})
+    engine._record_partial_taken("SPY", "first")
+    broker.orders = [dict(_runner_stops(broker)[0], id="r1", status="new")]  # the exit was rejected
+    engine._velez_reconcile_partial_stop(position(0.6))
+    assert "first" not in engine._partials_taken_for_symbol("SPY")
+
+
+def test_an_oversized_stop_after_the_exit_is_cut_to_the_runner(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    broker.orders = [_stop("s1", "sell", "497")]
+    engine._velez_partial_with_stop(position(0.6), 50, lambda: {"id": "x1"})
+    broker.orders = [_stop("big", "sell", "500")]  # a stop moved back to full size while the exit worked
+    after = position(0.6)
+    after["qty"] = "50"
+    result = engine._velez_reconcile_partial_stop(after)
+    assert result["status"] == "submitted" and "big" in broker.canceled
+    assert [(o["qty"], o["stop_price"]) for o in _runner_stops(broker)][-1] == ("50", "500.00")
+
+
+def test_a_flat_symbol_drops_its_stop_follow_up(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    broker.orders = [_stop("s1", "sell", "497")]
+    engine._velez_partial_with_stop(position(0.6), 50, lambda: {"id": "x1"})
+    engine._velez_prune_open_records(set())  # SPY is flat
+    assert not engine.journal.get_setting("velez_partial_resize.SPY", None)
+
+
+def test_stop_moves_wait_while_a_partial_is_working(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    broker.orders = [_stop("s1", "sell", "497")]
+    engine._velez_partial_with_stop(position(0.6), 50, lambda: {"id": "x1"})
+    broker.orders = [{"id": "x1", "symbol": "SPY", "type": "market", "side": "sell", "status": "new"}]
+    before = len(broker.submitted)
+    engine._auto_lifecycle_actions(positions=[position(1.5)], open_orders=[], guardrails=[])  # breakeven would fire
+    assert not [o for o in broker.submitted[before:] if o.get("type") == "stop"]
