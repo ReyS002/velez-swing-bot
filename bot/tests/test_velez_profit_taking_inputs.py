@@ -846,9 +846,11 @@ def test_an_incomplete_fill_snapshot_keeps_a_recent_record(monkeypatch, tmp_path
     added = position(0.3)
     added.update(qty="150", entry_price=503.3333333333)  # an add of 50 @ 510 since the last pass
     engine._velez_fills_complete = False  # its fills are missing from a truncated page
-    assert engine._velez_open_record(added) is not None
-    engine._velez_fills_complete = True
+    # Can't be told apart from a close and a larger reopen without the fills: not inherited.
     assert engine._velez_open_record(added) is None
+    trimmed = position(0.3)
+    trimmed.update(qty="60")  # a partial exit: the average entry doesn't move
+    assert engine._velez_open_record(trimmed) is not None
     reopened = position(0.3)
     reopened.update(qty="80", entry_price=505.0)  # closed and reopened between passes
     engine._velez_fills_complete = False
@@ -1092,6 +1094,7 @@ def test_fills_showing_a_close_reject_an_add_shaped_reopen(monkeypatch, tmp_path
     assert engine._velez_open_record(reopened) is None  # ...but the fills show the old 100 closed
     added = position(0.3)
     added.update(qty="150", entry_price=100.0, velez_symbol_fills=[])
+    engine._velez_fills_complete = True  # a complete snapshot with no close in it: a real add
     assert engine._velez_open_record(added) is not None
 
 
@@ -1405,3 +1408,15 @@ def test_the_second_partial_waits_for_the_verdicts_first(monkeypatch, tmp_path):
     monkeypatch.setattr(engine, "_velez_profit_taking_verdict", lambda p: {"status": "hold"})
     engine._auto_lifecycle_actions(positions=[position(2.4)], open_orders=[], guardrails=[])
     assert partial_orders(broker) == []  # past 2R, but the rulebook hasn't called the first partial yet
+
+
+def test_the_open_record_is_kept_without_an_initial_risk(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    pos = position(None)  # a manual trade first seen with its stop already at breakeven
+    pos.update(entry_fill={"side": "buy", "transaction_time": "2026-06-03T14:30:00+00:00"},
+               entry_price=500.0, stop_price=500.0, current_price=506.0)
+    pos["linked_decision"] = {}
+    engine._velez_record_initial_risk(pos)
+    record = engine._velez_open_record(pos)
+    assert record is not None and record["risk"] is None and record["opened"] == "2026-06-03T14:30:00+00:00"
+    assert engine._velez_recorded_risk(pos) is None

@@ -3985,9 +3985,10 @@ class TradingViewWebhookEngine:
                 risk = abs(base - opening_stop) / factor
             elif protective(current, entry):
                 risk = abs(entry - current)  # no opening stop on record: the live stop, if not trailed
-            else:
-                return
-            self.journal.set_setting(key, risk)
+            # Otherwise the risk stays unknown (retried next pass), but the record still keeps the
+            # opening time and timeframe the profit-taking verdict needs.
+            if risk is not None:
+                self.journal.set_setting(key, risk)
         record = {
             "key": key,
             "side": side,
@@ -4001,7 +4002,7 @@ class TradingViewWebhookEngine:
         # basis confirmed): the risk is the opening basis risk divided by it. That holds even when an exit
         # and a split between passes leave the quantity unchanged.
         record = self._velez_track_split(position, record)  # last-seen quantity and entry
-        if "split_factor" in fill:  # an opening fill rebuilt from the fills: its factor decides the basis
+        if "split_factor" in fill and risk is not None:  # a rebuilt opening fill: its factor decides the basis
             factor_now = self._float(fill.get("split_factor")) or 1.0
             if same and existing.get("base_risk") is not None:
                 base_risk = self._float(existing.get("base_risk"))
@@ -4118,8 +4119,9 @@ class TradingViewWebhookEngine:
         aged = opened is not None and opened <= datetime.now(timezone.utc) - timedelta(days=days)
         # Accept it only when the position is the one last seen (same quantity and entry) or a split
         # explains the change (a split moves the quantity without a fill). When the open is aged out or
-        # the fill snapshot failed or was cut off, an add or a partial exit since the last pass is
-        # accepted too: no fill can confirm it, but a closed-and-reopened trade doesn't fit either shape.
+        # the fill snapshot failed or was cut off, a partial exit since the last pass is accepted too (a
+        # reopen at the very same average entry doesn't happen); an add only with a complete snapshot,
+        # since a trade closed and reopened larger looks like an add when the fills can't show the close.
         qty = abs(self._position_qty_number(position))
         entry = self._velez_price(position, "entry_price")
         seen = record.get("seen") or []
@@ -4133,10 +4135,12 @@ class TradingViewWebhookEngine:
                 if aged or not getattr(self, "_velez_fills_complete", False):
                     if qty < last_qty and abs(entry / last_entry - 1.0) <= 1e-4:
                         return record  # a partial exit: the average entry doesn't move
-                    if qty > last_qty:
+                    if qty > last_qty and getattr(self, "_velez_fills_complete", False):
+                        # An add at a plausible price; only with a complete fill snapshot, where
+                        # _velez_closed_since() above would have seen a close-and-reopen.
                         added_at = (qty * entry - last_qty * last_entry) / (qty - last_qty)
                         if 0.5 * entry <= added_at <= 2.0 * entry:
-                            return record  # an add at a plausible price
+                            return record
         if self._velez_split_factor(seen, qty, entry) is not None:
             return record
         return None
