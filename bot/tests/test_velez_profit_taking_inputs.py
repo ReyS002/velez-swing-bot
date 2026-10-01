@@ -480,16 +480,17 @@ def test_session_feed_is_full_tape_first(monkeypatch, tmp_path):
 def test_daily_fallback_is_split_adjusted(monkeypatch, tmp_path):
     engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
     monkeypatch.setattr(engine.broker, "is_configured", lambda: True, raising=False)
-    monkeypatch.setattr(engine, "_alpaca_data_request", lambda path, params: (_ for _ in ()).throw(RuntimeError("no sip")))
-    asked = {}
+    asked = []
 
-    def top_down(symbol, days=120, adjustment="raw"):
-        asked["adjustment"] = adjustment
-        return [Bar(timestamp=datetime(2026, 6, 1, tzinfo=timezone.utc), open=1, high=2, low=0.5, close=1.5, volume=1)]
+    def data(path, params):
+        asked.append((params["feed"], params["adjustment"]))
+        if params["feed"] == "sip":
+            raise RuntimeError("no sip")
+        return {"bars": [{"t": "2026-06-01T04:00:00Z", "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 1}]}
 
-    monkeypatch.setattr(engine, "_fetch_top_down_daily_bars", top_down)
+    monkeypatch.setattr(engine, "_alpaca_data_request", data)
     rows = engine._velez_daily_rows("SPY")
-    assert asked["adjustment"] == "split" and all(r["split_adjusted"] for r in rows)
+    assert asked == [("sip", "split"), ("iex", "split")] and all(r["split_adjusted"] for r in rows)
 
 
 def _two_day_hold(monkeypatch, engine, yesterday_prices, today_prices, adjusted_yesterday_close):
@@ -664,10 +665,11 @@ def test_recorded_risk_is_rebased_across_a_split(monkeypatch, tmp_path):
     opening = {"side": "buy", "transaction_time": "2026-06-03T14:30:00+00:00"}
     first = position(0.2)
     first.update(entry_fill=opening, current_price=501.0)
-    engine._velez_record_initial_risk(first)  # entry 500, risk 5.0
-    # 2-for-1: the broker now reports entry 250, price 253, stop at breakeven.
+    engine._velez_record_initial_risk(first)  # 100 @ 500, risk 5.0
+    # 2-for-1: 200 shares @ 250, same cost basis. Stop at breakeven.
     after = position(None)
-    after.update(entry_fill=opening, entry_price=250.0, stop_price=250.0, current_price=253.0)
+    after.update(entry_fill=opening, qty="200", entry_price=250.0, stop_price=250.0, current_price=253.0)
+    engine._velez_record_initial_risk(after)
     assert abs(engine._velez_initial_r(after) - 1.2) < 1e-9  # 3 / 2.5, not 3 / 5
 
 
@@ -680,3 +682,86 @@ def test_a_flat_symbol_drops_its_record(monkeypatch, tmp_path):
     reopened = position(0.3)  # a new SPY long whose opening fill isn't in the snapshot
     assert engine._velez_recorded_risk(reopened) is None
     engine._velez_prune_open_records(set())  # nothing left to clear
+
+
+def test_risk_waits_for_the_entry_order_to_finish_filling(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    pos = position(0.2)
+    pos.update(entry_fill={"side": "buy", "transaction_time": "2026-06-03T14:30:00+00:00"},
+               open_orders=[{"symbol": "SPY", "side": "buy", "status": "partially_filled"}])
+    engine._velez_record_initial_risk(pos)
+    assert engine._velez_recorded_risk(pos) is None  # the average entry can still move
+    pos.update(open_orders=[{"symbol": "SPY", "side": "sell", "status": "new", "type": "stop"}], entry_price=503.0)
+    engine._velez_record_initial_risk(pos)
+    assert engine._velez_recorded_risk(pos) == 8.0  # 503 to the 495 stop, once filled
+
+
+def test_modest_forward_split_is_rebased_but_an_add_is_not(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    opening = {"side": "buy", "transaction_time": "2026-06-03T14:30:00+00:00"}
+    first = position(0.2)
+    first.update(entry_fill=opening, qty="30", entry_price=120.0, stop_price=108.0, current_price=121.0)
+    first["linked_decision"]["stop_price"] = 108.0
+    engine._velez_record_initial_risk(first)  # risk 12
+    split = position(None)  # 4-for-3: 40 @ 90, same cost basis: risk 9
+    split.update(entry_fill=opening, qty="40", entry_price=90.0, stop_price=90.0, current_price=99.0)
+    engine._velez_record_initial_risk(split)
+    assert abs(engine._velez_initial_r(split) - 1.0) < 1e-9
+    added = position(None)  # a winner add: 60 @ 100 (the cost basis grows): no rebase
+    added.update(entry_fill=opening, qty="60", entry_price=100.0, stop_price=100.0, current_price=109.0)
+    engine._velez_record_initial_risk(added)
+    assert abs(engine._velez_recorded_risk(added) - 9.0) < 1e-9
+
+
+def test_keyless_position_rejects_a_recent_record(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    recent = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    first = position(0.2)
+    first.update(entry_fill={"side": "buy", "transaction_time": recent})
+    engine._velez_record_initial_risk(first)
+    # Same side, no opening fill in the snapshot, but the record is recent: the fills should have
+    # confirmed it, so it may be another trade's. Not inherited.
+    assert engine._velez_open_record(position(0.3)) is None
+
+
+def test_daily_rows_fall_back_to_yahoo_auto_adjusted(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    monkeypatch.setattr(engine.broker, "is_configured", lambda: True, raising=False)
+    monkeypatch.setattr(engine, "_alpaca_data_request", lambda path, params: (_ for _ in ()).throw(RuntimeError("down")))
+    import pandas as pd
+    import yfinance
+    asked = {}
+
+    def fake_download(ticker, **kwargs):
+        asked.update(kwargs)
+        index = pd.date_range("2026-03-02", periods=90, freq="B", tz="America/New_York")
+        return pd.DataFrame({"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Volume": 1.0}, index=index)
+
+    monkeypatch.setattr(yfinance, "download", fake_download)
+    rows = engine._velez_daily_rows("SPY")
+    assert asked["auto_adjust"] is True and asked["period"] == "9mo"
+    assert len(rows) == 90 and all(r["split_adjusted"] for r in rows)
+
+
+def test_cold_start_after_an_add_uses_the_opening_decisions_stop(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    opening_decision = {"symbol": "SPY", "side": "buy", "status": "submitted", "stop_price": 95.0,
+                        "timeframe": "15", "timestamp": "2026-06-03T14:29:00+00:00"}
+    add_decision = {"symbol": "SPY", "side": "buy", "status": "submitted", "stop_price": 104.0,
+                    "timeframe": "60", "timestamp": "2026-06-03T17:00:00+00:00"}
+    monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: [add_decision, opening_decision])
+    pos = position(None)
+    pos.update(entry_fill={"side": "buy", "price": "100", "transaction_time": "2026-06-03T14:30:00+00:00"},
+               qty="150", entry_price=103.33, stop_price=100.0, current_price=110.0)
+    pos["linked_decision"] = dict(add_decision)
+    engine._velez_record_initial_risk(pos)
+    assert engine._velez_recorded_risk(pos) == 5.0  # 100 fill to the 95 opening stop
+    assert engine._velez_open_record(pos)["timeframe"] == "15"
+
+
+def test_unsupported_decision_timeframe_leaves_the_verdict_unreadable(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda **kw: (_ for _ in ()).throw(AssertionError("no fetch")))
+    pos = position(0.5)
+    pos["linked_decision"]["timeframe"] = "1W"
+    assert engine._velez_profit_taking_verdict(pos) is None
