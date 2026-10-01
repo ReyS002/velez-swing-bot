@@ -66,15 +66,33 @@ def test_equity_daily_bar_is_complete_at_the_bell(monkeypatch, tmp_path):
     assert engine._velez_bar_end(bar, "15Min", True) == datetime(2026, 6, 3, 0, 15, tzinfo=timezone.utc)
 
 
-def test_entry_time_is_the_entry_fill_not_the_decision(monkeypatch, tmp_path):
+def test_entry_time_is_the_opening_fill_not_the_decision(monkeypatch, tmp_path):
     engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
     decided = datetime(2026, 6, 3, 14, 0, tzinfo=timezone.utc)
     pos = position(0.5)
     pos["linked_decision"]["timestamp"] = decided.isoformat()
-    pos["latest_fill"] = {"side": "buy", "transaction_time": (decided + timedelta(minutes=40)).isoformat()}
+    pos["entry_fill"] = {"side": "buy", "transaction_time": (decided + timedelta(minutes=40)).isoformat()}
     assert engine._velez_entry_time(pos) == decided + timedelta(minutes=40)
-    pos["latest_fill"] = {"side": "sell", "transaction_time": (decided + timedelta(hours=2)).isoformat()}
-    assert engine._velez_entry_time(pos) == decided  # an exit fill is not the entry
+    pos.pop("entry_fill")
+    assert engine._velez_entry_time(pos) == decided
+
+
+def test_opening_fill_ignores_adds_exits_and_older_trades(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    decided = datetime(2026, 6, 3, 14, 0, tzinfo=timezone.utc)
+    at = lambda minutes: (decided + timedelta(minutes=minutes)).isoformat()
+    fills = [  # newest first, as the lifecycle reads them
+        {"symbol": "SPY", "side": "sell", "transaction_time": at(200)},   # a partial exit
+        {"symbol": "SPY", "side": "buy", "transaction_time": at(120)},    # a pyramid add
+        {"symbol": "SPY", "side": "buy", "transaction_time": at(31)},     # second piece of a split fill
+        {"symbol": "SPY", "side": "buy", "transaction_time": at(30)},     # the opening fill
+        {"symbol": "QQQ", "side": "buy", "transaction_time": at(10)},
+        {"symbol": "SPY", "side": "buy", "transaction_time": at(-600)},   # a previous trade
+    ]
+    opening = engine._velez_opening_fill("SPY", True, {"timestamp": decided.isoformat()}, fills)
+    assert opening["transaction_time"] == at(30)
+    short = engine._velez_opening_fill("SPY", False, {"timestamp": decided.isoformat()}, fills)
+    assert short["transaction_time"] == at(200)
 
 
 def test_verdict_reads_bars_on_the_decision_timeframe(monkeypatch, tmp_path):
@@ -118,7 +136,6 @@ def test_non_equity_daily_atr_comes_from_its_own_bars(monkeypatch, tmp_path):
     verdict = engine._velez_profit_taking_verdict(pos)
     assert verdict["daily_atr"] is not None
     assert verdict["status"] == "take_profits"
-    assert verdict["status"] == "take_profits"
 
 
 def test_broker_crypto_alias_reads_crypto_bars(monkeypatch, tmp_path):
@@ -131,3 +148,61 @@ def test_broker_crypto_alias_reads_crypto_bars(monkeypatch, tmp_path):
     pos["symbol"] = "BTCUSD"  # how the broker reports the configured BTC/USD
     engine._velez_profit_taking_verdict(pos)
     assert seen == ["crypto"]
+
+
+def test_session_feed_keeps_the_open_when_local_bars_rolled_it_out():
+    strat = strategy(daily_range=True)
+    strat.daily_bars_provider = lambda symbol: daily_rows()
+    # The local window only holds the afternoon; the session feed still has the 99.0 opening low.
+    ctx = strat._get_context("SPY")
+    for b in (hour_bar(13, 100.6, 100.9, 100.5, 100.8),):
+        ctx.bars.append(Bar(timestamp=b["t"], open=b["o"], high=b["h"], low=b["l"], close=b["c"], volume=1))
+    strat.session_bars_provider = lambda symbol: [hour_bar(9, 100, 100.5, 99.0, 100.2), hour_bar(13, 100.6, 100.9, 100.5, 100.8)]
+    bar = Bar(timestamp=hour_bar(14, 0, 0, 0, 0)["t"], open=100.8, high=101.2, low=100.7, close=101.1, volume=1)
+    assert abs(strat._range_used(signal(), bar) - 1.05) < 1e-9
+
+
+def test_bare_alert_gets_the_daily_range_veto():
+    strat = strategy(daily_range=True)
+    strat.daily_bars_provider = lambda symbol: daily_rows()
+    strat.session_bars_provider = lambda symbol: [hour_bar(9, 100, 100.5, 99.0, 100.2), hour_bar(10, 100.2, 101.5, 100.1, 101.4)]
+    at = hour_bar(11, 0, 0, 0, 0)["t"]
+    # No chart context: price is the feed's latest close (101.4), 1.2 daily ATRs up from 99.0.
+    gate = strat._context_free_gate(signal(), at)
+    assert gate["allowed"] is False and "daily_range_exhausted" in gate["reasons"]
+    strat.session_bars_provider = lambda symbol: []
+    assert strat._context_free_gate(signal(), at)["allowed"] is True  # nothing to measure: not enforced
+
+
+def test_futures_bars_follow_the_decision_timeframe(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    seen = []
+    monkeypatch.setattr(engine, "_fetch_polygon_futures_bars", lambda symbol, timeframe=None: seen.append(timeframe) or [])
+    engine._fetch_scanner_bars(symbol="ESZ6", asset_type="futures", timeframe="15Min")
+    engine._fetch_scanner_bars(symbol="ESZ6", asset_type="futures")
+    assert seen == ["15Min", None]
+
+
+def test_intraday_crypto_reads_daily_bars_for_its_atrs(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    engine.symbol_config["BTC/USD"] = {"symbol": "BTC/USD", "type": "crypto"}
+    engine.scanner_config["timeframe"] = "15Min"
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(hours=3)
+    intraday = [Bar(timestamp=start + timedelta(minutes=15 * i), open=100 + i, high=101 + i, low=99.5 + i, close=100.5 + i,
+                    volume=1) for i in range(6)]
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    daily = [Bar(timestamp=today - timedelta(days=70 - i), open=100, high=101, low=99, close=100, volume=1) for i in range(70)]
+    asked = []
+
+    def fetch(symbol, asset_type, timeframe=None):
+        asked.append(timeframe)
+        return daily if timeframe == "1Day" else intraday
+
+    monkeypatch.setattr(engine, "_fetch_scanner_bars", fetch)
+    pos = position(0.5)
+    pos["symbol"] = "BTC/USD"
+    pos["linked_decision"]["timestamp"] = (start + timedelta(minutes=5)).isoformat()
+    verdict = engine._velez_profit_taking_verdict(pos)
+    assert "1Day" in asked
+    assert verdict["daily_atr"] == 2.0 and verdict["wide_day_atr"] == 2.0

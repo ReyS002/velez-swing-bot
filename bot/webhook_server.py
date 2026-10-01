@@ -1616,9 +1616,11 @@ class TradingViewWebhookEngine:
         self.scanner_strategy.set_symbol_types(config.get("symbols", []))
         # Completed daily bars for the rulebook's daily range and profit taking (2026.10.5/10.6).
         self._velez_daily_cache: Dict[tuple, List[dict]] = {}
+        self._velez_session_cache: Dict[str, tuple] = {}
         for velez_strategy in (self.strategy, self.scanner_strategy):
             if hasattr(velez_strategy, "daily_bars_provider"):
                 velez_strategy.daily_bars_provider = self._velez_daily_rows
+                velez_strategy.session_bars_provider = self._velez_session_bars
         self.scanner_last_bar: Dict[str, datetime] = {}
         self.scanner_seen_alerts: Deque[str] = deque(maxlen=int(self.scanner_config.get("dedupe_cache_size", 1000) or 1000))
         self.scanner_symbol_cooldowns: Dict[str, datetime] = {}
@@ -3378,7 +3380,7 @@ class TradingViewWebhookEngine:
         if asset_type == "crypto":
             return self._fetch_crypto_bars(symbol, timeframe) if timeframe else self._fetch_crypto_bars(symbol)
         if asset_type in {"future", "futures"}:
-            return self._fetch_polygon_futures_bars(symbol)
+            return self._fetch_polygon_futures_bars(symbol, timeframe) if timeframe else self._fetch_polygon_futures_bars(symbol)
         return self._fetch_stock_bars(symbol, timeframe) if timeframe else self._fetch_stock_bars(symbol)
 
     def _fetch_stock_bars(self, symbol: str, timeframe: Optional[str] = None) -> List[Bar]:
@@ -3453,9 +3455,9 @@ class TradingViewWebhookEngine:
         rows = (data.get("bars") or {}).get(alpaca_symbol) or []
         return [self._bar_from_alpaca(item) for item in rows]
 
-    def _fetch_polygon_futures_bars(self, symbol: str) -> List[Bar]:
+    def _fetch_polygon_futures_bars(self, symbol: str, timeframe: Optional[str] = None) -> List[Bar]:
         ticker = self._polygon_futures_ticker(symbol)
-        resolution = self._polygon_resolution(str(self.scanner_config.get("futures_resolution") or self.scanner_config.get("timeframe", "1Min")))
+        resolution = self._polygon_resolution(str(timeframe or self.scanner_config.get("futures_resolution") or self.scanner_config.get("timeframe", "1Min")))
         limit = max(50, min(int(self.scanner_config.get("history_bars", 260) or 260), 50000))
         data = self._polygon_request(f"/futures/vX/aggs/{ticker}", params={"resolution": resolution, "limit": limit})
         rows = data.get("results") or []
@@ -3768,6 +3770,73 @@ class TradingViewWebhookEngine:
             self._velez_daily_cache[key] = rows
         return rows
 
+    def _velez_session_bars(self, symbol: str) -> List[dict]:
+        """Today's regular-session 5-minute bars (rulebook dicts) for the daily-range rule, cached a minute.
+
+        The scanner keeps only a rolling window of bars, which on short timeframes no longer holds
+        the open by midday; this keeps the day's true high and low in the measurement. Equities
+        only; a failed fetch returns [] and is not cached.
+        """
+        sym = str(symbol or "").upper().strip()
+        if not sym or not self.broker.is_configured():
+            return []
+        now = datetime.now(timezone.utc)
+        cached = self._velez_session_cache.get(sym)
+        if cached is not None and (now - cached[0]).total_seconds() < 60:
+            return cached[1]
+        tz = ZoneInfo(velez_doctrine.MARKET_TZ)
+        start = datetime.combine(now.astimezone(tz).date(), velez_doctrine.SESSION_OPEN, tzinfo=tz)
+        try:
+            data = self._alpaca_data_request(
+                "/v2/stocks/bars",
+                params={
+                    "symbols": sym,
+                    "timeframe": "5Min",
+                    "start": start.isoformat(),
+                    "limit": 200,
+                    "feed": str(self.scanner_config.get("stock_feed", "iex")),
+                    "adjustment": "raw",
+                    "sort": "asc",
+                },
+            )
+            rows = [velez_doctrine.bar_dict(self._bar_from_alpaca(item)) for item in (data.get("bars") or {}).get(sym) or []]
+        except Exception as exc:
+            log_event(self.logger, "velez_session_bars_failed", {"symbol": sym, "reason": str(exc)[:160]})
+            return []
+        if len(self._velez_session_cache) > 256:
+            self._velez_session_cache.clear()
+        self._velez_session_cache[sym] = (now, rows)
+        return rows
+
+    def _velez_opening_fill(self, symbol: str, long: bool, linked: Optional[dict], fills: List[dict]) -> Optional[dict]:
+        """The fill that opened the position: the earliest entry-side fill at or after its decision.
+
+        Later same-side fills (a split fill, a pyramid add) never move the entry; exit fills never
+        count. None when the fill window doesn't reach back to the entry.
+        """
+        decided = (linked or {}).get("timestamp")
+        try:
+            floor = self._timestamp(decided) - timedelta(minutes=2) if decided else None
+        except Exception:
+            floor = None
+        sides = {"buy"} if long else {"sell", "sell_short"}
+        best, best_ts = None, None
+        for fill in fills or []:
+            if str(fill.get("symbol") or "").upper() != symbol or str(fill.get("side") or "").lower() not in sides:
+                continue
+            stamp = fill.get("transaction_time") or fill.get("filled_at")
+            if not stamp:
+                continue
+            try:
+                ts = self._timestamp(stamp)
+            except Exception:
+                continue
+            if floor is not None and ts < floor:
+                continue
+            if best_ts is None or ts < best_ts:
+                best, best_ts = fill, ts
+        return best
+
     @staticmethod
     def _velez_alpaca_timeframe(value: Any) -> Optional[str]:
         """Alpaca timeframe for a decision's timeframe ("15", "15m", "1h", "D", "15Min", ...), or None."""
@@ -3798,17 +3867,15 @@ class TradingViewWebhookEngine:
         return start + timedelta(seconds=seconds)
 
     def _velez_entry_time(self, position: dict) -> Optional[datetime]:
-        """When the position was actually opened: the entry fill's time when the broker reports one on
-        the entry side (a resting limit can fill well after its decision), else the decision time."""
+        """When the position was actually opened: the opening fill's time (a resting limit can fill well
+        after its decision; split fills and adds don't move it), else the decision time."""
         decided = (position.get("linked_decision") or {}).get("timestamp")
         if not decided:
             return None
         entry_ts = self._timestamp(decided)
-        fill = position.get("latest_fill") or {}
-        long = str(position.get("side") or "long").lower() == "long"
-        entry_sides = {"buy"} if long else {"sell", "sell_short"}
+        fill = position.get("entry_fill") or {}
         filled_at = fill.get("transaction_time") or fill.get("filled_at")
-        if filled_at and str(fill.get("side") or "").lower() in entry_sides:
+        if filled_at:
             try:
                 entry_ts = max(entry_ts, self._timestamp(filled_at))
             except Exception:
@@ -3858,7 +3925,15 @@ class TradingViewWebhookEngine:
                 rows = daily_rows_before(self._velez_daily_rows(symbol), last_day)
             else:
                 last = since[-1]["t"] if since[-1]["t"].tzinfo else since[-1]["t"].replace(tzinfo=timezone.utc)
-                rows = utc_daily_rows(closed_dicts, last.astimezone(timezone.utc).date())
+                # Intraday history is far shorter than the 61 days the wide-day ATR needs: read daily bars.
+                daily_source = closed_dicts
+                if not daily:
+                    try:
+                        daily_source = [velez_doctrine.bar_dict(bar) for bar in
+                                        self._fetch_scanner_bars(symbol=symbol, asset_type=asset_type, timeframe="1Day")]
+                    except Exception as exc:
+                        log_event(self.logger, "velez_profit_taking_daily_fallback", {"symbol": symbol, "reason": str(exc)[:160]})
+                rows = utc_daily_rows(daily_source, last.astimezone(timezone.utc).date())
             rows = split_safe_daily_rows(rows)
             return velez_doctrine.profit_taking(
                 side,
@@ -10412,6 +10487,7 @@ class TradingViewWebhookEngine:
         multiplier = self._float(sym_cfg.get("contract_multiplier")) or 1.0
         initial_risk = risk_per_unit * qty_abs * multiplier if risk_per_unit and qty_abs else None
         latest_fill = next((fill for fill in fills if str(fill.get("symbol") or "").upper() == symbol), None)
+        entry_fill = self._velez_opening_fill(symbol, direction > 0, linked, fills)
         management = self._position_management_actions(
             side=side,
             entry_price=entry_price,
@@ -10441,6 +10517,7 @@ class TradingViewWebhookEngine:
             "linked_decision": self._public_lifecycle_decision(linked),
             "open_orders": symbol_orders,
             "latest_fill": latest_fill,
+            "entry_fill": entry_fill,
             "management": management,
             "next_action": self._next_management_action(management),
         }

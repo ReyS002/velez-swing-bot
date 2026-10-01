@@ -244,6 +244,9 @@ class VelezInstitutionalStrategy:
         # Completed daily bars for the daily-range rule (rulebook 2026.10.5), as rulebook dicts.
         # Set by the live server; None in backtests and replays, where the rule is not enforced.
         self.daily_bars_provider: Optional[Callable[[str], List[dict]]] = None
+        # Today's regular-session bars from the live feed, so the day's extremes survive a short
+        # local history (1-minute bars roll the open out by midday) and bare alerts are measured.
+        self.session_bars_provider: Optional[Callable[[str], List[dict]]] = None
         self._validate_setup_allowlist()
 
     def _get_context(self, symbol: str) -> VelezContext:
@@ -427,12 +430,14 @@ class VelezInstitutionalStrategy:
 
     # ── Daily range used (rulebook 2026.10.5) ──
 
-    def _range_used(self, signal: Signal, bar: Bar, decision_at: Optional[datetime] = None) -> Optional[float]:
+    def _range_used(self, signal: Signal, bar: Optional[Bar], decision_at: Optional[datetime] = None) -> Optional[float]:
         """Daily ATRs today's move has covered in the signal's direction, for the entry gate.
 
-        None (not enforced) when the rule is off, for non-equities, without a live daily-bar
-        source, or when the daily ATR or today's session can't be read. `range_block` moves
-        the veto: the value is scaled so the rulebook's 1.0 threshold lands on it.
+        Today's high and low come from the local bars and, live, from the session feed (the
+        local history can be too short to hold the open). Without a bar (a bare alert) the
+        price is the feed's latest. None (not enforced) when the rule is off, for non-equities,
+        without a live daily-bar source, or when the daily ATR or today's session can't be read.
+        `range_block` moves the veto: the value is scaled so the rulebook's 1.0 lands on it.
         """
         cfg = self._doctrine_cfg()
         if not cfg.get("daily_range", False) or self.daily_bars_provider is None:
@@ -440,8 +445,8 @@ class VelezInstitutionalStrategy:
         symbol = str(signal.symbol).upper()
         if not self._is_equity(symbol):
             return None
-        at = decision_at or bar.timestamp
-        local = doctrine._local(at)
+        at = decision_at or (bar.timestamp if bar is not None else None)
+        local = doctrine._local(at) if at is not None else None
         if local is None:
             return None
         try:
@@ -451,15 +456,37 @@ class VelezInstitutionalStrategy:
         atr_value = daily_atr_from_rows(daily_rows_before(rows, local.date()))
         if not atr_value:
             return None
+        highs: List[float] = []
+        lows: List[float] = []
         ctx = self.symbols.get(signal.symbol) or self.symbols.get(symbol)
         intraday = [doctrine.bar_dict(b) for b in ctx.bars] if ctx is not None else []
-        current = doctrine.bar_dict(bar)
-        if not intraday or intraday[-1]["t"] != current["t"]:
-            intraday.append(current)
-        high, low = session_high_low_overlap(intraday, as_of=at)
+        if bar is not None:
+            current = doctrine.bar_dict(bar)
+            if not intraday or intraday[-1]["t"] != current["t"]:
+                intraday.append(current)
+        price = bar.close if bar is not None else None
+        feeds = [intraday]
+        if self.session_bars_provider is not None:
+            try:
+                feeds.append(list(self.session_bars_provider(symbol) or []))
+            except Exception:
+                pass
+        for series in feeds:
+            if not series:
+                continue
+            high, low = session_high_low_overlap(series, as_of=at)
+            if high is None:
+                continue
+            highs.append(high)
+            lows.append(low)
+            if price is None:
+                today = session_overlap_bars(series, as_of=at)
+                price = today[-1]["c"] if today else None
+        if price is None or not highs:
+            return None
         side = "long" if signal.side == Side.BUY else "short"
         # The unrounded ratio: 0.996 has not covered the daily ATR yet.
-        used = doctrine.daily_range_used(atr_value, high, low, bar.close, side).get("used_in_direction_raw")
+        used = doctrine.daily_range_used(atr_value, max(highs), min(lows), price, side).get("used_in_direction_raw")
         if used is None:
             return None
         block = float(cfg.get("range_block", doctrine.RANGE_USED_BLOCK) or doctrine.RANGE_USED_BLOCK)
@@ -524,6 +551,7 @@ class VelezInstitutionalStrategy:
             metadata=signal.metadata,
             decision_time=at if self._session_applies(signal.symbol) else None,
             market_bias=self._market_bias(signal.symbol, at),
+            range_used=self._range_used(signal, None, at),
         )
 
     def _session_applies(self, symbol: str) -> bool:
