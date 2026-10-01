@@ -897,16 +897,23 @@ def test_planned_limit_entries_are_measured_at_the_limit():
 def test_daily_bar_closes_early_on_a_half_day(monkeypatch, tmp_path):
     engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
     monkeypatch.setattr(engine.broker, "is_configured", lambda: True, raising=False)
-    monkeypatch.setattr(engine.broker, "get_calendar_raw",
-                        lambda start=None, end=None: [{"date": start, "open": "09:30", "close": "13:00"}], raising=False)
     from zoneinfo import ZoneInfo
     today = datetime.now(ZoneInfo("America/New_York")).date()
+    calls = []
+
+    def calendar(start=None, end=None):
+        calls.append((start, end))
+        return [{"date": today.isoformat(), "open": "09:30", "close": "13:00"},
+                {"date": "2025-11-28", "open": "09:30", "close": "13:00"}]  # a past half day
+
+    monkeypatch.setattr(engine.broker, "get_calendar_raw", calendar, raising=False)
     bar = Bar(timestamp=datetime(today.year, today.month, today.day, tzinfo=timezone.utc), open=1, high=1, low=1, close=1, volume=1)
     end = engine._velez_bar_end(bar, "1Day", True).astimezone(ZoneInfo("America/New_York"))
-    if datetime.now(timezone.utc) < datetime.combine(today, datetime.min.time(), tzinfo=ZoneInfo("America/New_York")).replace(hour=16):
-        assert (end.hour, end.minute) == (13, 0)
-    else:
-        assert (end.hour, end.minute) == (16, 0)  # past the normal close: no calendar lookup needed
+    assert (end.hour, end.minute) == (13, 0)
+    # A historical half day's bar also ends at 13:00 (after-hours fills that day are after the bar).
+    past = Bar(timestamp=datetime(2025, 11, 28, tzinfo=timezone.utc), open=1, high=1, low=1, close=1, volume=1)
+    end = engine._velez_bar_end(past, "1Day", True).astimezone(ZoneInfo("America/New_York"))
+    assert (end.hour, end.minute) == (13, 0)
 
 
 def test_opening_decision_is_matched_by_its_order(monkeypatch, tmp_path):
@@ -1658,3 +1665,21 @@ def test_a_one_for_twenty_five_reverse_split_is_read():
     assert TradingViewWebhookEngine._velez_split_ratio(1 / 25) == (1, 25)
     assert TradingViewWebhookEngine._velez_split_ratio(1 / 50) == (1, 50)
     assert TradingViewWebhookEngine._velez_split_ratio(0.0371) is None
+
+
+def test_a_sell_short_add_is_not_a_close(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    record = {"seen_at": "2026-06-03T14:00:00+00:00"}
+    add = {"symbol": "SPY", "side": "sell_short", "qty": "50", "transaction_time": "2026-06-03T14:10:00+00:00"}
+    cover = {"symbol": "SPY", "side": "buy", "qty": "100", "transaction_time": "2026-06-03T14:20:00+00:00"}
+    assert engine._velez_closed_since({"side": "short", "velez_symbol_fills": [add, cover]}, record, 100) is False
+
+
+def test_a_bar_history_reads_the_calendar_once(monkeypatch, tmp_path):
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    calls = []
+    broker.get_calendar_raw = lambda start=None, end=None: calls.append((start, end)) or [
+        {"date": "2026-05-%02d" % d, "close": "16:00"} for d in range(1, 29)]
+    for d in range(4, 28):
+        engine._velez_bar_end(Bar(timestamp=datetime(2026, 5, d, tzinfo=timezone.utc), open=1, high=1, low=1, close=1, volume=1), "1Day", True)
+    assert len(calls) == 1

@@ -4169,7 +4169,7 @@ class TradingViewWebhookEngine:
             seen_at = None
         if seen_at is None:
             return False
-        entry_side = "buy" if str(position.get("side") or "long").lower() == "long" else "sell"
+        entry_sides = {"buy"} if str(position.get("side") or "long").lower() == "long" else {"sell", "sell_short"}
         timed = []
         for fill in position.get("velez_symbol_fills") or []:
             try:
@@ -4179,7 +4179,7 @@ class TradingViewWebhookEngine:
             if at <= seen_at:
                 continue
             qty = abs(self._float(fill.get("qty")) or 0.0)
-            timed.append((at, qty if str(fill.get("side") or "").lower() == entry_side else -qty))
+            timed.append((at, qty if str(fill.get("side") or "").lower() in entry_sides else -qty))
         inventory = abs(last_qty)
         for _, signed in sorted(timed, key=lambda item: item[0]):
             inventory += signed
@@ -4657,8 +4657,24 @@ class TradingViewWebhookEngine:
         close = default
         if self.broker.is_configured() and hasattr(self.broker, "get_calendar_raw"):
             try:
-                rows = self.broker.get_calendar_raw(start=day.isoformat(), end=day.isoformat()) or []
-                row = next((r for r in rows if str(r.get("date")) == day.isoformat()), None)
+                # The surrounding months in one request: a bar history asks for many days at once.
+                start, end = day - timedelta(days=120), max(day, datetime.now(timezone.utc).date()) + timedelta(days=7)
+                rows = self.broker.get_calendar_raw(start=start.isoformat(), end=end.isoformat()) or []
+                by_date = {str(r.get("date")): r for r in rows if r.get("date") and r.get("close")}
+                if rows:
+                    for offset in range((end - start).days + 1):
+                        other = start + timedelta(days=offset)
+                        if other == day or other in cache:
+                            continue
+                        found = by_date.get(other.isoformat())
+                        if found:
+                            hour, minute = (int(part) for part in str(found["close"]).split(":")[:2])
+                            cache[other] = default.replace(year=other.year, month=other.month, day=other.day, hour=hour, minute=minute)
+                            self.__dict__.setdefault("_velez_open_days", set()).add(other)
+                        else:
+                            cache[other] = default.replace(year=other.year, month=other.month, day=other.day)
+                            self.__dict__.setdefault("_velez_closed_days", set()).add(other)
+                row = by_date.get(day.isoformat())
                 if row and row.get("close"):
                     hour, minute = (int(part) for part in str(row["close"]).split(":")[:2])
                     close = default.replace(hour=hour, minute=minute)
@@ -4669,7 +4685,7 @@ class TradingViewWebhookEngine:
                 return default
             if not rows or row is None:
                 self.__dict__.setdefault("_velez_closed_days", set()).add(day)  # a holiday: no session
-        if len(cache) > 32:
+        if len(cache) > 2000:
             cache.clear()
         cache[day] = close
         return close
@@ -4683,8 +4699,7 @@ class TradingViewWebhookEngine:
             day = velez_doctrine.daily_bar_date(start)
             if day is not None:
                 close = datetime.combine(day, velez_doctrine.SESSION_CLOSE, tzinfo=ZoneInfo(velez_doctrine.MARKET_TZ))
-                if close > datetime.now(timezone.utc):
-                    close = self._velez_session_close(day, close)  # today: maybe an early close
+                close = self._velez_session_close(day, close)  # a half day (past or today) ends at 13:00
                 return close.astimezone(timezone.utc)
         return start + timedelta(seconds=seconds)
 
