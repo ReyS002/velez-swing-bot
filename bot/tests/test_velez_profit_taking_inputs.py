@@ -1718,14 +1718,15 @@ def test_an_add_shape_needs_fills_that_reach_back_to_the_last_sighting(monkeypat
     assert engine._velez_open_record(added) is None  # the fill window can't show what happened 30 days ago
 
 
-def test_a_proposed_linked_decision_is_not_the_opening(monkeypatch, tmp_path):
+def test_an_unexecuted_linked_decision_is_not_the_opening(monkeypatch, tmp_path):
     engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
     monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: [])
     pos = position(0.5)
-    pos["linked_decision"] = {"symbol": "SPY", "side": "buy", "status": "proposed", "timestamp": "2026-06-03T14:00:00+00:00", "stop_price": 495.0}
+    pos["linked_decision"] = {"symbol": "SPY", "side": "buy", "status": "diagnostic", "timestamp": "2026-06-03T14:00:00+00:00", "stop_price": 495.0}
     assert engine._velez_linked_is_only_entry(pos) is False
-    pos["linked_decision"]["status"] = "submitted"
-    assert engine._velez_linked_is_only_entry(pos) is True
+    for status in ("submitted", "proposed"):  # an approved trade stays "proposed"
+        pos["linked_decision"]["status"] = status
+        assert engine._velez_linked_is_only_entry(pos) is True
 
 
 def test_the_fill_window_starts_at_midnight_like_the_broker_request(monkeypatch, tmp_path):
@@ -1742,3 +1743,16 @@ def test_the_fill_window_starts_at_midnight_like_the_broker_request(monkeypatch,
     added.update(qty="150", entry_price=100.0, velez_symbol_fills=[])
     engine._velez_fills_complete = True
     assert engine._velez_open_record(added) is not None
+
+
+def test_a_contract_roll_restarts_the_scanner_history(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    engine.scanner_config["futures_contracts"] = {"ES": "ESZ6"}
+    engine._scanner_reset_on_contract_roll("ES")
+    engine.scanner_last_bar["ES"] = datetime.now(timezone.utc)
+    engine.scanner_strategy.symbols["ES"] = object()
+    engine._scanner_reset_on_contract_roll("ES")  # same contract: kept
+    assert "ES" in engine.scanner_last_bar and "ES" in engine.scanner_strategy.symbols
+    engine.scanner_config["futures_contracts"] = {"ES": "ESH7"}
+    engine._scanner_reset_on_contract_roll("ES")
+    assert "ES" not in engine.scanner_last_bar and "ES" not in engine.scanner_strategy.symbols
