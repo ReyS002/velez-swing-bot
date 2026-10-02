@@ -19,3 +19,15 @@ def isolated_journal_db(monkeypatch, tmp_path):
     monkeypatch.setenv("VELEZ_LIFECYCLE_AUTO_EXECUTE", "false")
     monkeypatch.setenv("WINSTON_LLM_PROVIDER", "rule_based")
     monkeypatch.setenv("WINSTON_MENTOR_LLM_PROVIDER", "rule_based")
+
+
+@pytest.fixture(autouse=True)
+def offline_yahoo_bars(request, monkeypatch):
+    """The Yahoo bar fallback reaches the network now that it forwards days_back: keep tests offline
+    (the trifecta data tests exercise it themselves)."""
+    if request.node.module.__name__.endswith("test_trifecta_data_timeframes"):
+        return
+    import pandas as pd
+    from bot.core import trifecta
+
+    monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda *args, **kwargs: pd.DataFrame())

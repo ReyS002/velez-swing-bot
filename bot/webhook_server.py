@@ -18,7 +18,7 @@ from copy import deepcopy
 from collections import Counter, deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional
 from urllib.parse import urlparse
@@ -1503,6 +1503,7 @@ def yahoo_fetch_bars_safe(
     *,
     fetch_impl: _YahooCallable,
     timeout_sec: float = _YF_TIMEOUT_SEC,
+    days_back: Optional[int] = None,
 ):
     import pandas as _pd
 
@@ -1511,7 +1512,8 @@ def yahoo_fetch_bars_safe(
         return _pd.DataFrame()
     pool = ThreadPoolExecutor(max_workers=1)
     try:
-        fut = pool.submit(fetch_impl, yahoo, timeframe)
+        extra = {"days_back": days_back} if days_back is not None else {}
+        fut = pool.submit(fetch_impl, yahoo, timeframe, **extra)
         frame = fut.result(timeout=timeout_sec)
         if frame is None:
             return _pd.DataFrame()
@@ -1523,6 +1525,22 @@ def yahoo_fetch_bars_safe(
     finally:
         # wait=False is required — otherwise timeout still blocks on Yahoo exit
         pool.shutdown(wait=False, cancel_futures=True)
+
+
+def front_month_index_contract(today) -> str:
+    """The front-month code of a CME quarterly equity index future on `today` (e.g. "Z6" for Dec 2026):
+    contracts expire on the third Friday of Mar/Jun/Sep/Dec, and volume rolls to the next one 8 days
+    before that, which is when the front month switches."""
+    codes = {3: "H", 6: "M", 9: "U", 12: "Z"}
+    year = today.year
+    for _ in range(2):
+        for month in (3, 6, 9, 12):
+            first = date(year, month, 1)
+            third_friday = first + timedelta(days=(4 - first.weekday()) % 7 + 14)
+            if today < third_friday - timedelta(days=8):
+                return f"{codes[month]}{year % 10}"
+        year += 1
+    raise ValueError(f"no contract found for {today}")
 
 
 def yahoo_download_safe(symbol: str, **kwargs):
@@ -4149,7 +4167,14 @@ class TradingViewWebhookEngine:
                 if aged or not getattr(self, "_velez_fills_complete", False):
                     if qty < last_qty and abs(entry / last_entry - 1.0) <= 1e-4:
                         return record  # a partial exit: the average entry doesn't move
-                    if qty > last_qty and getattr(self, "_velez_fills_complete", False):
+                    try:
+                        seen_at = self._timestamp(record.get("seen_at")) if record.get("seen_at") else None
+                    except Exception:
+                        seen_at = None
+                    # The fills must cover the time since the record was last seen, or a close-and-reopen
+                    # older than the lookback can't show (an outage longer than the window).
+                    covers_seen = seen_at is not None and seen_at >= datetime.now(timezone.utc) - timedelta(days=days)
+                    if qty > last_qty and getattr(self, "_velez_fills_complete", False) and covers_seen:
                         # An add at a plausible price; only with a complete fill snapshot, where
                         # _velez_closed_since() above would have seen a close-and-reopen.
                         added_at = (qty * entry - last_qty * last_entry) / (qty - last_qty)
@@ -4203,6 +4228,8 @@ class TradingViewWebhookEngine:
         linked = position.get("linked_decision") or {}
         if not linked:
             return False
+        if linked.get("status") and str(linked.get("status")).lower() != "submitted":
+            return False  # a proposed or diagnostic signal was never executed
         symbol = str(position.get("symbol") or "")
         want_side = "buy" if str(position.get("side") or "long").lower() == "long" else "sell"
         entries = [
@@ -5229,8 +5256,9 @@ class TradingViewWebhookEngine:
         contracts = {str(key).upper(): str(value).upper() for key, value in (self.scanner_config.get("futures_contracts") or {}).items()}
         if symbol in contracts:
             return contracts[symbol]
-        default_contracts = {"ES": "ESM6", "NQ": "NQM6", "MES": "MESM6", "MNQ": "MNQM6"}
-        return default_contracts.get(symbol, symbol)
+        if symbol in {"ES", "NQ", "MES", "MNQ", "YM", "MYM", "RTY", "M2K"}:
+            return symbol + front_month_index_contract(datetime.now(timezone.utc).date())
+        return symbol
 
     def _polygon_resolution(self, timeframe: str) -> str:
         match = re.match(r"^(\d+)(Min|T|Hour|H|Day|D)$", str(timeframe or "1Min"), re.IGNORECASE)
