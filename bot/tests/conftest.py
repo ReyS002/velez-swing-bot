@@ -27,7 +27,10 @@ def offline_yahoo_bars(request, monkeypatch):
     (the trifecta data tests exercise it themselves)."""
     if request.node.module.__name__.endswith("test_trifecta_data_timeframes"):
         return
-    import pandas as pd
-    from bot.core import trifecta
+    try:
+        import pandas as pd
+        from bot.core import trifecta
+    except ImportError:
+        return  # a minimal environment without pandas has no Yahoo path to stub
 
     monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda *args, **kwargs: pd.DataFrame())
