@@ -4173,7 +4173,9 @@ class TradingViewWebhookEngine:
                         seen_at = None
                     # The fills must cover the time since the record was last seen, or a close-and-reopen
                     # older than the lookback can't show (an outage longer than the window).
-                    covers_seen = seen_at is not None and seen_at >= datetime.now(timezone.utc) - timedelta(days=days)
+                    # Same boundary as the broker request: fills after midnight UTC of (today - days).
+                    fills_from = datetime.combine((datetime.now(timezone.utc) - timedelta(days=days)).date(), datetime.min.time(), tzinfo=timezone.utc)
+                    covers_seen = seen_at is not None and seen_at >= fills_from
                     if qty > last_qty and getattr(self, "_velez_fills_complete", False) and covers_seen:
                         # An add at a plausible price; only with a complete fill snapshot, where
                         # _velez_closed_since() above would have seen a close-and-reopen.

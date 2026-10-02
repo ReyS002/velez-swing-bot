@@ -1726,3 +1726,19 @@ def test_a_proposed_linked_decision_is_not_the_opening(monkeypatch, tmp_path):
     assert engine._velez_linked_is_only_entry(pos) is False
     pos["linked_decision"]["status"] = "submitted"
     assert engine._velez_linked_is_only_entry(pos) is True
+
+
+def test_the_fill_window_starts_at_midnight_like_the_broker_request(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    first = position(0.2)
+    first.update(entry_fill={"side": "buy", "transaction_time": "2026-05-20T14:30:00+00:00"}, entry_price=100.0, stop_price=95.0)
+    engine._velez_record_initial_risk(first)
+    record = engine.journal.get_setting("velez_initial_risk.SPY.open", None)
+    now = datetime.now(timezone.utc)
+    boundary = datetime.combine((now - timedelta(days=7)).date(), datetime.min.time(), tzinfo=timezone.utc)
+    record["seen_at"] = (boundary + timedelta(minutes=1)).isoformat()  # over 7 days ago, but inside the fetched window
+    engine.journal.set_setting("velez_initial_risk.SPY.open", record)
+    added = position(0.3)
+    added.update(qty="150", entry_price=100.0, velez_symbol_fills=[])
+    engine._velez_fills_complete = True
+    assert engine._velez_open_record(added) is not None
