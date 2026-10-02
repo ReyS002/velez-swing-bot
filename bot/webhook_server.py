@@ -2727,6 +2727,8 @@ class TradingViewWebhookEngine:
                 skipped.append(f"{symbol}:session:{session_block['reason']}")
                 self._record_scanner_skip(symbol, f"session:{session_block['reason']}", session_block)
                 continue
+            if asset_type in {"future", "futures"}:
+                self._scanner_reset_on_contract_roll(symbol)
             try:
                 bars = self._fetch_scanner_bars(symbol=symbol, asset_type=asset_type)
             except Exception as exc:
@@ -4173,7 +4175,9 @@ class TradingViewWebhookEngine:
                         seen_at = None
                     # The fills must cover the time since the record was last seen, or a close-and-reopen
                     # older than the lookback can't show (an outage longer than the window).
-                    covers_seen = seen_at is not None and seen_at >= datetime.now(timezone.utc) - timedelta(days=days)
+                    # Same boundary as the broker request: fills after midnight UTC of (today - days).
+                    fills_from = datetime.combine((datetime.now(timezone.utc) - timedelta(days=days)).date(), datetime.min.time(), tzinfo=timezone.utc)
+                    covers_seen = seen_at is not None and seen_at >= fills_from
                     if qty > last_qty and getattr(self, "_velez_fills_complete", False) and covers_seen:
                         # An add at a plausible price; only with a complete fill snapshot, where
                         # _velez_closed_since() above would have seen a close-and-reopen.
@@ -4228,8 +4232,8 @@ class TradingViewWebhookEngine:
         linked = position.get("linked_decision") or {}
         if not linked:
             return False
-        if linked.get("status") and str(linked.get("status")).lower() != "submitted":
-            return False  # a proposed or diagnostic signal was never executed
+        if str(linked.get("status") or "").lower() in {"diagnostic", "rejected", "ignored", "blocked", "error"}:
+            return False  # a signal that was never executed (an approved trade stays "proposed")
         symbol = str(position.get("symbol") or "")
         want_side = "buy" if str(position.get("side") or "long").lower() == "long" else "sell"
         entries = [
@@ -5251,13 +5255,25 @@ class TradingViewWebhookEngine:
     def _polygon_api_key(self) -> str:
         return str(os.getenv("POLYGON_API_KEY") or os.getenv("MASSIVE_API_KEY") or self.scanner_config.get("polygon_api_key") or "").strip()
 
+    def _scanner_reset_on_contract_roll(self, symbol: str) -> None:
+        """When a futures root's contract changes, its scanner state (last bar, strategy context) belongs to
+        the expired contract: dropped so the new one warms up from its own bars."""
+        contract = self._polygon_futures_ticker(symbol)
+        contracts = self.__dict__.setdefault("_scanner_contracts", {})
+        previous = contracts.get(symbol)
+        contracts[symbol] = contract
+        if previous and previous != contract:
+            self.scanner_last_bar.pop(symbol, None)
+            self.scanner_strategy.symbols.pop(symbol, None)
+            log_event(self.logger, "scanner_contract_roll", {"symbol": symbol, "from": previous, "to": contract})
+
     def _polygon_futures_ticker(self, symbol: str) -> str:
         symbol = str(symbol or "").upper().strip()
         contracts = {str(key).upper(): str(value).upper() for key, value in (self.scanner_config.get("futures_contracts") or {}).items()}
         if symbol in contracts:
             return contracts[symbol]
         if symbol in {"ES", "NQ", "MES", "MNQ", "YM", "MYM", "RTY", "M2K"}:
-            return symbol + front_month_index_contract(datetime.now(timezone.utc).date())
+            return symbol + front_month_index_contract(datetime.now(ZoneInfo("America/Chicago")).date())
         return symbol
 
     def _polygon_resolution(self, timeframe: str) -> str:
