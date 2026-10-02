@@ -1683,3 +1683,46 @@ def test_a_bar_history_reads_the_calendar_once(monkeypatch, tmp_path):
     for d in range(4, 28):
         engine._velez_bar_end(Bar(timestamp=datetime(2026, 5, d, tzinfo=timezone.utc), open=1, high=1, low=1, close=1, volume=1), "1Day", True)
     assert len(calls) == 1
+
+
+def test_index_futures_roll_to_the_front_month():
+    from datetime import date
+    from bot.webhook_server import front_month_index_contract
+    assert front_month_index_contract(date(2026, 10, 2)) == "Z6"
+    assert front_month_index_contract(date(2026, 12, 9)) == "Z6"    # Dec 2026 expires Fri 18th: roll on the 10th
+    assert front_month_index_contract(date(2026, 12, 10)) == "H7"
+    assert front_month_index_contract(date(2027, 3, 10)) == "H7"    # Mar 2027 expires Fri 19th: roll on the 11th
+    assert front_month_index_contract(date(2027, 3, 11)) == "M7"
+    assert front_month_index_contract(date(2026, 6, 1)) == "M6"
+
+
+def test_configured_futures_contracts_still_win(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    assert engine._polygon_futures_ticker("ES").startswith("ES") and engine._polygon_futures_ticker("ES") != "ESM6"
+    engine.scanner_config["futures_contracts"] = {"ES": "ESU6"}
+    assert engine._polygon_futures_ticker("ES") == "ESU6"
+    assert engine._polygon_futures_ticker("GC") == "GC"
+
+
+def test_an_add_shape_needs_fills_that_reach_back_to_the_last_sighting(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    first = position(0.2)
+    first.update(entry_fill={"side": "buy", "transaction_time": "2026-05-20T14:30:00+00:00"}, entry_price=100.0, stop_price=95.0)
+    engine._velez_record_initial_risk(first)
+    record = engine.journal.get_setting("velez_initial_risk.SPY.open", None)
+    record["seen_at"] = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()  # last seen before an outage
+    engine.journal.set_setting("velez_initial_risk.SPY.open", record)
+    added = position(0.3)
+    added.update(qty="150", entry_price=100.0, velez_symbol_fills=[])
+    engine._velez_fills_complete = True
+    assert engine._velez_open_record(added) is None  # the fill window can't show what happened 30 days ago
+
+
+def test_a_proposed_linked_decision_is_not_the_opening(monkeypatch, tmp_path):
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    monkeypatch.setattr(engine.journal, "decision_entries", lambda limit=80, **kw: [])
+    pos = position(0.5)
+    pos["linked_decision"] = {"symbol": "SPY", "side": "buy", "status": "proposed", "timestamp": "2026-06-03T14:00:00+00:00", "stop_price": 495.0}
+    assert engine._velez_linked_is_only_entry(pos) is False
+    pos["linked_decision"]["status"] = "submitted"
+    assert engine._velez_linked_is_only_entry(pos) is True
