@@ -157,7 +157,7 @@ def test_a_symbol_that_just_filled_keeps_its_claim(monkeypatch, tmp_path):
     assert "HOOD" in engine._lifecycle_claims()
 
 
-def test_claims_are_not_pruned_when_the_fill_snapshot_failed(monkeypatch, tmp_path):
+def test_without_a_fill_feed_a_claim_goes_only_after_several_flat_passes_over_time(monkeypatch, tmp_path):
     from datetime import datetime, timedelta, timezone
     engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
     old = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
@@ -165,7 +165,24 @@ def test_claims_are_not_pruned_when_the_fill_snapshot_failed(monkeypatch, tmp_pa
         "HOOD": {"claim_type": "trading_bull_journal", "symbol": "HOOD", "alert_ref": "a", "claimed_at": old}})
     monkeypatch.setattr(engine, "_raw_positions_for_lifecycle", lambda: ([], None))
     monkeypatch.setattr(engine, "_raw_orders_for_lifecycle", lambda **_kw: ([], None))
-    monkeypatch.setattr(engine, "_raw_fills_for_lifecycle", lambda: ([], "fills_unavailable"))
+    monkeypatch.setattr(engine, "_raw_fills_for_lifecycle", lambda: ([], "broker_fill_snapshot_not_supported"))
     monkeypatch.setattr(broker, "is_configured", lambda: True, raising=False)
+    for _ in range(5):  # many passes, but all within the same moment: not enough time has gone by
+        engine.lifecycle_payload(allow_auto_actions=False)
+    assert "HOOD" in engine._lifecycle_claims()
+    engine._claim_flat_seen["HOOD"][1] -= timedelta(minutes=5)  # the first flat pass was five minutes ago
     engine.lifecycle_payload(allow_auto_actions=False)
-    assert "HOOD" in engine._lifecycle_claims()  # a fill could have landed between the reads: keep it
+    assert "HOOD" not in engine._lifecycle_claims()
+
+
+def test_a_claim_that_turns_live_again_resets_its_flat_count(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    old = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    engine.journal.set_setting("lifecycle.position_claims", {
+        "HOOD": {"claim_type": "trading_bull_journal", "symbol": "HOOD", "alert_ref": "a", "claimed_at": old}})
+    for _ in range(2):
+        engine._prune_lifecycle_claims(set(), flat_passes=3, flat_seconds=0)
+    engine._prune_lifecycle_claims({"HOOD"}, flat_passes=3, flat_seconds=0)  # held again
+    engine._prune_lifecycle_claims(set(), flat_passes=3, flat_seconds=0)
+    assert "HOOD" in engine._lifecycle_claims()  # the count started over

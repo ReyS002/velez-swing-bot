@@ -5635,17 +5635,20 @@ class TradingViewWebhookEngine:
             # A complete position snapshot: symbols no longer held drop their profit-taking records.
             self._velez_prune_open_records({str(p.get("symbol") or "").upper() for p in positions})
         order_limit = self._int_env("VELEZ_LIFECYCLE_ORDER_LIMIT", 100, minimum=10, maximum=500)
-        if (
-            not positions_error and not orders_error and not fills_error
-            and len(raw_orders) < order_limit and self.broker.is_configured()
-        ):
-            # Claims go only against a complete picture of positions, working orders AND recent fills.
-            self._prune_lifecycle_claims(
+        if not positions_error and not orders_error and len(raw_orders) < order_limit and self.broker.is_configured():
+            # Claims go only against a complete picture of positions and working orders.
+            live = (
                 {self._claim_symbol_key(p.get("symbol")) for p in positions}
                 | {self._claim_symbol_key(o.get("symbol")) for o in open_orders}
                 | {self._claim_symbol_key(o.get("symbol")) for o in pending}
-                | self._recently_filled_symbols(recent_fills)
             )
+            if not fills_error:
+                self._prune_lifecycle_claims(live | self._recently_filled_symbols(recent_fills))
+            else:
+                # Without fills (an error, or a broker that has no activity feed) an order that fills between the
+                # position and order reads can't be seen, so a symbol must stay flat across several passes over
+                # at least two minutes before its claim goes.
+                self._prune_lifecycle_claims(live, flat_passes=3, flat_seconds=120)
         guardrails = self._lifecycle_guardrails(
             positions=positions,
             open_orders=open_orders,
@@ -12044,15 +12047,18 @@ class TradingViewWebhookEngine:
                 out.add(self._claim_symbol_key(fill.get("symbol")))  # unreadable time: treat as recent
         return out
 
-    def _prune_lifecycle_claims(self, live_symbols: set, grace_minutes: int = 30) -> None:
+    def _prune_lifecycle_claims(self, live_symbols: set, grace_minutes: int = 30, *, flat_passes: int = 1,
+                                flat_seconds: int = 0) -> None:
         """A claim belongs to the position it was made for: once that symbol has no position and no working
         order, the claim is dropped, so a later position in the same symbol (opened by hand or by another
         source) is not mistaken for the old trade's and handed its stop. A fresh claim is kept for a grace
         period, because it is made when the order is sent, before the position exists."""
         with self._claims_lock():
-            self._prune_lifecycle_claims_locked(live_symbols, grace_minutes)
+            self._prune_lifecycle_claims_locked(live_symbols, grace_minutes, flat_passes, flat_seconds)
 
-    def _prune_lifecycle_claims_locked(self, live_symbols: set, grace_minutes: int) -> None:
+    def _prune_lifecycle_claims_locked(self, live_symbols: set, grace_minutes: int, flat_passes: int,
+                                       flat_seconds: int) -> None:
+        seen = self.__dict__.setdefault("_claim_flat_seen", {})  # claim -> [passes, first seen flat]
         claims = self._lifecycle_claims()
         keep, dropped = {}, []
         now = datetime.now(timezone.utc)
@@ -12066,8 +12072,16 @@ class TradingViewWebhookEngine:
                 fresh = True  # unreadable time: leave it alone
             if fresh or self._claim_symbol_key(name) in live_symbols:
                 keep[name] = claim
-            else:
+                seen.pop(name, None)
+                continue
+            passes, first = seen.get(name, [0, now])
+            passes += 1
+            seen[name] = [passes, first]
+            if passes >= flat_passes and (now - first).total_seconds() >= flat_seconds:
                 dropped.append(name)
+                seen.pop(name, None)
+            else:
+                keep[name] = claim
         if dropped:
             self.journal.set_setting("lifecycle.position_claims", keep)
             log_event(self.logger, "lifecycle_claims_pruned", {"symbols": dropped})
