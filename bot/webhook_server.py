@@ -2746,7 +2746,9 @@ class TradingViewWebhookEngine:
                 continue
             if asset_type in {"future", "futures"}:
                 self._scanner_apply_futures_source(symbol)
-            closed = [bar for bar in bars if self._scanner_bar_is_closed(bar, now, symbol=symbol)]
+            # (the feed this scan's own fetch came from: read on this thread, so other callers can't change it)
+            bar_source = getattr(self.__dict__.get("_futures_tls"), "source", None) if asset_type in {"future", "futures"} else None
+            closed = [bar for bar in bars if self._scanner_bar_is_closed(bar, now, source=bar_source)]
             if not closed:
                 continue
             symbols_scanned += 1
@@ -3131,7 +3133,8 @@ class TradingViewWebhookEngine:
             return {"outcome": "unavailable", "reason": "invalid_risk"}
         try:
             cfg = self.symbol_config.get(symbol, {}) or self.journal.get_watchlist_symbol(symbol) or {}
-            bars = self._fetch_scanner_bars(symbol=symbol, asset_type=str(cfg.get("type") or cfg.get("asset_type") or "equity").lower())
+            bars = self._fetch_scanner_bars(symbol=symbol, asset_type=str(cfg.get("type") or cfg.get("asset_type") or "equity").lower(),
+                                            allow_yahoo=True)  # read-only replay of scanner decisions
         except Exception as exc:
             return {"outcome": "unavailable", "reason": str(exc)[:160]}
         after = self._bars_after_timestamp(bars, item.get("timestamp"))
@@ -5425,8 +5428,8 @@ class TradingViewWebhookEngine:
             return datetime.fromtimestamp(numeric / 1000, tz=timezone.utc)
         return datetime.fromtimestamp(numeric, tz=timezone.utc)
 
-    def _scanner_bar_is_closed(self, bar: Bar, now: datetime, symbol: Optional[str] = None) -> bool:
-        if symbol and (self.__dict__.get("_futures_last_source") or {}).get(symbol) == "yahoo":
+    def _scanner_bar_is_closed(self, bar: Bar, now: datetime, source: Optional[str] = None) -> bool:
+        if source == "yahoo":
             # A Yahoo daily futures bar is final at the 17:00 ET session close plus the feed's delay.
             tz = ZoneInfo("America/New_York")
             day = bar.timestamp.astimezone(tz).date() if bar.timestamp.tzinfo else bar.timestamp.date()

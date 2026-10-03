@@ -168,9 +168,9 @@ def test_position_management_never_gets_yahoo_bars_and_labels_close_at_the_sessi
     from zoneinfo import ZoneInfo
     et = ZoneInfo("America/New_York")
     assert bars[0].timestamp == datetime(2026, 7, 1, 0, 0, tzinfo=et)  # the bar keeps its trading date
-    engine._futures_last_source = {"ES": "yahoo"}
-    assert not engine._scanner_bar_is_closed(bars[0], datetime(2026, 7, 1, 17, 10, tzinfo=et), symbol="ES")
-    assert engine._scanner_bar_is_closed(bars[0], datetime(2026, 7, 1, 17, 25, tzinfo=et), symbol="ES")
+    assert not engine._scanner_bar_is_closed(bars[0], datetime(2026, 7, 1, 17, 10, tzinfo=et), source="yahoo")
+    assert engine._scanner_bar_is_closed(bars[0], datetime(2026, 7, 1, 17, 25, tzinfo=et), source="yahoo")
+    assert not engine._scanner_bar_is_closed(bars[0], datetime(2026, 7, 1, 17, 25, tzinfo=et))  # other feeds: the generic rule
 
 
 def test_a_404_backoff_follows_the_resolved_contract(monkeypatch):
