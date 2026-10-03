@@ -2273,7 +2273,8 @@ class TradingViewWebhookEngine:
             "auto_submit": control_mode == "auto_submit",
             "supported_assets": ["equity", "stock", "crypto", "future"],
             "futures_provider": str(self.scanner_config.get("futures_provider", "polygon")).lower(),
-            "futures_configured": bool(self._polygon_api_key()),
+            "futures_configured": bool(self._polygon_api_key()) or self._futures_yahoo_fallback_allowed(),
+            "futures_yahoo_fallback": self._futures_yahoo_fallback_allowed(),
             "futures_contracts": self.scanner_config.get("futures_contracts", {}),
             "note": "Hybrid scanner warms up first, then scans newly closed bars and routes signals through the same Velez/risk guardrails as TradingView. Futures use Polygon when POLYGON_API_KEY is configured.",
             "symbol_cooldown_seconds": self._scanner_symbol_cooldown_seconds(),
@@ -3500,19 +3501,35 @@ class TradingViewWebhookEngine:
         return [self._bar_from_alpaca(item) for item in rows]
 
     def _futures_yahoo_fallback_allowed(self, timeframe: Optional[str] = None) -> bool:
-        """Yahoo continuous futures may stand in for Polygon, for hourly and longer scans only: its feed is
-        delayed about 15 minutes, which doesn't matter on those bars and would on intraday ones."""
+        """Yahoo continuous futures may stand in for Polygon, for daily scans only: its feed is delayed about
+        15 minutes, so an hourly bar could still be forming when the scanner calls it closed."""
         raw = self.scanner_config.get("futures_yahoo_fallback", False)
         if not (raw is True or str(raw).strip().lower() in {"1", "true", "yes", "on"}):
             return False
-        return self._timeframe_seconds(str(timeframe or self.scanner_config.get("timeframe", "1Min"))) >= 3600
+        return self._timeframe_seconds(str(timeframe or self.scanner_config.get("timeframe", "1Min"))) == 86400
 
     def _fetch_futures_bars(self, symbol: str, timeframe: Optional[str] = None) -> List[Bar]:
         fallback = self._futures_yahoo_fallback_allowed(timeframe)
+        bars, source = self._fetch_futures_bars_from(symbol, timeframe, fallback)
+        # Polygon's dated contracts and Yahoo's continuous series are different series: when the provider
+        # changes, the scanner state built from the other one is dropped and the symbol warms up again.
+        sources = self.__dict__.setdefault("_scanner_futures_source", {})
+        previous = sources.get(symbol)
+        sources[symbol] = source
+        if previous and previous != source:
+            self.scanner_last_bar.pop(symbol, None)
+            self.scanner_strategy.symbols.pop(symbol, None)
+            log_event(self.logger, "scanner_futures_source_changed", {"symbol": symbol, "from": previous, "to": source})
+        return bars
+
+    def _fetch_futures_bars_from(self, symbol: str, timeframe: Optional[str], fallback: bool):
         blocked_until = self.__dict__.get("_polygon_futures_blocked_until")
         if self._polygon_api_key() and not (fallback and blocked_until and datetime.now(timezone.utc) < blocked_until):
             try:
-                return self._fetch_polygon_futures_bars(symbol, timeframe) if timeframe else self._fetch_polygon_futures_bars(symbol)
+                bars = self._fetch_polygon_futures_bars(symbol, timeframe) if timeframe else self._fetch_polygon_futures_bars(symbol)
+                if bars or not fallback:
+                    return bars, "polygon"
+                log_event(self.logger, "futures_polygon_failed_using_yahoo", {"symbol": symbol, "reason": "no_rows"})
             except Exception as exc:
                 if not fallback:
                     raise
@@ -3522,15 +3539,20 @@ class TradingViewWebhookEngine:
                 log_event(self.logger, "futures_polygon_failed_using_yahoo", {"symbol": symbol, "reason": str(exc)[:120]})
         elif not fallback:
             raise RuntimeError("missing_polygon_api_key")
-        return self._fetch_yahoo_futures_bars(symbol, timeframe)
+        return self._fetch_yahoo_futures_bars(symbol, timeframe), "yahoo"
 
     def _fetch_yahoo_futures_bars(self, symbol: str, timeframe: Optional[str] = None) -> List[Bar]:
         root = re.sub(r"\d*!$", "", str(symbol or "").upper().strip())
+        if root not in _YAHOO_FUTURES_TICKERS:
+            dated = re.match(r"^(.+?)[FGHJKMNQUVXZ]\d{1,2}$", root)  # ESZ6 -> ES
+            root = dated.group(1) if dated else root
         yahoo = _YAHOO_FUTURES_TICKERS.get(root)
         if not yahoo:
             raise RuntimeError(f"yahoo_futures_unmapped:{root}")
         seconds = self._timeframe_seconds(str(timeframe or self.scanner_config.get("timeframe", "1Day")))
-        code = "D" if seconds >= 86400 else {3600: "60", 7200: "120", 14400: "240"}.get(seconds, "60")
+        if seconds != 86400:
+            raise RuntimeError(f"yahoo_futures_unsupported_timeframe:{timeframe}")
+        code = "D"
         limit = max(50, min(int(self.scanner_config.get("history_bars", 260) or 260), 1000))
         from .core.trifecta import fetch_bars_yfinance
 
