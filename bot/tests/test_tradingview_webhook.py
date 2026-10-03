@@ -958,3 +958,27 @@ def test_raw_bars_do_not_use_up_signal_slots(monkeypatch):
         release.set()
         [b.result(timeout=10) for b in bars]
     assert signals == [202, 202, 503]  # three queued bars did not take either of the two signal slots
+
+
+def test_raw_bars_have_their_own_bound(monkeypatch):
+    import concurrent.futures as cf
+    import threading
+    import time as _time
+    from fastapi.testclient import TestClient
+    app = _ack_app(monkeypatch, ack_after_seconds=0.1, max_pending=2, max_pending_bars=2)
+    release = threading.Event()
+
+    def blocked(payload, **kwargs):
+        release.wait(3.0)
+        return {"ok": True, "decisions": [{"status": "ignored"}]}
+
+    monkeypatch.setattr(app.state.engine, "handle_payload", blocked)
+    client = TestClient(app)
+    with cf.ThreadPoolExecutor(max_workers=3) as pool:
+        bars = [pool.submit(client.post, "/webhook/tradingview/test-secret", json={"mode": "bar", "symbol": "SPY", "id": f"bar{i}"}) for i in range(3)]
+        _time.sleep(0.5)
+        signal = client.post("/webhook/tradingview/test-secret", json={"mode": "signal", "symbol": "SPY", "id": "s0"}).status_code
+        release.set()
+        codes = sorted(b.result(timeout=10).status_code for b in bars)
+    assert signal == 202            # the signal slots are separate from the bar slots
+    assert codes == [200, 200, 503]  # two bars admitted, the third turned away

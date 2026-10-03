@@ -13446,15 +13446,16 @@ def create_app(config: dict):
     webhook_ack_after = float(webhook_settings.get("ack_after_seconds", 2.0) or 2.0)
     webhook_max_queue = float(webhook_settings.get("max_queue_seconds", 0) or 0)  # 0 = never expire
     webhook_max_pending = int(webhook_settings.get("max_pending", 200) or 200)
-    webhook_pending = {"n": 0}
+    webhook_max_pending_bars = int(webhook_settings.get("max_pending_bars", 1000) or 1000)
+    webhook_pending = {"n": 0, "bars": 0}
     webhook_inflight: set = set()  # alert ids queued or being processed
     webhook_pending_lock = threading.Lock()
 
-    def _release_pending(alert_id: Optional[str] = None, counted: bool = True):
+    def _release_pending(alert_id: Optional[str] = None, is_bar: bool = False):
         def release(_future=None) -> None:
             with webhook_pending_lock:
-                if counted:
-                    webhook_pending["n"] = max(0, webhook_pending["n"] - 1)
+                key = "bars" if is_bar else "n"
+                webhook_pending[key] = max(0, webhook_pending[key] - 1)
                 webhook_inflight.discard(alert_id)
         return release
 
@@ -13525,11 +13526,13 @@ def create_app(config: dict):
         alert_id = engine._alert_id(payload)
         with webhook_pending_lock:
             duplicate = alert_id in webhook_inflight or alert_id in engine.seen_alert_ids
-            # Raw bars feed the strategy in order, so they are always admitted; signals are bounded.
-            full = (not duplicate) and (not is_bar) and webhook_pending["n"] >= webhook_max_pending
+            # Signals and raw bars are bounded separately: a burst of bars can't use up the signal slots (nor
+            # the other way round), and neither can grow without limit.
+            key = "bars" if is_bar else "n"
+            limit = webhook_max_pending_bars if is_bar else webhook_max_pending
+            full = (not duplicate) and webhook_pending[key] >= limit
             if not duplicate and not full:
-                if not is_bar:
-                    webhook_pending["n"] += 1  # only signals use the bounded slots; bars never count against them
+                webhook_pending[key] += 1
                 webhook_inflight.add(alert_id)
         if duplicate:
             # A repeat of an alert that is queued, running or done never takes a queue slot.
@@ -13537,14 +13540,14 @@ def create_app(config: dict):
             return {"ok": True, "duplicate": True, "decisions": [{"status": "ignored", "reason": "duplicate_alert"}]}
         if full:
             # Bounded admission: a stalled broker or data call must not let the queue grow without limit.
-            log_event(engine.logger, "webhook_queue_full", {"max_pending": webhook_max_pending})
+            log_event(engine.logger, "webhook_queue_full", {"kind": "bar" if is_bar else "signal"})
             raise HTTPException(status_code=503, detail="webhook queue full")
         try:
             future = _pool("worker").submit(_process_alert, payload, time.monotonic(), kwargs)
         except RuntimeError as exc:  # the worker was shut down: the service is stopping
-            _release_pending(alert_id, not is_bar)()
+            _release_pending(alert_id, is_bar)()
             raise HTTPException(status_code=503, detail="shutting down") from exc
-        future.add_done_callback(_release_pending(alert_id, not is_bar))
+        future.add_done_callback(_release_pending(alert_id, is_bar))
         try:
             if str(payload.get("mode", "signal")).lower() == "bar":
                 # Raw bars keep the old contract: processed in order and answered with their result (no 202).
