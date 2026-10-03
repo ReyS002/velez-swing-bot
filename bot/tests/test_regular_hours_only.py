@@ -231,3 +231,27 @@ def test_a_generated_signal_from_an_earlier_session_is_rejected():
                                                       "timestamp": "2026-09-30T19:45:00+00:00"})  # yesterday's 15:45 bar
     decision = engine._build_order_decision(signal, "alert-4")
     assert decision.status == "rejected" and decision.reason.startswith("outside_regular_hours:")
+
+
+def _bar_signal(timeframe, bar_start="2026-09-30T04:00:00+00:00"):
+    from bot.core.types import Side, Signal
+    return Signal("SPY", Side.BUY, "elephant_bar", {"entry_price": 500, "stop_price": 498, "order_type": "limit",
+                                                    "timeframe": timeframe, "timestamp": bar_start})  # yesterday's bar
+
+
+def test_a_completed_daily_bar_is_acted_on_in_the_next_session():
+    from datetime import datetime
+    engine = _engine(regular_hours_only=True)
+    engine._regular_hours_clock = lambda: datetime.fromisoformat("2026-10-01T14:05:00+00:00")  # Thu 10:05 ET
+    daily = engine._build_order_decision(_bar_signal("1Day"), "alert-d1")
+    assert not str(daily.reason).startswith("outside_regular_hours")
+    intraday = engine._build_order_decision(_bar_signal("15Min"), "alert-d2")  # a held-over intraday bar is still stale
+    assert intraday.status == "rejected" and intraday.reason.startswith("outside_regular_hours:")
+
+
+def test_a_daily_bar_is_still_not_sent_after_the_bell():
+    from datetime import datetime
+    engine = _engine(regular_hours_only=True)
+    engine._regular_hours_clock = lambda: datetime.fromisoformat("2026-10-01T20:00:44+00:00")  # Thu 16:00:44 ET
+    decision = engine._build_order_decision(_bar_signal("1Day", bar_start="2026-10-01T04:00:00+00:00"), "alert-d3")
+    assert decision.status == "rejected" and decision.reason.startswith("outside_regular_hours:")

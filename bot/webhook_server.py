@@ -10658,6 +10658,13 @@ class TradingViewWebhookEngine:
     def _regular_hours_clock(self) -> datetime:
         return datetime.now(timezone.utc)
 
+    @staticmethod
+    def _daily_or_longer(timeframe: Any) -> bool:
+        """A daily (or weekly/monthly) bar is stamped with its own date and legitimately acted on the next
+        session, so the 'bar belongs to today' rule does not apply to it; the delivery-time check still does."""
+        t = str(timeframe or "").strip().upper()
+        return t in {"D", "1D", "DAY", "1DAY", "DAILY", "W", "1W", "WEEK", "1WEEK", "M", "1M", "MONTH", "1MONTH"}
+
     def _regular_hours_block(self, symbol: str, timestamp: Any = None, *, same_day_only: bool = False) -> Optional[dict]:
         """Equity entries only in the regular session (09:30 to the exchange's close, on days the exchange
         calendar confirms are trading days), judged at `timestamp` (now when it has none). An order sent
@@ -10838,7 +10845,7 @@ class TradingViewWebhookEngine:
         # A generated signal's bar must at least belong to today's session: a bar held over from an earlier
         # day carries that day's entry and stop levels.
         outside = None if dry_run else (self._regular_hours_block(symbol, metadata.get("signal_timestamp"))
-                                        or (not metadata.get("signal_timestamp")
+                                        or (not metadata.get("signal_timestamp") and not self._daily_or_longer(metadata.get("timeframe"))
                                             and self._regular_hours_block(symbol, metadata.get("timestamp"), same_day_only=True))
                                         or self._regular_hours_block(symbol))  # a dry run never submits
         if outside:
