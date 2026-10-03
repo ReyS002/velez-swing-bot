@@ -5634,6 +5634,15 @@ class TradingViewWebhookEngine:
         if not positions_error and self.broker.is_configured():
             # A complete position snapshot: symbols no longer held drop their profit-taking records.
             self._velez_prune_open_records({str(p.get("symbol") or "").upper() for p in positions})
+        order_limit = self._int_env("VELEZ_LIFECYCLE_ORDER_LIMIT", 100, minimum=10, maximum=500)
+        if not positions_error and not orders_error and len(raw_orders) < order_limit and self.broker.is_configured():
+            # Claims go only against a complete picture of positions AND working orders.
+            self._prune_lifecycle_claims(
+                {self._claim_symbol_key(p.get("symbol")) for p in positions}
+                | {self._claim_symbol_key(o.get("symbol")) for o in open_orders}
+                | {self._claim_symbol_key(o.get("symbol")) for o in pending}
+                | self._recently_filled_symbols(recent_fills)
+            )
         guardrails = self._lifecycle_guardrails(
             positions=positions,
             open_orders=open_orders,
@@ -11103,7 +11112,7 @@ class TradingViewWebhookEngine:
                 log_event(self.logger, "stop_verification_failed", {"symbol": symbol, "error": str(stop_exc)})
         # P3: Auto-claim lifecycle position so journal link never rots
         decision_dict = {
-            "alert_ref": alert_id,
+            "alert_ref": self._decision_alert_ref(alert_id),  # the form the journal stores decisions under
             "symbol": symbol,
             "side": side,
             "play": play,
@@ -11112,7 +11121,10 @@ class TradingViewWebhookEngine:
             "stop_price": stop_price,
             "qty": qty,
         }
-        self._set_lifecycle_claim(symbol, decision_dict)
+        if not (scale_add and self._lifecycle_claim_for_symbol(symbol)):
+            # (An add to a winner keeps the claim of the trade it adds to: the position's stop and entry time
+            # are the opening order's.)
+            self._set_lifecycle_claim(symbol, decision_dict)
         return decision
 
     def _authorize(self, payload: dict, path_token: Optional[str], header_secret: Optional[str]) -> WebhookDecision:
@@ -11497,6 +11509,11 @@ class TradingViewWebhookEngine:
             except Exception as exc:
                 log_event(self.logger, "journal_record_failed", {"reason": str(exc), "alert_ref": snapshot.get("alert_ref")})
 
+    @staticmethod
+    def _decision_alert_ref(alert_id: Any) -> str:
+        """How a decision is filed in the journal: a short hash of the alert id."""
+        return hashlib.sha1(str(alert_id).encode("utf-8")).hexdigest()[:10]
+
     def _decision_snapshot(self, decision: WebhookDecision, alert_id: str) -> dict:
         metadata = decision.metadata or {}
         source = metadata.get("source_metadata") if isinstance(metadata.get("source_metadata"), dict) else {}
@@ -11531,7 +11548,7 @@ class TradingViewWebhookEngine:
             "correlation": metadata.get("correlation"),
             "session_lock": metadata.get("session_lock"),
             "payload_version": source.get("payload_version") or source.get("pine_version") or source.get("script_version") or source.get("version"),
-            "alert_ref": hashlib.sha1(str(alert_id).encode("utf-8")).hexdigest()[:10],
+            "alert_ref": self._decision_alert_ref(alert_id),
             "chart_context": {
                 "url": chart_url,
                 "symbol": symbol,
@@ -12005,9 +12022,52 @@ class TradingViewWebhookEngine:
             canceled.append(order_id)
         return canceled
 
+    def _claims_lock(self) -> "threading.RLock":
+        return self.__dict__.setdefault("_claims_rlock", threading.RLock())
+
     def _lifecycle_claims(self) -> dict:
         claims = self.journal.get_setting("lifecycle.position_claims", {}) or {}
         return claims if isinstance(claims, dict) else {}
+
+    def _recently_filled_symbols(self, fills: List[dict], minutes: int = 15) -> set:
+        """Symbols with a fill in the last few minutes: positions and orders are read one after another, so an
+        order that filled between those reads is in neither list but its fill is here."""
+        out, now = set(), datetime.now(timezone.utc)
+        for fill in fills:
+            try:
+                if now - self._timestamp(fill.get("transaction_time")) < timedelta(minutes=minutes):
+                    out.add(self._claim_symbol_key(fill.get("symbol")))
+            except Exception:
+                out.add(self._claim_symbol_key(fill.get("symbol")))  # unreadable time: treat as recent
+        return out
+
+    def _prune_lifecycle_claims(self, live_symbols: set, grace_minutes: int = 30) -> None:
+        """A claim belongs to the position it was made for: once that symbol has no position and no working
+        order, the claim is dropped, so a later position in the same symbol (opened by hand or by another
+        source) is not mistaken for the old trade's and handed its stop. A fresh claim is kept for a grace
+        period, because it is made when the order is sent, before the position exists."""
+        with self._claims_lock():
+            self._prune_lifecycle_claims_locked(live_symbols, grace_minutes)
+
+    def _prune_lifecycle_claims_locked(self, live_symbols: set, grace_minutes: int) -> None:
+        claims = self._lifecycle_claims()
+        keep, dropped = {}, []
+        now = datetime.now(timezone.utc)
+        for name, claim in claims.items():
+            if not isinstance(claim, dict) or claim.get("claim_type") == "external":
+                keep[name] = claim
+                continue
+            try:
+                fresh = now - self._timestamp(claim.get("claimed_at")) < timedelta(minutes=grace_minutes)
+            except Exception:
+                fresh = True  # unreadable time: leave it alone
+            if fresh or self._claim_symbol_key(name) in live_symbols:
+                keep[name] = claim
+            else:
+                dropped.append(name)
+        if dropped:
+            self.journal.set_setting("lifecycle.position_claims", keep)
+            log_event(self.logger, "lifecycle_claims_pruned", {"symbols": dropped})
 
     @staticmethod
     def _claim_symbol_key(symbol: Any) -> str:
@@ -12033,9 +12093,10 @@ class TradingViewWebhookEngine:
             "alert_ref": decision.get("alert_ref"),
             "claimed_at": datetime.now(timezone.utc).isoformat(),
         }
-        claims = self._lifecycle_claims()
-        claims[cleaned_symbol] = claim
-        self.journal.set_setting("lifecycle.position_claims", claims)
+        with self._claims_lock():
+            claims = self._lifecycle_claims()
+            claims[cleaned_symbol] = claim
+            self.journal.set_setting("lifecycle.position_claims", claims)
         return claim
 
     def _claim_candidates_for_symbol(self, symbol: str, decisions: List[dict], *, side: str = "") -> List[dict]:
@@ -12668,9 +12729,20 @@ class TradingViewWebhookEngine:
             return None
         claim = self._lifecycle_claim_for_symbol(wanted)
         if isinstance(claim, dict) and claim.get("alert_ref"):
-            claimed = self.journal.decision_by_alert_ref(str(claim.get("alert_ref")))
-            if claimed and self._claim_symbol_key(claimed.get("symbol")) == self._claim_symbol_key(wanted):
-                return claimed
+            # Claims made before the fix hold the raw alert id; decisions are filed under its short hash.
+            claim_side = {"long": "buy", "short": "sell"}.get(str(side or "").lower())
+            for ref in (str(claim.get("alert_ref")), self._decision_alert_ref(claim.get("alert_ref"))):
+                # Only an executed decision owns a position, and one bar alert can file several of them:
+                # take the newest one for this symbol and side.
+                for claimed in self.journal.decisions_by_alert_ref(ref, statuses=("submitted", "proposed", "diagnostic")):
+                    if (
+                        self._claim_symbol_key(claimed.get("symbol")) == self._claim_symbol_key(wanted)
+                        and (not claim_side or str(claimed.get("side") or "").lower() == claim_side)
+                    ):
+                        return claimed
+            # A stored claim is authoritative: if it names no executed decision for this symbol and side, the
+            # position is unclaimed, and a look-alike decision found by scanning must not stand in for it.
+            return None
         # Broker symbols can be aliases of the journaled ones (BTCUSD for BTC/USD).
         wanted_key = wanted.replace("/", "").replace("-", "")
         candidates = [

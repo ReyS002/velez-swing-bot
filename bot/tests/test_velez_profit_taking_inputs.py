@@ -452,7 +452,7 @@ def test_alias_claim_links_after_the_decision_leaves_the_window(monkeypatch, tmp
     decision = {"symbol": "BTC/USD", "side": "buy", "status": "submitted", "alert_ref": "a1",
                 "timestamp": "2026-06-03T14:00:00+00:00"}
     engine._set_lifecycle_claim("BTC/USD", decision)
-    monkeypatch.setattr(engine.journal, "decision_by_alert_ref", lambda ref: decision if ref == "a1" else None)
+    monkeypatch.setattr(engine.journal, "decisions_by_alert_ref", lambda ref, **_kw: [decision] if ref == "a1" else [])
     # The decision is no longer in the recent list, but the claim (stored as BTC/USD) still links BTCUSD.
     assert engine._link_decision_for_symbol("BTCUSD", [], side="long") == decision
     assert engine._claim_candidates_for_symbol("BTCUSD", [decision], side="long") == [decision]
