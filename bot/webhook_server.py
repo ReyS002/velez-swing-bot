@@ -5645,7 +5645,7 @@ class TradingViewWebhookEngine:
                 | {self._claim_symbol_key(o.get("symbol")) for o in pending}
             )
             if not fills_error:
-                self._prune_lifecycle_claims(live | self._recently_filled_symbols(recent_fills))
+                self._prune_lifecycle_claims(live, recent_fills=self._recently_filled_symbols(recent_fills))
             else:
                 # Without fills (an error, or a broker that has no activity feed) an order that fills between the
                 # position and order reads can't be seen, so a symbol must stay flat across several passes over
@@ -12037,29 +12037,33 @@ class TradingViewWebhookEngine:
         claims = self.journal.get_setting("lifecycle.position_claims", {}) or {}
         return claims if isinstance(claims, dict) else {}
 
-    def _recently_filled_symbols(self, fills: List[dict], minutes: int = 15) -> set:
-        """Symbols with a fill in the last few minutes: positions and orders are read one after another, so an
+    def _recently_filled_symbols(self, fills: List[dict], minutes: int = 15) -> dict:
+        """symbol -> sides filled in the last few minutes: positions and orders are read one after another, so an
         order that filled between those reads is in neither list but its fill is here."""
-        out, now = set(), datetime.now(timezone.utc)
+        out: dict = {}
+        now = datetime.now(timezone.utc)
         for fill in fills:
+            key, side = self._claim_symbol_key(fill.get("symbol")), str(fill.get("side") or "").lower()
             try:
-                if now - self._timestamp(fill.get("transaction_time")) < timedelta(minutes=minutes):
-                    out.add(self._claim_symbol_key(fill.get("symbol")))
+                recent = now - self._timestamp(fill.get("transaction_time")) < timedelta(minutes=minutes)
             except Exception:
-                out.add(self._claim_symbol_key(fill.get("symbol")))  # unreadable time: treat as recent
+                recent = True  # unreadable time: treat as recent
+            if recent:
+                out.setdefault(key, set()).add(side)
         return out
 
     def _prune_lifecycle_claims(self, live_symbols: set, grace_minutes: int = 30, *, flat_passes: int = 1,
-                                flat_seconds: int = 0) -> None:
+                                flat_seconds: int = 0, recent_fills: Optional[dict] = None) -> None:
         """A claim belongs to the position it was made for: once that symbol has no position and no working
         order, the claim is dropped, so a later position in the same symbol (opened by hand or by another
         source) is not mistaken for the old trade's and handed its stop. A fresh claim is kept for a grace
         period, because it is made when the order is sent, before the position exists."""
         with self._claims_lock():
-            self._prune_lifecycle_claims_locked(live_symbols, grace_minutes, flat_passes, flat_seconds)
+            self._prune_lifecycle_claims_locked(live_symbols, grace_minutes, flat_passes, flat_seconds,
+                                                recent_fills or {})
 
     def _prune_lifecycle_claims_locked(self, live_symbols: set, grace_minutes: int, flat_passes: int,
-                                       flat_seconds: int) -> None:
+                                       flat_seconds: int, recent_fills: dict) -> None:
         seen = self.__dict__.setdefault("_claim_flat_seen", {})  # claim -> [passes, first seen flat]
         claims = self._lifecycle_claims()
         keep, dropped = {}, []
@@ -12072,7 +12076,12 @@ class TradingViewWebhookEngine:
                 fresh = now - self._timestamp(claim.get("claimed_at")) < timedelta(minutes=grace_minutes)
             except Exception:
                 fresh = True  # unreadable time: leave it alone
-            if fresh or self._claim_symbol_key(name) in live_symbols:
+            key = self._claim_symbol_key(name)
+            sides = recent_fills.get(key, set())
+            # A recent fill keeps the claim only if it could be this trade's entry: its side is the claim's side
+            # (an exit fill is the opposite side, and says nothing about a new position).
+            filled = bool(sides) and (not claim.get("side") or claim.get("side") in sides or "" in sides)
+            if fresh or filled or key in live_symbols:
                 keep[name] = claim
                 seen.pop(name, None)
                 continue
@@ -12110,6 +12119,7 @@ class TradingViewWebhookEngine:
         claim = {
             "symbol": cleaned_symbol,
             "alert_ref": decision.get("alert_ref"),
+            "side": str(decision.get("side") or "").lower() or None,  # the entry side: only its fills bridge the race
             "claimed_at": datetime.now(timezone.utc).isoformat(),
         }
         with self._claims_lock():
