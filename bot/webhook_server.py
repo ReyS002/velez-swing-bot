@@ -4,7 +4,9 @@ from .desk_records import install_desk_records
 import asyncio
 import hashlib
 import io
+import itertools
 import json
+import queue
 from .broadcast_market import BroadcastMarketService
 from .desk_brief import DeskBriefService, brief_owner
 from .desk_workspace import broker_provider as desk_broker_provider
@@ -15,7 +17,7 @@ import re
 import secrets
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
 from collections import Counter, deque
 from contextlib import asynccontextmanager
@@ -205,6 +207,49 @@ def _set_dashboard_security_headers(response: Response) -> Response:
         "object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
     )
     return response
+
+
+class _PriorityWorker:
+    """One worker thread that runs queued calls lowest priority number first, first-in first-out within a
+    priority. Trade signals (0) go ahead of raw strategy bars (1); bars stay in order among themselves.
+    shutdown() lets everything already queued finish before the thread exits."""
+
+    def __init__(self, name: str) -> None:
+        self._queue: "queue.PriorityQueue" = queue.PriorityQueue()
+        self._seq = itertools.count()
+        self._lock = threading.Lock()
+        self._closed = False
+        self._thread = threading.Thread(target=self._run, name=name, daemon=False)
+        self._thread.start()
+
+    def submit(self, fn, *args, priority: int = 0) -> Future:
+        future: Future = Future()
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("worker is shut down")
+            self._queue.put((priority, next(self._seq), future, fn, args))
+        return future
+
+    def _run(self) -> None:
+        while True:
+            _priority, _seq, future, fn, args = self._queue.get()
+            if future is None:
+                return
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                future.set_result(fn(*args))
+            except BaseException as exc:  # noqa: BLE001 - delivered through the future
+                future.set_exception(exc)
+
+    def shutdown(self, wait: bool = True) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._queue.put((99, next(self._seq), None, None, ()))
+        if wait:
+            self._thread.join()
 
 
 class _MutationRateLimiter:
@@ -13429,8 +13474,10 @@ def create_app(config: dict):
             if webhook_pools["closing"]:
                 raise RuntimeError("webhook pools are shut down")
             if webhook_pools[name] is None:
-                workers, prefix = (1, "tradingview-webhook") if name == "worker" else (2, "tradingview-webhook-notify")
-                webhook_pools[name] = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=prefix)
+                if name == "worker":
+                    webhook_pools[name] = _PriorityWorker("tradingview-webhook")
+                else:
+                    webhook_pools[name] = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tradingview-webhook-notify")
             return webhook_pools[name]
 
     def _shutdown_pools() -> None:
@@ -13541,17 +13588,28 @@ def create_app(config: dict):
         if full:
             # Bounded admission: a stalled broker or data call must not let the queue grow without limit.
             log_event(engine.logger, "webhook_queue_full", {"kind": "bar" if is_bar else "signal"})
+            try:  # journal what was dropped (not marked seen, so a retry can still succeed)
+                symbol = engine._symbol(payload)
+            except Exception:
+                symbol = None
+            try:
+                engine._remember_decisions([WebhookDecision(status="ignored", reason="webhook_queue_full", symbol=symbol,
+                                                            metadata={"kind": "bar" if is_bar else "signal",
+                                                                      "alert_id": alert_id[:16]})], alert_id)
+            except Exception:
+                pass
             raise HTTPException(status_code=503, detail="webhook queue full")
         try:
-            future = _pool("worker").submit(_process_alert, payload, time.monotonic(), kwargs)
+            future = _pool("worker").submit(_process_alert, payload, time.monotonic(), kwargs, priority=1 if is_bar else 0)
         except RuntimeError as exc:  # the worker was shut down: the service is stopping
             _release_pending(alert_id, is_bar)()
             raise HTTPException(status_code=503, detail="shutting down") from exc
         future.add_done_callback(_release_pending(alert_id, is_bar))
         try:
-            if str(payload.get("mode", "signal")).lower() == "bar":
+            if is_bar:
                 # Raw bars keep the old contract: processed in order and answered with their result (no 202).
-                result = await asyncio.wrap_future(future)
+                # Shielded so a cancelled request can't cancel a bar that is still queued.
+                result = await asyncio.shield(asyncio.wrap_future(future))
             else:
                 result = await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(future)), timeout=webhook_ack_after)
         except asyncio.TimeoutError:

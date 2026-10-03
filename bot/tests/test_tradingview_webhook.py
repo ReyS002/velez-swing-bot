@@ -982,3 +982,46 @@ def test_raw_bars_have_their_own_bound(monkeypatch):
         codes = sorted(b.result(timeout=10).status_code for b in bars)
     assert signal == 202            # the signal slots are separate from the bar slots
     assert codes == [200, 200, 503]  # two bars admitted, the third turned away
+
+
+def test_priority_worker_runs_signals_ahead_of_queued_bars():
+    import threading
+    from bot.webhook_server import _PriorityWorker
+    worker = _PriorityWorker("test-prio")
+    gate = threading.Event()
+    order = []
+    first = worker.submit(lambda: gate.wait(3.0), priority=1)  # a bar already running
+    futures = [worker.submit(order.append, "bar1", priority=1), worker.submit(order.append, "bar2", priority=1),
+               worker.submit(order.append, "signal", priority=0)]
+    gate.set()
+    worker.shutdown(wait=True)
+    assert first.result() and all(f.done() for f in futures)
+    assert order == ["signal", "bar1", "bar2"]  # signal first, bars still in order
+    try:
+        worker.submit(order.append, "late")
+        raise AssertionError("expected a shut down worker to refuse work")
+    except RuntimeError:
+        pass
+
+
+def test_a_queue_full_drop_is_journaled_and_not_marked_seen(monkeypatch):
+    import threading
+    from fastapi.testclient import TestClient
+    app = _ack_app(monkeypatch, ack_after_seconds=0.1, max_pending=1)
+    release = threading.Event()
+    engine = app.state.engine
+
+    def blocked(payload, **kwargs):
+        release.wait(3.0)
+        return {"ok": True, "decisions": [{"status": "ignored"}]}
+
+    remembered = []
+    monkeypatch.setattr(engine, "handle_payload", blocked)
+    monkeypatch.setattr(engine, "_remember_decisions", lambda decisions, alert_id: remembered.append((decisions, alert_id)))
+    client = TestClient(app)
+    assert client.post("/webhook/tradingview/test-secret", json={"mode": "signal", "symbol": "SPY", "id": "a"}).status_code == 202
+    assert client.post("/webhook/tradingview/test-secret", json={"mode": "signal", "symbol": "QQQ", "id": "b"}).status_code == 503
+    release.set()
+    dropped = [d for ds, _ in remembered for d in ds if d.reason == "webhook_queue_full"]
+    assert dropped and dropped[0].symbol == "QQQ"
+    assert not any(i == "b" for i in engine.seen_alert_ids)
