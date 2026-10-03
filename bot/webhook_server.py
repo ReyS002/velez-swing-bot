@@ -13450,10 +13450,11 @@ def create_app(config: dict):
     webhook_inflight: set = set()  # alert ids queued or being processed
     webhook_pending_lock = threading.Lock()
 
-    def _release_pending(alert_id: Optional[str] = None):
+    def _release_pending(alert_id: Optional[str] = None, counted: bool = True):
         def release(_future=None) -> None:
             with webhook_pending_lock:
-                webhook_pending["n"] = max(0, webhook_pending["n"] - 1)
+                if counted:
+                    webhook_pending["n"] = max(0, webhook_pending["n"] - 1)
                 webhook_inflight.discard(alert_id)
         return release
 
@@ -13527,7 +13528,8 @@ def create_app(config: dict):
             # Raw bars feed the strategy in order, so they are always admitted; signals are bounded.
             full = (not duplicate) and (not is_bar) and webhook_pending["n"] >= webhook_max_pending
             if not duplicate and not full:
-                webhook_pending["n"] += 1
+                if not is_bar:
+                    webhook_pending["n"] += 1  # only signals use the bounded slots; bars never count against them
                 webhook_inflight.add(alert_id)
         if duplicate:
             # A repeat of an alert that is queued, running or done never takes a queue slot.
@@ -13540,9 +13542,9 @@ def create_app(config: dict):
         try:
             future = _pool("worker").submit(_process_alert, payload, time.monotonic(), kwargs)
         except RuntimeError as exc:  # the worker was shut down: the service is stopping
-            _release_pending(alert_id)()
+            _release_pending(alert_id, not is_bar)()
             raise HTTPException(status_code=503, detail="shutting down") from exc
-        future.add_done_callback(_release_pending(alert_id))
+        future.add_done_callback(_release_pending(alert_id, not is_bar))
         try:
             if str(payload.get("mode", "signal")).lower() == "bar":
                 # Raw bars keep the old contract: processed in order and answered with their result (no 202).
