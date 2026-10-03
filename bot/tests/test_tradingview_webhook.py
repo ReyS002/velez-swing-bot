@@ -891,3 +891,26 @@ def test_the_same_app_can_be_started_twice(monkeypatch):
     for _ in range(2):
         with TestClient(app) as client:  # each entry runs the lifespan; the second must not find dead pools
             assert client.post("/webhook/tradingview/test-secret", json={"mode": "signal", "symbol": "SPY"}).status_code == 200
+
+
+def test_duplicates_do_not_take_queue_slots_and_bars_are_always_admitted(monkeypatch):
+    import threading
+    from fastapi.testclient import TestClient
+    app = _ack_app(monkeypatch, ack_after_seconds=0.1, max_pending=2)
+    release = threading.Event()
+
+    def blocked(payload, **kwargs):
+        release.wait(3.0)
+        return {"ok": True, "decisions": [{"status": "proposed"}]}
+
+    monkeypatch.setattr(app.state.engine, "handle_payload", blocked)
+    client = TestClient(app)
+    post = lambda body: client.post("/webhook/tradingview/test-secret", json=body)
+    first = {"mode": "signal", "symbol": "SPY", "id": "a"}
+    assert post(first).status_code == 202
+    for _ in range(5):  # TradingView repeats the same alert while the worker is busy
+        repeat = post(first)
+        assert repeat.status_code == 200 and repeat.json()["duplicate"] is True
+    assert post({"mode": "signal", "symbol": "SPY", "id": "b"}).status_code == 202   # a second slot is still free
+    assert post({"mode": "signal", "symbol": "SPY", "id": "c"}).status_code == 503   # now full
+    release.set()
