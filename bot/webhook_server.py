@@ -13419,8 +13419,30 @@ def create_app(config: dict):
     # swing bot trades daily bars, where queue age says nothing about the break window). Raw `mode=bar`
     # payloads are not part of this: they feed the strategy's history in order and are answered with their result.
     webhook_settings = config.get("webhook") or {}
-    webhook_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tradingview-webhook")
-    webhook_notifier = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tradingview-webhook-notify")
+    # The pools belong to one run of the app: created on first use, drained when the lifespan ends, and fresh
+    # again if the same app is started again. Nothing is accepted once shutdown has begun.
+    webhook_pools: Dict[str, Any] = {"worker": None, "notifier": None, "closing": False}
+    webhook_pools_lock = threading.Lock()
+
+    def _pool(name: str) -> ThreadPoolExecutor:
+        with webhook_pools_lock:
+            if webhook_pools["closing"]:
+                raise RuntimeError("webhook pools are shut down")
+            if webhook_pools[name] is None:
+                workers, prefix = (1, "tradingview-webhook") if name == "worker" else (2, "tradingview-webhook-notify")
+                webhook_pools[name] = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=prefix)
+            return webhook_pools[name]
+
+    def _shutdown_pools() -> None:
+        with webhook_pools_lock:
+            webhook_pools["closing"] = True
+            worker, webhook_pools["worker"] = webhook_pools["worker"], None
+        if worker is not None:
+            worker.shutdown(wait=True)  # every acknowledged alert finishes (or expires) first
+        with webhook_pools_lock:
+            notifier, webhook_pools["notifier"] = webhook_pools["notifier"], None
+        if notifier is not None:
+            notifier.shutdown(wait=True)  # then its last failure notifications go out
     webhook_ack_after = float(webhook_settings.get("ack_after_seconds", 2.0) or 2.0)
     webhook_max_queue = float(webhook_settings.get("max_queue_seconds", 0) or 0)  # 0 = never expire
     webhook_max_pending = int(webhook_settings.get("max_pending", 200) or 200)
@@ -13443,7 +13465,8 @@ def create_app(config: dict):
             decision = WebhookDecision(status="ignored", reason="expired_in_queue", symbol=symbol,
                                        metadata={"queued_seconds": round(waited, 1)})
             alert_id = engine._alert_id(payload)
-            engine.seen_alert_ids.append(alert_id)  # a TradingView retry of this alert is a duplicate, not a new trade
+            if alert_id not in engine.seen_alert_ids:  # repeated copies must not push real entries out of the cache
+                engine.seen_alert_ids.append(alert_id)  # a TradingView retry of this alert is a duplicate, not a new trade
             engine._remember_decisions([decision], alert_id)
             log_event(engine.logger, "webhook_expired_in_queue", {"symbol": symbol, "queued_seconds": round(waited, 1)})
             return {"ok": True, "decisions": [decision.__dict__]}
@@ -13475,7 +13498,7 @@ def create_app(config: dict):
                 return
             detail = "; ".join(f"{d.get('symbol') or '?'}: {d.get('reason')}" for d in errors)[:300]
         try:
-            webhook_notifier.submit(_notify_late_failure, detail)
+            _pool("notifier").submit(_notify_late_failure, detail)
         except RuntimeError:  # shutting down: send it here rather than lose it
             _notify_late_failure(detail)
 
@@ -13495,7 +13518,7 @@ def create_app(config: dict):
             log_event(engine.logger, "webhook_queue_full", {"max_pending": webhook_max_pending})
             raise HTTPException(status_code=503, detail="webhook queue full")
         try:
-            future = webhook_worker.submit(_process_alert, payload, time.monotonic(), kwargs)
+            future = _pool("worker").submit(_process_alert, payload, time.monotonic(), kwargs)
         except RuntimeError as exc:  # the worker was shut down: the service is stopping
             _release_pending()
             raise HTTPException(status_code=503, detail="shutting down") from exc
@@ -13516,6 +13539,8 @@ def create_app(config: dict):
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        with webhook_pools_lock:
+            webhook_pools["closing"] = False  # a restarted app accepts alerts again
         engine.start_session_lock_worker()
         engine.start_scanner()
         engine.start_operations_worker()
@@ -13526,8 +13551,7 @@ def create_app(config: dict):
         finally:
             # Alerts first: every acknowledged alert is processed (or expires as stale) before the safety
             # workers below stop, so none is lost and nothing is sent after they're gone.
-            await run_in_threadpool(webhook_worker.shutdown, True)
-            await run_in_threadpool(webhook_notifier.shutdown, True)  # after the worker: its last failures are sent
+            await run_in_threadpool(_shutdown_pools)
             engine.stop_operations_worker()
             engine.calendar.earnings_cache.stop()
             app.state.desk_records.stop()

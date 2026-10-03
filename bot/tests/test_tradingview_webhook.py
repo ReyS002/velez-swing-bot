@@ -882,3 +882,12 @@ def test_a_full_webhook_queue_answers_503(monkeypatch):
              for n in range(3)]
     release.set()
     assert codes == [202, 202, 503]  # two admitted (one running, one waiting), the third turned away
+
+
+def test_the_same_app_can_be_started_twice(monkeypatch):
+    from fastapi.testclient import TestClient
+    app = _ack_app(monkeypatch, ack_after_seconds=1.0)
+    monkeypatch.setattr(app.state.engine, "handle_payload", lambda payload, **kwargs: {"ok": True, "decisions": [{"status": "proposed"}]})
+    for _ in range(2):
+        with TestClient(app) as client:  # each entry runs the lifespan; the second must not find dead pools
+            assert client.post("/webhook/tradingview/test-secret", json={"mode": "signal", "symbol": "SPY"}).status_code == 200
