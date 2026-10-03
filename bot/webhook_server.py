@@ -13497,7 +13497,14 @@ def create_app(config: dict):
         if exc is not None:
             detail = f"{type(exc).__name__}: {str(exc)[:300]}"
         else:
-            errors = [d for d in (future.result() or {}).get("decisions") or [] if d.get("status") == "error"]
+            decisions = (future.result() or {}).get("decisions") or []
+            rejected = [d for d in decisions if d.get("status") == "rejected"]
+            if rejected:
+                # Not an operator alert (a rejection is a normal outcome, and it is journaled), but the 400 that
+                # TradingView would have seen is gone: leave a log line so a bad payload is not silent under load.
+                log_event(engine.logger, "webhook_rejected_after_ack", {
+                    "rejections": "; ".join(f"{d.get('symbol') or '?'}: {d.get('reason')}" for d in rejected)[:300]})
+            errors = [d for d in decisions if d.get("status") == "error"]
             if not errors:
                 return
             detail = "; ".join(f"{d.get('symbol') or '?'}: {d.get('reason')}" for d in errors)[:300]

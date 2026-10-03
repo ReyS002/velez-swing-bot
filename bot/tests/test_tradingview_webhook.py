@@ -914,3 +914,24 @@ def test_duplicates_do_not_take_queue_slots_and_bars_are_always_admitted(monkeyp
     assert post({"mode": "signal", "symbol": "SPY", "id": "b"}).status_code == 202   # a second slot is still free
     assert post({"mode": "signal", "symbol": "SPY", "id": "c"}).status_code == 503   # now full
     release.set()
+
+
+def test_a_rejection_after_the_202_is_logged(monkeypatch):
+    import time as _time
+    from fastapi.testclient import TestClient
+    import bot.webhook_server as ws
+    app = _ack_app(monkeypatch, ack_after_seconds=0.1)
+    events = []
+
+    def slow_reject(payload, **kwargs):
+        _time.sleep(0.3)
+        return {"ok": False, "decisions": [{"status": "rejected", "reason": "missing_entry_or_stop", "symbol": "SPY"}]}
+
+    monkeypatch.setattr(app.state.engine, "handle_payload", slow_reject)
+    original = ws.log_event
+    monkeypatch.setattr(ws, "log_event", lambda logger, name, data=None, *a, **k: events.append(name) or original(logger, name, data, *a, **k))
+    assert TestClient(app).post("/webhook/tradingview/test-secret", json={"mode": "signal", "symbol": "SPY"}).status_code == 202
+    deadline = _time.time() + 3
+    while "webhook_rejected_after_ack" not in events and _time.time() < deadline:
+        _time.sleep(0.05)
+    assert "webhook_rejected_after_ack" in events
