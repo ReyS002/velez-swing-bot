@@ -10665,7 +10665,8 @@ class TradingViewWebhookEngine:
         t = str(timeframe or "").strip().upper()
         return t in {"D", "1D", "DAY", "1DAY", "DAILY", "W", "1W", "WEEK", "1WEEK", "M", "1M", "MONTH", "1MONTH"}
 
-    def _regular_hours_block(self, symbol: str, timestamp: Any = None, *, same_day_only: bool = False) -> Optional[dict]:
+    def _regular_hours_block(self, symbol: str, timestamp: Any = None, *, same_day_only: bool = False,
+                             prior_session: bool = False) -> Optional[dict]:
         """Equity entries only in the regular session (09:30 to the exchange's close, on days the exchange
         calendar confirms are trading days), judged at `timestamp` (now when it has none). An order sent
         outside it rests until the next open and fills on whatever the open does: a gap can fill a short far
@@ -10687,6 +10688,15 @@ class TradingViewWebhookEngine:
             # delivery time for it.
             return {"clock": f"unreadable timestamp {str(timestamp)[:24]!r}", "allowed": "a readable alert time inside the session"}
         local = at.astimezone(tz)
+        if prior_session and timestamp:
+            # A completed daily bar is good for the next session only: not older than the last trading day
+            # (Friday's bar on Monday). After a holiday this errs on the side of not trading.
+            today = self._regular_hours_clock().astimezone(tz)
+            lag = (today.date() - local.date()).days
+            if lag < 0 or lag > (3 if today.weekday() == 0 else 1):
+                return {"clock": local.strftime("%a %H:%M:%S ET"),
+                        "allowed": "a daily bar is only valid in the session after it closed"}
+            return None
         if timestamp and local.date() != self._regular_hours_clock().astimezone(tz).date():
             # An alert is only good in the session it fired in: Friday's 15:55 alert, held over the weekend and
             # delivered Monday at 09:35, carries Friday's entry and stop levels.
@@ -10845,8 +10855,9 @@ class TradingViewWebhookEngine:
         # A generated signal's bar must at least belong to today's session: a bar held over from an earlier
         # day carries that day's entry and stop levels.
         outside = None if dry_run else (self._regular_hours_block(symbol, metadata.get("signal_timestamp"))
-                                        or (not metadata.get("signal_timestamp") and not self._daily_or_longer(metadata.get("timeframe"))
-                                            and self._regular_hours_block(symbol, metadata.get("timestamp"), same_day_only=True))
+                                        or (not metadata.get("signal_timestamp")
+                                            and self._regular_hours_block(symbol, metadata.get("timestamp"), same_day_only=True,
+                                                                          prior_session=self._daily_or_longer(metadata.get("timeframe"))))
                                         or self._regular_hours_block(symbol))  # a dry run never submits
         if outside:
             return WebhookDecision(

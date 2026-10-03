@@ -255,3 +255,19 @@ def test_a_daily_bar_is_still_not_sent_after_the_bell():
     engine._regular_hours_clock = lambda: datetime.fromisoformat("2026-10-01T20:00:44+00:00")  # Thu 16:00:44 ET
     decision = engine._build_order_decision(_bar_signal("1Day", bar_start="2026-10-01T04:00:00+00:00"), "alert-d3")
     assert decision.status == "rejected" and decision.reason.startswith("outside_regular_hours:")
+
+
+def test_a_daily_bar_must_be_from_the_last_session_not_an_older_replay():
+    from datetime import datetime
+    engine = _engine(regular_hours_only=True)
+    clock = lambda iso: setattr(engine, "_regular_hours_clock", lambda: datetime.fromisoformat(iso))
+    clock("2026-10-01T14:05:00+00:00")  # Thu 10:05 ET: Wednesday's bar is the last session's
+    assert not str(engine._build_order_decision(_bar_signal("1Day", bar_start="2026-09-30T04:00:00+00:00"), "a1").reason).startswith("outside")
+    older = engine._build_order_decision(_bar_signal("1Day", bar_start="2026-09-28T04:00:00+00:00"), "a2")  # Monday's, replayed
+    assert older.status == "rejected" and older.reason.startswith("outside_regular_hours:")
+    from datetime import date
+    engine._velez_open_days.add(date(2026, 10, 5))
+    clock("2026-10-05T14:05:00+00:00")  # Mon 10:05 ET: Friday's bar is the last session's
+    assert not str(engine._build_order_decision(_bar_signal("1Day", bar_start="2026-10-02T04:00:00+00:00"), "a3").reason).startswith("outside")
+    stale = engine._build_order_decision(_bar_signal("1Day", bar_start="2026-10-01T04:00:00+00:00"), "a4")  # Thursday's
+    assert stale.status == "rejected"
