@@ -103,6 +103,9 @@ webhook:
   paper_only: true
   time_in_force: gtc
   protective_stop_time_in_force: gtc
+  # Equity entries only 09:30-16:00 ET (at the alert's own time): an order sent after the bell rests to the open
+  # and can fill through its stop on a gap.
+  regular_hours_only: true
   take_profit_r: null
   dedupe_cache_size: 1000
 strategy:
