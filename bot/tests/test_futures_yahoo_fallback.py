@@ -42,17 +42,17 @@ def test_polygon_404_falls_back_to_yahoo_and_remembers_it(monkeypatch):
     monkeypatch.setattr(engine, "_polygon_request", lambda *a, **k: calls.append(1) or (_ for _ in ()).throw(RuntimeError("polygon_data_404:x")))
     seen = []
     monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda ticker, interval, *a, **k: seen.append((ticker, interval)) or _frame())
-    bars = engine._fetch_scanner_bars(symbol="ES", asset_type="future")
+    bars = engine._fetch_scanner_bars(symbol="ES", asset_type="future", allow_yahoo=True)
     assert len(bars) == 60 and seen == [("ES=F", "D")] and bars[-1].close == 5005.0 and bars[0].timestamp.tzinfo
-    engine._fetch_scanner_bars(symbol="ES", asset_type="future")
+    engine._fetch_scanner_bars(symbol="ES", asset_type="future", allow_yahoo=True)
     assert len(calls) == 1  # not entitled: Polygon is not asked again within the hour
 
 
 def test_no_polygon_key_uses_yahoo_when_allowed_and_fails_otherwise(monkeypatch):
     monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda *a, **k: _frame())
-    assert len(_engine(monkeypatch, key=False)._fetch_scanner_bars(symbol="ES", asset_type="future")) == 60
+    assert len(_engine(monkeypatch, key=False)._fetch_scanner_bars(symbol="ES", asset_type="future", allow_yahoo=True)) == 60
     with pytest.raises(RuntimeError, match="missing_polygon_api_key"):
-        _engine(monkeypatch, key=False, fallback=False)._fetch_scanner_bars(symbol="ES", asset_type="future")
+        _engine(monkeypatch, key=False, fallback=False)._fetch_scanner_bars(symbol="ES", asset_type="future", allow_yahoo=True)
 
 
 def test_intraday_scans_never_use_yahoo(monkeypatch):
@@ -61,7 +61,7 @@ def test_intraday_scans_never_use_yahoo(monkeypatch):
     _no_polygon(engine, monkeypatch)
     monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda *a, **k: _frame())
     with pytest.raises(RuntimeError, match="polygon_data_404"):
-        engine._fetch_scanner_bars(symbol="ES", asset_type="future")
+        engine._fetch_scanner_bars(symbol="ES", asset_type="future", allow_yahoo=True)
     for tf in ("1Hour", "3Hour", "2Day"):  # only plain daily scans may use the delayed feed
         assert _engine(monkeypatch, timeframe=tf)._futures_yahoo_fallback_allowed() is False
 
@@ -69,10 +69,10 @@ def test_intraday_scans_never_use_yahoo(monkeypatch):
 def test_an_unmapped_root_and_empty_data_are_errors(monkeypatch):
     engine = _engine(monkeypatch, key=False)
     with pytest.raises(RuntimeError, match="yahoo_futures_unmapped"):
-        engine._fetch_scanner_bars(symbol="ZZ", asset_type="future")
+        engine._fetch_scanner_bars(symbol="ZZ", asset_type="future", allow_yahoo=True)
     monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda *a, **k: pd.DataFrame())
     with pytest.raises(RuntimeError, match="yahoo_futures_no_data"):
-        engine._fetch_scanner_bars(symbol="ES", asset_type="future")
+        engine._fetch_scanner_bars(symbol="ES", asset_type="future", allow_yahoo=True)
 
 
 def test_the_polygon_path_is_unchanged_when_it_works(monkeypatch):
@@ -80,7 +80,7 @@ def test_the_polygon_path_is_unchanged_when_it_works(monkeypatch):
     row = {"window_start": 1_790_000_000_000_000_000, "open": 1, "high": 2, "low": 1, "close": 2, "volume": 3}
     monkeypatch.setattr(engine, "_polygon_request", lambda *a, **k: {"results": [row]})
     monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda *a, **k: (_ for _ in ()).throw(AssertionError("Yahoo used")))
-    assert len(engine._fetch_scanner_bars(symbol="ES", asset_type="future")) == 1
+    assert len(engine._fetch_scanner_bars(symbol="ES", asset_type="future", allow_yahoo=True)) == 1
 
 
 def test_empty_polygon_rows_fall_back_and_dated_contracts_map_to_the_root(monkeypatch):
@@ -88,7 +88,7 @@ def test_empty_polygon_rows_fall_back_and_dated_contracts_map_to_the_root(monkey
     monkeypatch.setattr(engine, "_polygon_request", lambda *a, **k: {"results": []})
     seen = []
     monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda ticker, interval, *a, **k: seen.append(ticker) or _frame())
-    assert len(engine._fetch_scanner_bars(symbol="ESZ6", asset_type="future")) == 60
+    assert len(engine._fetch_scanner_bars(symbol="ESZ6", asset_type="future", allow_yahoo=True)) == 60
     engine._fetch_yahoo_futures_bars("6EZ6")
     assert seen == ["ES=F", "6E=F"]
 
@@ -97,12 +97,12 @@ def test_a_provider_change_resets_the_scanner_state(monkeypatch):
     engine = _engine(monkeypatch)
     row = {"window_start": 1_790_000_000_000_000_000, "open": 1, "high": 2, "low": 1, "close": 2, "volume": 3}
     monkeypatch.setattr(engine, "_polygon_request", lambda *a, **k: {"results": [row]})
-    engine._fetch_scanner_bars(symbol="ES", asset_type="future")
+    engine._fetch_scanner_bars(symbol="ES", asset_type="future", allow_yahoo=True)
     engine._scanner_apply_futures_source("ES")
     engine.scanner_last_bar["ES"] = "warmed"
     monkeypatch.setattr(engine, "_polygon_request", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("polygon_data_503:x")))
     monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda *a, **k: _frame())
-    engine._fetch_scanner_bars(symbol="ES", asset_type="future")
+    engine._fetch_scanner_bars(symbol="ES", asset_type="future", allow_yahoo=True)
     assert engine.scanner_last_bar["ES"] == "warmed"  # a read-only fetch never touches the live scanner state
     engine._scanner_apply_futures_source("ES")
     assert "ES" not in engine.scanner_last_bar  # Yahoo's series is not stitched onto Polygon's
@@ -122,9 +122,9 @@ def test_a_stalled_yahoo_call_is_not_stacked_up(monkeypatch):
     monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda *a, **k: started.append(1) or release.wait(5) or _frame())
     engine.scanner_config["timeout_seconds"] = 0.2
     with pytest.raises(RuntimeError, match="yahoo_futures_failed"):
-        engine._fetch_scanner_bars(symbol="ES", asset_type="future")
+        engine._fetch_scanner_bars(symbol="ES", asset_type="future", allow_yahoo=True)
     with pytest.raises(RuntimeError, match="yahoo_futures_stalled"):
-        engine._fetch_scanner_bars(symbol="ES", asset_type="future")
+        engine._fetch_scanner_bars(symbol="ES", asset_type="future", allow_yahoo=True)
     assert len(started) == 1  # no second request or thread while the first is still hanging
     release.set()
 
@@ -144,12 +144,35 @@ def test_a_404_backs_off_only_that_contract_but_a_403_backs_off_all(monkeypatch)
         raise RuntimeError("polygon_data_404:x")
 
     monkeypatch.setattr(engine, "_polygon_request", request)
-    engine._fetch_scanner_bars(symbol="ES", asset_type="future")
-    engine._fetch_scanner_bars(symbol="NQ", asset_type="future")
+    engine._fetch_scanner_bars(symbol="ES", asset_type="future", allow_yahoo=True)
+    engine._fetch_scanner_bars(symbol="NQ", asset_type="future", allow_yahoo=True)
     assert len(calls) == 2  # NQ still got its own Polygon attempt
     assert engine._futures_active_source() == "yahoo"
     engine2 = _engine(monkeypatch)
     monkeypatch.setattr(engine2, "_polygon_request", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("polygon_data_403:x")))
-    engine2._fetch_scanner_bars(symbol="ES", asset_type="future")
+    engine2._fetch_scanner_bars(symbol="ES", asset_type="future", allow_yahoo=True)
     assert engine2._futures_active_source() == "yahoo"
     assert _engine(monkeypatch)._futures_active_source() == "polygon"
+
+
+def test_position_management_never_gets_yahoo_bars_and_labels_close_at_the_session_end(monkeypatch):
+    engine = _engine(monkeypatch)
+    _no_polygon(engine, monkeypatch)
+    monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda *a, **k: (_ for _ in ()).throw(AssertionError("Yahoo used")))
+    with pytest.raises(RuntimeError, match="polygon_data_404"):
+        engine._fetch_scanner_bars(symbol="ES", asset_type="future")  # the default: exact-contract data only
+    monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda *a, **k: _frame(3))
+    bars = engine._fetch_yahoo_futures_bars("ES")
+    # the 2026-07-01 label closes at 17:20 ET that day (session close + the feed's delay), not at midnight
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    assert bars[0].timestamp + timedelta(days=1) == datetime(2026, 7, 1, 17, 20, tzinfo=ZoneInfo("America/New_York"))
+
+
+def test_a_404_backoff_follows_the_resolved_contract(monkeypatch):
+    engine = _engine(monkeypatch)
+    monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda *a, **k: _frame())
+    monkeypatch.setattr(engine, "_polygon_request", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("polygon_data_404:x")))
+    monkeypatch.setattr(engine, "_polygon_futures_ticker", lambda symbol: "ESZ6")
+    engine._fetch_scanner_bars(symbol="ES", asset_type="future", allow_yahoo=True)
+    assert "ESZ6" in engine._polygon_futures_contract_blocked and "ES" not in engine._polygon_futures_contract_blocked

@@ -18,7 +18,7 @@ from copy import deepcopy
 from collections import Counter, deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional
 from urllib.parse import urlparse
@@ -1454,6 +1454,7 @@ _YAHOO_FX_CCY = frozenset({
 })
 _YF_TIMEOUT_SEC = 1.5
 # Yahoo's continuous front-month futures, for the swing bot's hourly/daily scans when Polygon can't serve futures.
+_YAHOO_DELAY_SECONDS = 20 * 60  # Yahoo trails the exchange by about 15 minutes: close a bar only once it is complete
 _YAHOO_FUTURES_TICKERS = {
     "ES": "ES=F", "NQ": "NQ=F", "YM": "YM=F", "RTY": "RTY=F", "MES": "MES=F", "MNQ": "MNQ=F", "MYM": "MYM=F",
     "M2K": "M2K=F", "GC": "GC=F", "MGC": "MGC=F", "SI": "SI=F", "CL": "CL=F", "MCL": "MCL=F", "NG": "NG=F",
@@ -2739,7 +2740,7 @@ class TradingViewWebhookEngine:
             if asset_type in {"future", "futures"}:
                 self._scanner_reset_on_contract_roll(symbol)
             try:
-                bars = self._fetch_scanner_bars(symbol=symbol, asset_type=asset_type)
+                bars = self._fetch_scanner_bars(symbol=symbol, asset_type=asset_type, allow_yahoo=True)
             except Exception as exc:
                 errors.append(f"{symbol}:{exc}")
                 continue
@@ -3424,11 +3425,12 @@ class TradingViewWebhookEngine:
         status = str(order.get("status") or "").lower()
         return status in {"new", "accepted", "pending_new", "partially_filled"}
 
-    def _fetch_scanner_bars(self, *, symbol: str, asset_type: str, timeframe: Optional[str] = None) -> List[Bar]:
+    def _fetch_scanner_bars(self, *, symbol: str, asset_type: str, timeframe: Optional[str] = None,
+                            allow_yahoo: bool = False) -> List[Bar]:
         if asset_type == "crypto":
             return self._fetch_crypto_bars(symbol, timeframe) if timeframe else self._fetch_crypto_bars(symbol)
         if asset_type in {"future", "futures"}:
-            return self._fetch_futures_bars(symbol, timeframe)
+            return self._fetch_futures_bars(symbol, timeframe, allow_yahoo=allow_yahoo)
         return self._fetch_stock_bars(symbol, timeframe) if timeframe else self._fetch_stock_bars(symbol)
 
     def _fetch_stock_bars(self, symbol: str, timeframe: Optional[str] = None) -> List[Bar]:
@@ -3523,8 +3525,11 @@ class TradingViewWebhookEngine:
             return False
         return self._timeframe_seconds(str(timeframe or self.scanner_config.get("timeframe", "1Min"))) == 86400
 
-    def _fetch_futures_bars(self, symbol: str, timeframe: Optional[str] = None) -> List[Bar]:
-        fallback = self._futures_yahoo_fallback_allowed(timeframe)
+    def _fetch_futures_bars(self, symbol: str, timeframe: Optional[str] = None, allow_yahoo: bool = False) -> List[Bar]:
+        # Yahoo's continuous series is for the scanner only (allow_yahoo). Managing an open position (stops,
+        # partials, exits) needs the bars of the exact contract held, which a continuous ticker can't give
+        # once it has rolled to the next front month.
+        fallback = allow_yahoo and self._futures_yahoo_fallback_allowed(timeframe)
         bars, source = self._fetch_futures_bars_from(symbol, timeframe, fallback)
         # Remembered for the live scan, which owns the reset (read-only callers such as the quality panel
         # fetch through here too and must not touch scanner state).
@@ -3550,7 +3555,8 @@ class TradingViewWebhookEngine:
     def _fetch_futures_bars_from(self, symbol: str, timeframe: Optional[str], fallback: bool):
         now = datetime.now(timezone.utc)
         blocked_until = self.__dict__.get("_polygon_futures_blocked_until")
-        contract_blocked = self.__dict__.setdefault("_polygon_futures_contract_blocked", {}).get(symbol)
+        contract = self._polygon_futures_ticker(symbol)
+        contract_blocked = self.__dict__.setdefault("_polygon_futures_contract_blocked", {}).get(contract)
         blocked = (blocked_until and now < blocked_until) or (contract_blocked and now < contract_blocked)
         if self._polygon_api_key() and not (fallback and blocked):
             try:
@@ -3566,7 +3572,7 @@ class TradingViewWebhookEngine:
                     self.__dict__["_polygon_futures_blocked_until"] = now + timedelta(hours=1)
                 elif str(exc).startswith("polygon_data_404"):
                     # No such contract or route: only this symbol backs off.
-                    self.__dict__["_polygon_futures_contract_blocked"][symbol] = now + timedelta(hours=1)
+                    self.__dict__["_polygon_futures_contract_blocked"][contract] = now + timedelta(hours=1)
                 log_event(self.logger, "futures_polygon_failed_using_yahoo", {"symbol": symbol, "reason": str(exc)[:120]})
         elif not fallback:
             raise RuntimeError("missing_polygon_api_key")
@@ -3603,15 +3609,15 @@ class TradingViewWebhookEngine:
             raise RuntimeError(f"yahoo_futures_failed:{yahoo}:{str(exc)[:80] or type(exc).__name__}") from exc
         if frame is None or frame.empty:
             raise RuntimeError(f"yahoo_futures_no_data:{yahoo}")
-        try:
-            tz = ZoneInfo(str(self.scanner_config.get("timezone") or "America/New_York"))
-        except Exception:
-            tz = timezone.utc
         bars: List[Bar] = []
         for ts, row in frame.tail(limit).iterrows():
             stamp = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
-            if stamp.tzinfo is None:
-                stamp = stamp.replace(tzinfo=tz)
+            # Yahoo labels a daily bar with its date at midnight; the scanner takes a bar to close one bar
+            # length after its stamp. Re-stamp so that moment is the futures session close (17:00 ET, plus
+            # the feed's delay), not the following midnight.
+            session_end = datetime.combine(stamp.date() if hasattr(stamp, "date") else stamp, dtime(17, 0),
+                                           tzinfo=ZoneInfo("America/New_York")) + timedelta(seconds=_YAHOO_DELAY_SECONDS)
+            stamp = session_end - timedelta(days=1)
             bars.append(Bar(timestamp=stamp, open=float(row["Open"]), high=float(row["High"]), low=float(row["Low"]),
                             close=float(row["Close"]), volume=float(row["Volume"] or 0)))
         return bars
