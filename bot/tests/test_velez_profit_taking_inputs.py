@@ -207,6 +207,7 @@ def test_bare_alert_gets_the_daily_range_veto():
 def test_futures_bars_follow_the_decision_timeframe(monkeypatch, tmp_path):
     engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
     seen = []
+    monkeypatch.setattr(engine, "_polygon_api_key", lambda: "test-key")
     monkeypatch.setattr(engine, "_fetch_polygon_futures_bars", lambda symbol, timeframe=None: seen.append(timeframe) or [])
     engine._fetch_scanner_bars(symbol="ESZ6", asset_type="futures", timeframe="15Min")
     engine._fetch_scanner_bars(symbol="ESZ6", asset_type="futures")

@@ -219,6 +219,9 @@ scanner:
   enabled: true
   auto_submit: true
   timeframe: 1Day
+  # Hourly/daily futures scans fall back to Yahoo continuous contracts (ES=F, NQ=F, GC=F...) when Polygon can't
+  # serve futures (no Futures entitlement on the key). Yahoo is ~15 min delayed: fine for these bars, never used intraday.
+  futures_yahoo_fallback: true
   symbols:
   - SPY
   - QQQ

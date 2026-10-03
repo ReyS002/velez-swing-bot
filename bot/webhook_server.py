@@ -1453,6 +1453,13 @@ _YAHOO_FX_CCY = frozenset({
     "MXN", "ZAR", "CNH", "HKD", "SGD",
 })
 _YF_TIMEOUT_SEC = 1.5
+# Yahoo's continuous front-month futures, for the swing bot's hourly/daily scans when Polygon can't serve futures.
+_YAHOO_FUTURES_TICKERS = {
+    "ES": "ES=F", "NQ": "NQ=F", "YM": "YM=F", "RTY": "RTY=F", "MES": "MES=F", "MNQ": "MNQ=F", "MYM": "MYM=F",
+    "M2K": "M2K=F", "GC": "GC=F", "MGC": "MGC=F", "SI": "SI=F", "CL": "CL=F", "MCL": "MCL=F", "NG": "NG=F",
+    "ZB": "ZB=F", "ZN": "ZN=F", "ZF": "ZF=F", "ZC": "ZC=F", "ZS": "ZS=F", "ZW": "ZW=F", "HG": "HG=F",
+    "6E": "6E=F", "6B": "6B=F", "6J": "6J=F",
+}
 
 
 def _yahoo_strip_tv_prefix(symbol: str) -> str:
@@ -2719,7 +2726,7 @@ class TradingViewWebhookEngine:
             if asset_type not in {"equity", "stock", "crypto", "future", "futures"}:
                 skipped.append(f"{symbol}:unsupported_asset:{asset_type}")
                 continue
-            if asset_type in {"future", "futures"} and not self._polygon_api_key():
+            if asset_type in {"future", "futures"} and not self._polygon_api_key() and not self._futures_yahoo_fallback_allowed():
                 skipped.append(f"{symbol}:polygon_key_missing")
                 continue
             session_block = self._scanner_session_block(symbol=symbol, asset_type=asset_type, now=now)
@@ -3417,7 +3424,7 @@ class TradingViewWebhookEngine:
         if asset_type == "crypto":
             return self._fetch_crypto_bars(symbol, timeframe) if timeframe else self._fetch_crypto_bars(symbol)
         if asset_type in {"future", "futures"}:
-            return self._fetch_polygon_futures_bars(symbol, timeframe) if timeframe else self._fetch_polygon_futures_bars(symbol)
+            return self._fetch_futures_bars(symbol, timeframe)
         return self._fetch_stock_bars(symbol, timeframe) if timeframe else self._fetch_stock_bars(symbol)
 
     def _fetch_stock_bars(self, symbol: str, timeframe: Optional[str] = None) -> List[Bar]:
@@ -3491,6 +3498,63 @@ class TradingViewWebhookEngine:
         data = self._alpaca_data_request("/v1beta3/crypto/us/bars", params=params)
         rows = (data.get("bars") or {}).get(alpaca_symbol) or []
         return [self._bar_from_alpaca(item) for item in rows]
+
+    def _futures_yahoo_fallback_allowed(self, timeframe: Optional[str] = None) -> bool:
+        """Yahoo continuous futures may stand in for Polygon, for hourly and longer scans only: its feed is
+        delayed about 15 minutes, which doesn't matter on those bars and would on intraday ones."""
+        raw = self.scanner_config.get("futures_yahoo_fallback", False)
+        if not (raw is True or str(raw).strip().lower() in {"1", "true", "yes", "on"}):
+            return False
+        return self._timeframe_seconds(str(timeframe or self.scanner_config.get("timeframe", "1Min"))) >= 3600
+
+    def _fetch_futures_bars(self, symbol: str, timeframe: Optional[str] = None) -> List[Bar]:
+        fallback = self._futures_yahoo_fallback_allowed(timeframe)
+        blocked_until = self.__dict__.get("_polygon_futures_blocked_until")
+        if self._polygon_api_key() and not (fallback and blocked_until and datetime.now(timezone.utc) < blocked_until):
+            try:
+                return self._fetch_polygon_futures_bars(symbol, timeframe) if timeframe else self._fetch_polygon_futures_bars(symbol)
+            except Exception as exc:
+                if not fallback:
+                    raise
+                if str(exc).startswith(("polygon_data_401", "polygon_data_403", "polygon_data_404")):
+                    # Not entitled to futures (or no such route): don't ask again for an hour.
+                    self.__dict__["_polygon_futures_blocked_until"] = datetime.now(timezone.utc) + timedelta(hours=1)
+                log_event(self.logger, "futures_polygon_failed_using_yahoo", {"symbol": symbol, "reason": str(exc)[:120]})
+        elif not fallback:
+            raise RuntimeError("missing_polygon_api_key")
+        return self._fetch_yahoo_futures_bars(symbol, timeframe)
+
+    def _fetch_yahoo_futures_bars(self, symbol: str, timeframe: Optional[str] = None) -> List[Bar]:
+        root = re.sub(r"\d*!$", "", str(symbol or "").upper().strip())
+        yahoo = _YAHOO_FUTURES_TICKERS.get(root)
+        if not yahoo:
+            raise RuntimeError(f"yahoo_futures_unmapped:{root}")
+        seconds = self._timeframe_seconds(str(timeframe or self.scanner_config.get("timeframe", "1Day")))
+        code = "D" if seconds >= 86400 else {3600: "60", 7200: "120", 14400: "240"}.get(seconds, "60")
+        limit = max(50, min(int(self.scanner_config.get("history_bars", 260) or 260), 1000))
+        from .core.trifecta import fetch_bars_yfinance
+
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            frame = pool.submit(fetch_bars_yfinance, yahoo, code).result(timeout=float(self.scanner_config.get("timeout_seconds", 20) or 20))
+        except Exception as exc:
+            raise RuntimeError(f"yahoo_futures_failed:{yahoo}:{str(exc)[:80]}") from exc
+        finally:
+            pool.shutdown(wait=False)
+        if frame is None or frame.empty:
+            raise RuntimeError(f"yahoo_futures_no_data:{yahoo}")
+        try:
+            tz = ZoneInfo(str(self.scanner_config.get("timezone") or "America/New_York"))
+        except Exception:
+            tz = timezone.utc
+        bars: List[Bar] = []
+        for ts, row in frame.tail(limit).iterrows():
+            stamp = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=tz)
+            bars.append(Bar(timestamp=stamp, open=float(row["Open"]), high=float(row["High"]), low=float(row["Low"]),
+                            close=float(row["Close"]), volume=float(row["Volume"] or 0)))
+        return bars
 
     def _fetch_polygon_futures_bars(self, symbol: str, timeframe: Optional[str] = None) -> List[Bar]:
         ticker = self._polygon_futures_ticker(symbol)
