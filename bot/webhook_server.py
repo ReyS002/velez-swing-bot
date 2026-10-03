@@ -2746,7 +2746,7 @@ class TradingViewWebhookEngine:
                 continue
             if asset_type in {"future", "futures"}:
                 self._scanner_apply_futures_source(symbol)
-            closed = [bar for bar in bars if self._scanner_bar_is_closed(bar, now)]
+            closed = [bar for bar in bars if self._scanner_bar_is_closed(bar, now, symbol=symbol)]
             if not closed:
                 continue
             symbols_scanned += 1
@@ -3580,11 +3580,10 @@ class TradingViewWebhookEngine:
 
     def _fetch_yahoo_futures_bars(self, symbol: str, timeframe: Optional[str] = None) -> List[Bar]:
         root = re.sub(r"\d*!$", "", str(symbol or "").upper().strip())
-        if root not in _YAHOO_FUTURES_TICKERS:
-            dated = re.match(r"^(.+?)[FGHJKMNQUVXZ]\d{1,2}$", root)  # ESZ6 -> ES
-            root = dated.group(1) if dated else root
         yahoo = _YAHOO_FUTURES_TICKERS.get(root)
         if not yahoo:
+            # Roots only: Yahoo's ES=F is whatever contract is front month there, which can differ from an
+            # explicit dated contract such as ESZ6 that would then be traded on another contract's prices.
             raise RuntimeError(f"yahoo_futures_unmapped:{root}")
         seconds = self._timeframe_seconds(str(timeframe or self.scanner_config.get("timeframe", "1Day")))
         if seconds != 86400:
@@ -3612,12 +3611,10 @@ class TradingViewWebhookEngine:
         bars: List[Bar] = []
         for ts, row in frame.tail(limit).iterrows():
             stamp = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
-            # Yahoo labels a daily bar with its date at midnight; the scanner takes a bar to close one bar
-            # length after its stamp. Re-stamp so that moment is the futures session close (17:00 ET, plus
-            # the feed's delay), not the following midnight.
-            session_end = datetime.combine(stamp.date() if hasattr(stamp, "date") else stamp, dtime(17, 0),
-                                           tzinfo=ZoneInfo("America/New_York")) + timedelta(seconds=_YAHOO_DELAY_SECONDS)
-            stamp = session_end - timedelta(days=1)
+            # A daily bar keeps its trading date (midnight ET of the label); when it counts as closed is
+            # decided by _scanner_bar_is_closed, which knows this feed's session end.
+            stamp = datetime.combine(stamp.date() if hasattr(stamp, "date") else stamp, dtime(0, 0),
+                                     tzinfo=ZoneInfo("America/New_York"))
             bars.append(Bar(timestamp=stamp, open=float(row["Open"]), high=float(row["High"]), low=float(row["Low"]),
                             close=float(row["Close"]), volume=float(row["Volume"] or 0)))
         return bars
@@ -5428,7 +5425,12 @@ class TradingViewWebhookEngine:
             return datetime.fromtimestamp(numeric / 1000, tz=timezone.utc)
         return datetime.fromtimestamp(numeric, tz=timezone.utc)
 
-    def _scanner_bar_is_closed(self, bar: Bar, now: datetime) -> bool:
+    def _scanner_bar_is_closed(self, bar: Bar, now: datetime, symbol: Optional[str] = None) -> bool:
+        if symbol and (self.__dict__.get("_futures_last_source") or {}).get(symbol) == "yahoo":
+            # A Yahoo daily futures bar is final at the 17:00 ET session close plus the feed's delay.
+            tz = ZoneInfo("America/New_York")
+            day = bar.timestamp.astimezone(tz).date() if bar.timestamp.tzinfo else bar.timestamp.date()
+            return now >= datetime.combine(day, dtime(17, 0), tzinfo=tz) + timedelta(seconds=_YAHOO_DELAY_SECONDS)
         timeframe_seconds = self._timeframe_seconds(str(self.scanner_config.get("timeframe", "1Min")))
         delay = max(0, int(self.scanner_config.get("closed_bar_delay_seconds", 15) or 15))
         timestamp = bar.timestamp if bar.timestamp.tzinfo else bar.timestamp.replace(tzinfo=timezone.utc)

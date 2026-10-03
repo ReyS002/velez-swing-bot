@@ -83,14 +83,15 @@ def test_the_polygon_path_is_unchanged_when_it_works(monkeypatch):
     assert len(engine._fetch_scanner_bars(symbol="ES", asset_type="future", allow_yahoo=True)) == 1
 
 
-def test_empty_polygon_rows_fall_back_and_dated_contracts_map_to_the_root(monkeypatch):
+def test_empty_polygon_rows_fall_back_and_dated_contracts_are_not_mapped(monkeypatch):
     engine = _engine(monkeypatch)
     monkeypatch.setattr(engine, "_polygon_request", lambda *a, **k: {"results": []})
     seen = []
     monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda ticker, interval, *a, **k: seen.append(ticker) or _frame())
-    assert len(engine._fetch_scanner_bars(symbol="ESZ6", asset_type="future", allow_yahoo=True)) == 60
-    engine._fetch_yahoo_futures_bars("6EZ6")
-    assert seen == ["ES=F", "6E=F"]
+    assert len(engine._fetch_scanner_bars(symbol="ES", asset_type="future", allow_yahoo=True)) == 60
+    assert seen == ["ES=F"]
+    with pytest.raises(RuntimeError, match="yahoo_futures_unmapped"):
+        engine._fetch_yahoo_futures_bars("ESZ6")  # an explicit contract is never traded on ES=F's prices
 
 
 def test_a_provider_change_resets_the_scanner_state(monkeypatch):
@@ -163,10 +164,13 @@ def test_position_management_never_gets_yahoo_bars_and_labels_close_at_the_sessi
         engine._fetch_scanner_bars(symbol="ES", asset_type="future")  # the default: exact-contract data only
     monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda *a, **k: _frame(3))
     bars = engine._fetch_yahoo_futures_bars("ES")
-    # the 2026-07-01 label closes at 17:20 ET that day (session close + the feed's delay), not at midnight
-    from datetime import datetime, timedelta
+    from datetime import datetime
     from zoneinfo import ZoneInfo
-    assert bars[0].timestamp + timedelta(days=1) == datetime(2026, 7, 1, 17, 20, tzinfo=ZoneInfo("America/New_York"))
+    et = ZoneInfo("America/New_York")
+    assert bars[0].timestamp == datetime(2026, 7, 1, 0, 0, tzinfo=et)  # the bar keeps its trading date
+    engine._futures_last_source = {"ES": "yahoo"}
+    assert not engine._scanner_bar_is_closed(bars[0], datetime(2026, 7, 1, 17, 10, tzinfo=et), symbol="ES")
+    assert engine._scanner_bar_is_closed(bars[0], datetime(2026, 7, 1, 17, 25, tzinfo=et), symbol="ES")
 
 
 def test_a_404_backoff_follows_the_resolved_contract(monkeypatch):

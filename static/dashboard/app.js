@@ -981,7 +981,7 @@ function renderScannerPanel() {
         ${metric("Timeframe", config.timeframe || "1Min", `${config.interval_seconds || 60}s interval`)}
         ${metric("Last scan", scanner.last_scan_at ? timeAgo(scanner.last_scan_at) : "Warming", `${scanner.symbols_scanned || 0} lanes`)}
         ${metric("Exposure", `${exposure.active_exposure ?? 0}/${exposure.max_open_positions ?? dashboardState.risk?.max_open_positions ?? 0}`, `${exposure.positions ?? 0} positions | ${exposure.open_orders ?? 0} orders`)}
-        ${metric("Futures", config.futures_configured ? (config.futures_source === "yahoo" ? "Yahoo daily on" : "Polygon on") : "Key needed", config.futures_provider || "polygon")}
+        ${metric("Futures", config.futures_configured ? (config.futures_source === "yahoo" ? "Yahoo daily on" : "Polygon on") : "Key needed", (config.futures_source && config.futures_source !== "none" ? config.futures_source : config.futures_provider) || "polygon")}
         ${metric("Signals", scanner.signals_found || 0, config.auto_submit ? "Routes to paper guardrails" : "Diagnostic only")}
       </div>
       <div class="metric-grid compact-metrics">
