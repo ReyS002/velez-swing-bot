@@ -13415,19 +13415,27 @@ def create_app(config: dict):
     # risk checks see each order in turn) on a worker thread instead of the event loop; one that is still
     # running after `ack_after_seconds` is answered 202 and finishes in the background (its decision is
     # journaled as usual). An alert that waited in the queue longer than `max_queue_seconds` is dropped as
-    # stale (journaled): its bar's break has moved on, and the doctrine forbids chasing it. Raw `mode=bar`
+    # stale (journaled): its bar's break has moved on, and the doctrine forbids chasing it (0 turns this off; the
+    # swing bot trades daily bars, where queue age says nothing about the break window). Raw `mode=bar`
     # payloads are not part of this: they feed the strategy's history in order and are answered with their result.
     webhook_settings = config.get("webhook") or {}
     webhook_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tradingview-webhook")
     webhook_notifier = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tradingview-webhook-notify")
     webhook_ack_after = float(webhook_settings.get("ack_after_seconds", 2.0) or 2.0)
-    webhook_max_queue = float(webhook_settings.get("max_queue_seconds", 30.0) or 30.0)
+    webhook_max_queue = float(webhook_settings.get("max_queue_seconds", 0) or 0)  # 0 = never expire
+    webhook_max_pending = int(webhook_settings.get("max_pending", 200) or 200)
+    webhook_pending = {"n": 0}
+    webhook_pending_lock = threading.Lock()
+
+    def _release_pending(_future=None) -> None:
+        with webhook_pending_lock:
+            webhook_pending["n"] = max(0, webhook_pending["n"] - 1)
 
     def _process_alert(payload: dict, queued_at: float, kwargs: dict) -> dict:
         waited = time.monotonic() - queued_at
         if str(payload.get("mode", "signal")).lower() == "bar":
             return engine.handle_payload(payload, **kwargs)  # bars feed the strategy in order: never dropped
-        if waited > webhook_max_queue:
+        if webhook_max_queue and waited > webhook_max_queue:
             try:
                 symbol = engine._symbol(payload)
             except Exception:
@@ -13478,10 +13486,20 @@ def create_app(config: dict):
             # Rejected at once (and journaled by handle_payload) instead of waiting in the queue.
             result = await run_in_threadpool(engine.handle_payload, payload, **kwargs)
             raise HTTPException(status_code=400, detail=result)
+        with webhook_pending_lock:
+            full = webhook_pending["n"] >= webhook_max_pending
+            if not full:
+                webhook_pending["n"] += 1
+        if full:
+            # Bounded admission: a stalled broker or data call must not let the queue grow without limit.
+            log_event(engine.logger, "webhook_queue_full", {"max_pending": webhook_max_pending})
+            raise HTTPException(status_code=503, detail="webhook queue full")
         try:
             future = webhook_worker.submit(_process_alert, payload, time.monotonic(), kwargs)
         except RuntimeError as exc:  # the worker was shut down: the service is stopping
+            _release_pending()
             raise HTTPException(status_code=503, detail="shutting down") from exc
+        future.add_done_callback(_release_pending)
         try:
             if str(payload.get("mode", "signal")).lower() == "bar":
                 # Raw bars keep the old contract: processed in order and answered with their result (no 202).

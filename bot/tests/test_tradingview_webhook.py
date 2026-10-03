@@ -864,3 +864,21 @@ def test_raw_bars_are_processed_in_order_and_never_answered_202(monkeypatch):
     monkeypatch.setattr(app.state.engine, "handle_payload", slow)
     response = TestClient(app).post("/webhook/tradingview/test-secret", json={"mode": "bar", "symbol": "SPY", "n": 1})
     assert response.status_code == 200 and seen == [1]
+
+
+def test_a_full_webhook_queue_answers_503(monkeypatch):
+    import threading
+    from fastapi.testclient import TestClient
+    app = _ack_app(monkeypatch, ack_after_seconds=0.1, max_pending=2)
+    release = threading.Event()
+
+    def blocked(payload, **kwargs):
+        release.wait(3.0)
+        return {"ok": True, "decisions": [{"status": "proposed"}]}
+
+    monkeypatch.setattr(app.state.engine, "handle_payload", blocked)
+    client = TestClient(app)
+    codes = [client.post("/webhook/tradingview/test-secret", json={"mode": "signal", "symbol": "SPY", "n": n}).status_code
+             for n in range(3)]
+    release.set()
+    assert codes == [202, 202, 503]  # two admitted (one running, one waiting), the third turned away
