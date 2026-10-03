@@ -459,7 +459,7 @@ def test_scanner_quality_forward_replay_grades_signal(monkeypatch):
         Bar(timestamp=signal_time + timedelta(minutes=1), open=100, high=100.5, low=99.8, close=100.3, volume=1000),
         Bar(timestamp=signal_time + timedelta(minutes=2), open=100.3, high=101.2, low=100.1, close=101.0, volume=1100),
     ]
-    monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda symbol, asset_type="equity": bars)
+    monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda symbol, asset_type="equity", **_kw: bars)
 
     quality = engine.scanner_quality_payload()
 
@@ -496,7 +496,7 @@ def test_watchlist_quality_recommends_and_applies_disable(monkeypatch):
     bars = [
         Bar(timestamp=base + timedelta(minutes=4), open=100, high=100.2, low=98.8, close=99.0, volume=1000),
     ]
-    monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda symbol, asset_type="equity": bars)
+    monkeypatch.setattr(engine, "_fetch_scanner_bars", lambda symbol, asset_type="equity", **_kw: bars)
 
     quality = engine.watchlist_quality_payload()
     applied = engine.apply_watchlist_quality_action("SPY", "disable", "approval-token")
