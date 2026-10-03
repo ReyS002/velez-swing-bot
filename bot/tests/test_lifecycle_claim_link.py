@@ -155,3 +155,17 @@ def test_a_symbol_that_just_filled_keeps_its_claim(monkeypatch, tmp_path):
     monkeypatch.setattr(broker, "is_configured", lambda: True, raising=False)
     engine.lifecycle_payload(allow_auto_actions=False)
     assert "HOOD" in engine._lifecycle_claims()
+
+
+def test_claims_are_not_pruned_when_the_fill_snapshot_failed(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    old = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    engine.journal.set_setting("lifecycle.position_claims", {
+        "HOOD": {"claim_type": "trading_bull_journal", "symbol": "HOOD", "alert_ref": "a", "claimed_at": old}})
+    monkeypatch.setattr(engine, "_raw_positions_for_lifecycle", lambda: ([], None))
+    monkeypatch.setattr(engine, "_raw_orders_for_lifecycle", lambda **_kw: ([], None))
+    monkeypatch.setattr(engine, "_raw_fills_for_lifecycle", lambda: ([], "fills_unavailable"))
+    monkeypatch.setattr(broker, "is_configured", lambda: True, raising=False)
+    engine.lifecycle_payload(allow_auto_actions=False)
+    assert "HOOD" in engine._lifecycle_claims()  # a fill could have landed between the reads: keep it

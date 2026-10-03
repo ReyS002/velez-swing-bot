@@ -5635,8 +5635,11 @@ class TradingViewWebhookEngine:
             # A complete position snapshot: symbols no longer held drop their profit-taking records.
             self._velez_prune_open_records({str(p.get("symbol") or "").upper() for p in positions})
         order_limit = self._int_env("VELEZ_LIFECYCLE_ORDER_LIMIT", 100, minimum=10, maximum=500)
-        if not positions_error and not orders_error and len(raw_orders) < order_limit and self.broker.is_configured():
-            # Claims go only against a complete picture of positions AND working orders.
+        if (
+            not positions_error and not orders_error and not fills_error
+            and len(raw_orders) < order_limit and self.broker.is_configured()
+        ):
+            # Claims go only against a complete picture of positions, working orders AND recent fills.
             self._prune_lifecycle_claims(
                 {self._claim_symbol_key(p.get("symbol")) for p in positions}
                 | {self._claim_symbol_key(o.get("symbol")) for o in open_orders}
