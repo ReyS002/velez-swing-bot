@@ -2784,6 +2784,8 @@ class TradingViewWebhookEngine:
                     signal.metadata["timeframe"] = str(self.scanner_config.get("timeframe", "1Min"))
                     signal.metadata["timestamp"] = bar.timestamp.isoformat()
                     signal.metadata["scanner"] = True
+                    if bar_source:
+                        signal.metadata["bar_source"] = bar_source  # lets the quality replay use the same feed
                     decision = self._build_order_decision(
                         signal,
                         alert_id,
@@ -3133,8 +3135,12 @@ class TradingViewWebhookEngine:
             return {"outcome": "unavailable", "reason": "invalid_risk"}
         try:
             cfg = self.symbol_config.get(symbol, {}) or self.journal.get_watchlist_symbol(symbol) or {}
-            bars = self._fetch_scanner_bars(symbol=symbol, asset_type=str(cfg.get("type") or cfg.get("asset_type") or "equity").lower(),
-                                            allow_yahoo=True)  # read-only replay of scanner decisions
+            asset_type = str(cfg.get("type") or cfg.get("asset_type") or "equity").lower()
+            recorded = ((item.get("metadata") or {}).get("source_metadata") or {}).get("bar_source")
+            if asset_type in {"future", "futures"} and recorded == "yahoo":
+                bars = self._fetch_yahoo_futures_bars(symbol)  # graded on the series the decision was made on
+            else:
+                bars = self._fetch_scanner_bars(symbol=symbol, asset_type=asset_type)
         except Exception as exc:
             return {"outcome": "unavailable", "reason": str(exc)[:160]}
         after = self._bars_after_timestamp(bars, item.get("timestamp"))

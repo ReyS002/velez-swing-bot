@@ -180,3 +180,18 @@ def test_a_404_backoff_follows_the_resolved_contract(monkeypatch):
     monkeypatch.setattr(engine, "_polygon_futures_ticker", lambda symbol: "ESZ6")
     engine._fetch_scanner_bars(symbol="ES", asset_type="future", allow_yahoo=True)
     assert "ESZ6" in engine._polygon_futures_contract_blocked and "ES" not in engine._polygon_futures_contract_blocked
+
+
+def test_quality_replay_uses_the_feed_the_decision_was_made_on(monkeypatch):
+    engine = _engine(monkeypatch)
+    engine.symbol_config["ES"] = {"symbol": "ES", "type": "future"}
+    monkeypatch.setattr(engine, "_polygon_request", lambda *a, **k: (_ for _ in ()).throw(AssertionError("Polygon used")))
+    monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda *a, **k: _frame())
+    item = {"symbol": "ES", "side": "buy", "timestamp": "2026-06-01T00:00:00+00:00",
+            "metadata": {"source_metadata": {"bar_source": "yahoo"}}}
+    outcome = engine._scanner_forward_outcome(item, entry_price=5000.0, stop_price=4990.0)
+    assert outcome["outcome"] != "unavailable"  # replayed from Yahoo, Polygon never asked
+    item["metadata"] = {"source_metadata": {}}  # no recorded feed: exact-contract Polygon only
+    monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda *a, **k: (_ for _ in ()).throw(AssertionError("Yahoo used")))
+    unavailable = engine._scanner_forward_outcome(item, entry_price=5000.0, stop_price=4990.0)
+    assert unavailable["outcome"] == "unavailable"
