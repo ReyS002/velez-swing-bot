@@ -5635,7 +5635,9 @@ class TradingViewWebhookEngine:
             # A complete position snapshot: symbols no longer held drop their profit-taking records.
             self._velez_prune_open_records({str(p.get("symbol") or "").upper() for p in positions})
         order_limit = self._int_env("VELEZ_LIFECYCLE_ORDER_LIMIT", 100, minimum=10, maximum=500)
-        if not positions_error and not orders_error and len(raw_orders) < order_limit and self.broker.is_configured():
+        if positions_error or orders_error or len(raw_orders) >= order_limit or not self.broker.is_configured():
+            self.__dict__.pop("_claim_flat_seen", None)  # an unknown pass breaks any run of flat evidence
+        else:
             # Claims go only against a complete picture of positions and working orders.
             live = (
                 {self._claim_symbol_key(p.get("symbol")) for p in positions}
@@ -12114,6 +12116,7 @@ class TradingViewWebhookEngine:
             claims = self._lifecycle_claims()
             claims[cleaned_symbol] = claim
             self.journal.set_setting("lifecycle.position_claims", claims)
+            (self.__dict__.get("_claim_flat_seen") or {}).pop(cleaned_symbol, None)  # evidence was for the old claim
         return claim
 
     def _claim_candidates_for_symbol(self, symbol: str, decisions: List[dict], *, side: str = "") -> List[dict]:

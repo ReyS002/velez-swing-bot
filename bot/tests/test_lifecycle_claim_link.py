@@ -186,3 +186,35 @@ def test_a_claim_that_turns_live_again_resets_its_flat_count(monkeypatch, tmp_pa
     engine._prune_lifecycle_claims({"HOOD"}, flat_passes=3, flat_seconds=0)  # held again
     engine._prune_lifecycle_claims(set(), flat_passes=3, flat_seconds=0)
     assert "HOOD" in engine._lifecycle_claims()  # the count started over
+
+
+def test_an_incomplete_pass_breaks_the_run_of_flat_evidence(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+    engine, broker = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    old = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    engine.journal.set_setting("lifecycle.position_claims", {
+        "HOOD": {"claim_type": "trading_bull_journal", "symbol": "HOOD", "alert_ref": "a", "claimed_at": old}})
+    monkeypatch.setattr(engine, "_raw_orders_for_lifecycle", lambda **_kw: ([], None))
+    monkeypatch.setattr(engine, "_raw_fills_for_lifecycle", lambda: ([], "broker_fill_snapshot_not_supported"))
+    monkeypatch.setattr(broker, "is_configured", lambda: True, raising=False)
+    monkeypatch.setattr(engine, "_raw_positions_for_lifecycle", lambda: ([], None))
+    for _ in range(2):
+        engine.lifecycle_payload(allow_auto_actions=False)
+    engine._claim_flat_seen["HOOD"][1] -= timedelta(minutes=5)
+    monkeypatch.setattr(engine, "_raw_positions_for_lifecycle", lambda: ([], "positions_unavailable"))
+    engine.lifecycle_payload(allow_auto_actions=False)       # a pass that could not see positions
+    monkeypatch.setattr(engine, "_raw_positions_for_lifecycle", lambda: ([], None))
+    engine.lifecycle_payload(allow_auto_actions=False)       # one flat pass after it is not three in a row
+    assert "HOOD" in engine._lifecycle_claims()
+
+
+def test_a_replacement_claim_starts_its_flat_count_over(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+    engine, _ = lifecycle_engine(monkeypatch, tmp_path, "velez_profit_taking")
+    old = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    engine.journal.set_setting("lifecycle.position_claims", {
+        "HOOD": {"claim_type": "trading_bull_journal", "symbol": "HOOD", "alert_ref": "a", "claimed_at": old}})
+    for _ in range(2):
+        engine._prune_lifecycle_claims(set(), flat_passes=3, flat_seconds=0)
+    engine._set_lifecycle_claim("HOOD", {"alert_ref": "b"})
+    assert "HOOD" not in (engine.__dict__.get("_claim_flat_seen") or {})
