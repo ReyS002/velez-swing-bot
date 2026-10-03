@@ -110,6 +110,28 @@ class JournalStore:
             ).fetchone()
         return self._decision_row(row) if row else None
 
+    def decisions_by_alert_ref(self, alert_ref: str, *, statuses: Optional[tuple] = None, limit: int = 50) -> List[dict]:
+        """Every decision filed under `alert_ref` (a bar alert can file several), newest first."""
+        cleaned = str(alert_ref or "").strip()
+        if not cleaned:
+            return []
+        sql = """
+                SELECT timestamp, alert_ref, status, reason, symbol, side, play, qty,
+                       order_type, entry_price, stop_price, take_profit_price, timeframe,
+                       location, max_dollar_risk, snapshot_json
+                FROM decisions
+                WHERE alert_ref = ?
+        """
+        params: list = [cleaned]
+        if statuses:
+            sql += " AND LOWER(status) IN (%s)" % ",".join("?" for _ in statuses)
+            params.extend(str(item).lower() for item in statuses)
+        sql += " ORDER BY datetime(timestamp) DESC, id DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 200)))
+        with self._connect() as db:
+            rows = db.execute(sql, tuple(params)).fetchall()
+        return [self._decision_row(row) for row in rows]
+
     def decision_entries(self, limit: int = 80, symbol: str = "", status: str = "") -> List[dict]:
         clauses: List[str] = []
         params: List[Any] = []
