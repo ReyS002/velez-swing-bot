@@ -219,7 +219,7 @@ class _PriorityWorker:
         self._seq = itertools.count()
         self._lock = threading.Lock()
         self._closed = False
-        self._thread = threading.Thread(target=self._run, name=name, daemon=False)
+        self._thread = threading.Thread(target=self._run, name=name, daemon=True)  # lifespan shutdown drains it; an idle thread must not block exit
         self._thread.start()
 
     def submit(self, fn, *args, priority: int = 0) -> Future:
@@ -13612,6 +13612,12 @@ def create_app(config: dict):
                 result = await asyncio.shield(asyncio.wrap_future(future))
             else:
                 result = await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(future)), timeout=webhook_ack_after)
+        except asyncio.CancelledError:
+            # The request went away (middleware, shutdown) but the alert is still running: nobody will see
+            # its result, so a late failure still has to be reported.
+            if not is_bar:
+                future.add_done_callback(_report_late_failure)
+            raise
         except asyncio.TimeoutError:
             future.add_done_callback(_report_late_failure)
             log_event(engine.logger, "webhook_acknowledged_before_decision", {"ack_after_seconds": webhook_ack_after})

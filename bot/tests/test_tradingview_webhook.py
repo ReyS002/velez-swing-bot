@@ -1025,3 +1025,41 @@ def test_a_queue_full_drop_is_journaled_and_not_marked_seen(monkeypatch):
     dropped = [d for ds, _ in remembered for d in ds if d.reason == "webhook_queue_full"]
     assert dropped and dropped[0].symbol == "QQQ"
     assert not any(i == "b" for i in engine.seen_alert_ids)
+
+
+def test_a_cancelled_signal_request_still_reports_a_late_failure(monkeypatch):
+    import asyncio
+    import threading
+    import time as _time
+    app = _ack_app(monkeypatch, ack_after_seconds=5.0)
+    engine = app.state.engine
+    release = threading.Event()
+    notes = []
+
+    def failing(payload, **kwargs):
+        release.wait(3.0)
+        raise RuntimeError("broker exploded")
+
+    monkeypatch.setattr(engine, "handle_payload", failing)
+    monkeypatch.setattr(engine, "_notify_event", lambda **kw: notes.append(kw))
+
+    async def run():
+        task = asyncio.ensure_future(_call(app))
+        await asyncio.sleep(0.3)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _call(app):
+        from httpx import ASGITransport, AsyncClient
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            return await c.post("/webhook/tradingview/test-secret", json={"mode": "signal", "symbol": "SPY", "id": "cx"})
+
+    asyncio.run(run())
+    release.set()
+    deadline = _time.time() + 3
+    while not notes and _time.time() < deadline:
+        _time.sleep(0.05)
+    assert notes and "broker exploded" in notes[0]["detail"]
