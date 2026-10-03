@@ -10052,6 +10052,17 @@ class TradingViewWebhookEngine:
                 "pending": self.journal._public_pending(cancelled or pending),
                 "session_lock": session_state,
             }
+        outside = self._regular_hours_block(str(pending.get("symbol") or ""))
+        if outside:
+            reason = f"outside_regular_hours:{outside['clock']}"
+            cancelled = self.journal.cancel_staged_pending_order(approval_id, reason)
+            return {
+                "ok": False,
+                "reason": reason,
+                "review_action_label": "Conditions Not Met",
+                "pending": self.journal._public_pending(cancelled or pending),
+                "regular_hours": outside,
+            }
         payload = dict(pending.get("order_payload") or {})
         control = payload.get("_bullwarden") if isinstance(payload.get("_bullwarden"), dict) else {}
         bullwarden_guard = self.bullwarden.entry_allowed(
@@ -10069,6 +10080,9 @@ class TradingViewWebhookEngine:
                 "bullwarden": bullwarden_guard,
             }
         def submit_approved(order: dict) -> dict:
+            late = self._regular_hours_block(str(order.get("symbol") or ""))  # the Bull Warden call above can be slow
+            if late:
+                raise RuntimeError(f"outside_regular_hours:{late['clock']}")
             if isinstance(self.broker, RobinhoodAgenticBroker):
                 approved = dict(order)
                 review = approved.get("_bullwarden") if isinstance(approved.get("_bullwarden"), dict) else {}
@@ -10641,6 +10655,68 @@ class TradingViewWebhookEngine:
             return [WebhookDecision(status="ignored", reason="no_qualified_velez_signal", symbol=symbol)]
         return [self._build_order_decision(signal, alert_id) for signal in signals]
 
+    def _regular_hours_clock(self) -> datetime:
+        return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _daily_or_longer(timeframe: Any) -> bool:
+        """A daily (or weekly/monthly) bar is stamped with its own date and legitimately acted on the next
+        session, so the 'bar belongs to today' rule does not apply to it; the delivery-time check still does."""
+        t = str(timeframe or "").strip().upper()
+        return t in {"D", "1D", "DAY", "1DAY", "DAILY", "W", "1W", "WEEK", "1WEEK", "M", "1M", "MONTH", "1MONTH"}
+
+    def _regular_hours_block(self, symbol: str, timestamp: Any = None, *, same_day_only: bool = False,
+                             prior_session: bool = False) -> Optional[dict]:
+        """Equity entries only in the regular session (09:30 to the exchange's close, on days the exchange
+        calendar confirms are trading days), judged at `timestamp` (now when it has none). An order sent
+        outside it rests until the next open and fills on whatever the open does: a gap can fill a short far
+        above its planned stop, and the protective leg is then already breached and is cancelled by the broker
+        (HOOD and TSLA, 2026-10-02: signals at 16:00:44 ET, filled at the open, no stop). The close comes from
+        the exchange calendar, so half days end at 13:00; when the calendar cannot confirm the day the gate
+        fails closed. Everything but crypto, forex and futures counts as an equity (unknown or aliased types
+        too). Off by default in code; `webhook.regular_hours_only: true` in config.yaml turns it on."""
+        raw = self.webhook_config.get("regular_hours_only", False)
+        if not (raw is True or str(raw).strip().lower() in {"1", "true", "yes", "on"}):
+            return None
+        if self._quote_asset_type(symbol) in {"crypto", "cryptocurrency", "forex", "fx", "future", "futures"}:
+            return None  # these trade around the clock
+        tz = ZoneInfo(velez_doctrine.MARKET_TZ)
+        try:
+            at = self._timestamp(timestamp) if timestamp else self._regular_hours_clock()
+        except Exception:
+            # A timestamp that was supplied but can't be read has an unknown event time: never substitute the
+            # delivery time for it.
+            return {"clock": f"unreadable timestamp {str(timestamp)[:24]!r}", "allowed": "a readable alert time inside the session"}
+        local = at.astimezone(tz)
+        if prior_session and timestamp:
+            # A completed daily bar is good for the next session only: not older than the last trading day
+            # (Friday's bar on Monday). After a holiday this errs on the side of not trading.
+            today = self._regular_hours_clock().astimezone(tz)
+            lag = (today.date() - local.date()).days
+            if lag < 0 or lag > (3 if today.weekday() == 0 else 1):
+                return {"clock": local.strftime("%a %H:%M:%S ET"),
+                        "allowed": "a daily bar is only valid in the session after it closed"}
+            return None
+        if timestamp and local.date() != self._regular_hours_clock().astimezone(tz).date():
+            # An alert is only good in the session it fired in: Friday's 15:55 alert, held over the weekend and
+            # delivered Monday at 09:35, carries Friday's entry and stop levels.
+            return {"clock": local.strftime("%a %H:%M:%S ET"), "allowed": "an alert is only valid in the session it fired in"}
+        if same_day_only and timestamp:
+            return None  # a bar's start time: only its session date matters (the hours are judged at submission)
+        day = local.date()
+        close = self._velez_session_close(day, datetime.combine(day, velez_doctrine.SESSION_CLOSE, tzinfo=tz))
+        open_dt = datetime.combine(day, velez_doctrine.SESSION_OPEN, tzinfo=tz)
+        clock = local.strftime("%a %H:%M:%S ET")
+        if local.weekday() >= 5 or day in self.__dict__.get("_velez_closed_days", set()):
+            return {"clock": clock, "allowed": "trading days only"}
+        if day not in self.__dict__.get("_velez_open_days", set()) and hasattr(self.broker, "get_calendar_raw"):
+            # (A broker with no calendar of its own, such as the Robinhood adapter, is limited to weekdays and the
+            # regular hours; a calendar that exists but can't confirm the day fails closed.)
+            return {"clock": clock, "allowed": "the exchange calendar could not confirm this session", "unconfirmed": True}
+        if not (open_dt <= local < close):
+            return {"clock": clock, "allowed": f"09:30-{close.strftime('%H:%M')} ET"}
+        return None
+
     def _handle_signal_payload(self, payload: dict, alert_id: str, *, dry_run: bool = False) -> WebhookDecision:
         try:
             signal = self._signal_from_payload(payload)
@@ -10773,6 +10849,25 @@ class TradingViewWebhookEngine:
         stop_price = self._float(metadata.get("stop_price"))
         order_type = str(metadata.get("order_type", "market")).lower()
 
+        # Both the alert's own time and the moment of submission must be inside the session: a delivery that
+        # was delayed past the bell is as dangerous as an alert that fired after it.
+        # (A generated signal's timestamp is its bar's start, not a decision time: those are judged at submission.)
+        # A generated signal's bar must at least belong to today's session: a bar held over from an earlier
+        # day carries that day's entry and stop levels.
+        outside = None if dry_run else (self._regular_hours_block(symbol, metadata.get("signal_timestamp"))
+                                        or (not metadata.get("signal_timestamp")
+                                            and self._regular_hours_block(symbol, metadata.get("timestamp"), same_day_only=True,
+                                                                          prior_session=self._daily_or_longer(metadata.get("timeframe"))))
+                                        or self._regular_hours_block(symbol))  # a dry run never submits
+        if outside:
+            return WebhookDecision(
+                "rejected",
+                f"outside_regular_hours:{outside['clock']}",
+                symbol=symbol,
+                side=side,
+                play=play,
+                metadata={"regular_hours": outside},
+            )
         if entry_price is None or stop_price is None:
             return WebhookDecision("rejected", "missing_entry_or_stop", symbol=symbol, side=side, play=play)
         if order_type not in {"market", "limit"}:
@@ -11081,6 +11176,10 @@ class TradingViewWebhookEngine:
             log_event(self.logger, "order_blocked_bullwarden", decision.__dict__)
             return decision
 
+        late = self._regular_hours_block(symbol)  # the checks above take time: look at the clock once more
+        if late:
+            return WebhookDecision("rejected", f"outside_regular_hours:{late['clock']}", symbol=symbol, side=side,
+                                   play=play, metadata={"regular_hours": late})
         try:
             broker_payload = payload if isinstance(self.broker, RobinhoodAgenticBroker) else {key: value for key, value in payload.items() if key != "_bullwarden"}
             response = self.broker.submit_order_payload(broker_payload)
