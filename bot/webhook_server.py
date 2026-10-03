@@ -1,6 +1,7 @@
 from __future__ import annotations
 from .desk_records import install_desk_records
 
+import asyncio
 import hashlib
 import io
 import json
@@ -14,6 +15,7 @@ import re
 import secrets
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from collections import Counter, deque
 from contextlib import asynccontextmanager
@@ -13409,6 +13411,90 @@ class OpsAuditLog:
 
 def create_app(config: dict):
     engine = TradingViewWebhookEngine(config)
+    # TradingView gives a webhook about 3 seconds. Alerts are processed one at a time (as before, so the
+    # risk checks see each order in turn) on a worker thread instead of the event loop; one that is still
+    # running after `ack_after_seconds` is answered 202 and finishes in the background (its decision is
+    # journaled as usual). An alert that waited in the queue longer than `max_queue_seconds` is dropped as
+    # stale (journaled): its bar's break has moved on, and the doctrine forbids chasing it. Raw `mode=bar`
+    # payloads are not part of this: they feed the strategy's history in order and are answered with their result.
+    webhook_settings = config.get("webhook") or {}
+    webhook_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tradingview-webhook")
+    webhook_notifier = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tradingview-webhook-notify")
+    webhook_ack_after = float(webhook_settings.get("ack_after_seconds", 2.0) or 2.0)
+    webhook_max_queue = float(webhook_settings.get("max_queue_seconds", 30.0) or 30.0)
+
+    def _process_alert(payload: dict, queued_at: float, kwargs: dict) -> dict:
+        waited = time.monotonic() - queued_at
+        if str(payload.get("mode", "signal")).lower() == "bar":
+            return engine.handle_payload(payload, **kwargs)  # bars feed the strategy in order: never dropped
+        if waited > webhook_max_queue:
+            try:
+                symbol = engine._symbol(payload)
+            except Exception:
+                symbol = None
+            decision = WebhookDecision(status="ignored", reason="expired_in_queue", symbol=symbol,
+                                       metadata={"queued_seconds": round(waited, 1)})
+            alert_id = engine._alert_id(payload)
+            engine.seen_alert_ids.append(alert_id)  # a TradingView retry of this alert is a duplicate, not a new trade
+            engine._remember_decisions([decision], alert_id)
+            log_event(engine.logger, "webhook_expired_in_queue", {"symbol": symbol, "queued_seconds": round(waited, 1)})
+            return {"ok": True, "decisions": [decision.__dict__]}
+        return engine.handle_payload(payload, **kwargs)
+
+    def _notify_late_failure(detail: str) -> None:
+        log_event(engine.logger, "webhook_background_failed", {"error": detail})
+        engine._notify_event(
+            key=f"webhook-background-failed:{datetime.now(timezone.utc).isoformat()}",
+            title="TradingView alert failed after it was acknowledged",
+            detail=f"An alert answered 202 failed while being processed: {detail[:200]}",
+            severity="critical",
+            payload={"kind": "webhook_background_failed", "error": detail},
+            ignore_cooldown=True,
+        )
+
+    def _report_late_failure(future) -> None:
+        # An alert answered 202 can still fail afterwards (an exception, or an error decision such as a
+        # broker failure): TradingView won't retry it, so the operator hears. Notified on its own thread so
+        # a slow notification target never holds up the alert queue.
+        if future.cancelled():
+            return
+        exc = future.exception()
+        if exc is not None:
+            detail = f"{type(exc).__name__}: {str(exc)[:300]}"
+        else:
+            errors = [d for d in (future.result() or {}).get("decisions") or [] if d.get("status") == "error"]
+            if not errors:
+                return
+            detail = "; ".join(f"{d.get('symbol') or '?'}: {d.get('reason')}" for d in errors)[:300]
+        try:
+            webhook_notifier.submit(_notify_late_failure, detail)
+        except RuntimeError:  # shutting down: send it here rather than lose it
+            _notify_late_failure(detail)
+
+    async def _tradingview_result(payload: dict, *, path_token: Optional[str] = None, header_secret: Optional[str] = None,
+                                  input_source: Optional[dict] = None) -> Any:
+        kwargs = {"path_token": path_token, "header_secret": header_secret, "input_source": input_source}
+        if engine._authorize(payload, path_token, header_secret).status != "allowed":
+            # Rejected at once (and journaled by handle_payload) instead of waiting in the queue.
+            result = await run_in_threadpool(engine.handle_payload, payload, **kwargs)
+            raise HTTPException(status_code=400, detail=result)
+        try:
+            future = webhook_worker.submit(_process_alert, payload, time.monotonic(), kwargs)
+        except RuntimeError as exc:  # the worker was shut down: the service is stopping
+            raise HTTPException(status_code=503, detail="shutting down") from exc
+        try:
+            if str(payload.get("mode", "signal")).lower() == "bar":
+                # Raw bars keep the old contract: processed in order and answered with their result (no 202).
+                result = await asyncio.wrap_future(future)
+            else:
+                result = await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(future)), timeout=webhook_ack_after)
+        except asyncio.TimeoutError:
+            future.add_done_callback(_report_late_failure)
+            log_event(engine.logger, "webhook_acknowledged_before_decision", {"ack_after_seconds": webhook_ack_after})
+            return JSONResponse(status_code=202, content={"ok": True, "queued": True})
+        if not result.get("ok") and result["decisions"][0]["status"] == "rejected":
+            raise HTTPException(status_code=400, detail=result)
+        return result
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -13420,6 +13506,10 @@ def create_app(config: dict):
         try:
             yield
         finally:
+            # Alerts first: every acknowledged alert is processed (or expires as stale) before the safety
+            # workers below stop, so none is lost and nothing is sent after they're gone.
+            await run_in_threadpool(webhook_worker.shutdown, True)
+            await run_in_threadpool(webhook_notifier.shutdown, True)  # after the worker: its last failures are sent
             engine.stop_operations_worker()
             engine.calendar.earnings_cache.stop()
             app.state.desk_records.stop()
@@ -14473,34 +14563,28 @@ def create_app(config: dict):
         )
 
     @app.post("/webhook/tradingview")
-    async def tradingview_webhook(request: Request, x_velez_secret: Optional[str] = Header(default=None)) -> dict:
+    async def tradingview_webhook(request: Request, x_velez_secret: Optional[str] = Header(default=None)) -> Any:
         try:
             payload = await _payload_from_request(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        result = engine.handle_payload(
+        return await _tradingview_result(
             payload,
             header_secret=x_velez_secret,
             input_source=_webhook_input_source(request, "/webhook/tradingview"),
         )
-        if not result.get("ok") and result["decisions"][0]["status"] == "rejected":
-            raise HTTPException(status_code=400, detail=result)
-        return result
 
     @app.post("/webhook/tradingview/{token}")
-    async def tradingview_webhook_with_token(request: Request, token: str) -> dict:
+    async def tradingview_webhook_with_token(request: Request, token: str) -> Any:
         try:
             payload = await _payload_from_request(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        result = engine.handle_payload(
+        return await _tradingview_result(
             payload,
             path_token=token,
             input_source=_webhook_input_source(request, "/webhook/tradingview/{token}"),
         )
-        if not result.get("ok") and result["decisions"][0]["status"] == "rejected":
-            raise HTTPException(status_code=400, detail=result)
-        return result
 
     return app
 

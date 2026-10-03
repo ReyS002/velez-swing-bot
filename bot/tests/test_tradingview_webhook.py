@@ -749,3 +749,118 @@ def test_rejected_symbol_records_safe_request_provenance(monkeypatch):
     assert source["user_agent"] == "TradingView-Webhook-Test/1.0"
     assert len(source["client_fingerprint"]) == 16
     assert "test-secret" not in json.dumps(source)
+
+
+def _ack_app(monkeypatch, **webhook):
+    from bot.webhook_server import create_app
+    config = webhook_config()
+    config["webhook"].update(webhook)
+    return create_app(config)
+
+
+def test_slow_tradingview_alert_is_acknowledged_before_the_timeout(monkeypatch):
+    import threading
+    import time as _time
+    from fastapi.testclient import TestClient
+    app = _ack_app(monkeypatch, ack_after_seconds=0.2)
+    done = threading.Event()
+
+    def slow(payload, **kwargs):
+        _time.sleep(0.6)
+        done.set()
+        return {"ok": True, "decisions": [{"status": "proposed"}]}
+
+    monkeypatch.setattr(app.state.engine, "handle_payload", slow)
+    response = TestClient(app).post("/webhook/tradingview/test-secret", json={"mode": "signal", "symbol": "SPY"})
+    assert response.status_code == 202 and response.json()["queued"] is True
+    assert done.wait(2.0)  # the alert still finishes in the background
+
+
+def test_a_fast_rejection_still_answers_400_and_a_bad_secret_is_not_queued(monkeypatch):
+    import threading
+    from fastapi.testclient import TestClient
+    app = _ack_app(monkeypatch, ack_after_seconds=0.2)
+    client = TestClient(app)
+    assert client.post("/webhook/tradingview/wrong", json={"mode": "signal", "symbol": "SPY"}).status_code == 400
+    engine = app.state.engine
+    original = engine.handle_payload
+    release = threading.Event()
+
+    def busy_or_real(payload, **kwargs):
+        if payload.get("busy"):
+            release.wait(2.0)
+            return {"ok": True, "decisions": [{"status": "proposed"}]}
+        return original(payload, **kwargs)
+
+    monkeypatch.setattr(engine, "handle_payload", busy_or_real)
+    assert client.post("/webhook/tradingview/test-secret", json={"mode": "signal", "symbol": "SPY", "busy": True}).status_code == 202
+    response = client.post("/webhook/tradingview/wrong", json={"mode": "signal", "symbol": "SPY"})
+    release.set()
+    assert response.status_code == 400  # not queued behind the busy alert
+
+
+def test_failures_after_the_202_are_reported(monkeypatch):
+    import threading
+    import time as _time
+    from fastapi.testclient import TestClient
+    app = _ack_app(monkeypatch, ack_after_seconds=0.1)
+    engine = app.state.engine
+    notified = []
+
+    def slow_failure(payload, **kwargs):
+        _time.sleep(0.3)
+        if payload.get("kind") == "raise":
+            raise RuntimeError("journal write failed")
+        return {"ok": False, "decisions": [{"status": "error", "reason": "broker_order_failed", "symbol": "SPY"}]}
+
+    monkeypatch.setattr(engine, "handle_payload", slow_failure)
+    monkeypatch.setattr(engine, "_notify_event", lambda **kwargs: notified.append(kwargs["detail"]) if kwargs["severity"] == "critical" else None)
+    client = TestClient(app)
+    assert client.post("/webhook/tradingview/test-secret", json={"mode": "signal", "symbol": "SPY", "kind": "raise"}).status_code == 202
+    assert client.post("/webhook/tradingview/test-secret", json={"mode": "signal", "symbol": "SPY", "kind": "error"}).status_code == 202
+    deadline = _time.time() + 3
+    while len(notified) < 2 and _time.time() < deadline:
+        _time.sleep(0.05)
+    assert any("journal write failed" in d for d in notified) and any("broker_order_failed" in d for d in notified)
+
+
+def test_an_alert_stale_in_the_queue_is_dropped_and_deduplicated(monkeypatch):
+    import threading
+    import time as _time
+    from fastapi.testclient import TestClient
+    app = _ack_app(monkeypatch, ack_after_seconds=0.1, max_queue_seconds=0.3)
+    engine = app.state.engine
+    calls, release = [], threading.Event()
+
+    def record(payload, **kwargs):
+        calls.append(payload.get("n"))
+        if payload.get("n") == 1:
+            release.wait(2.0)
+        return {"ok": True, "decisions": [{"status": "proposed"}]}
+
+    monkeypatch.setattr(engine, "handle_payload", record)
+    client = TestClient(app)
+    assert client.post("/webhook/tradingview/test-secret", json={"mode": "signal", "symbol": "SPY", "n": 1}).status_code == 202
+    assert client.post("/webhook/tradingview/test-secret", json={"mode": "signal", "symbol": "SPY", "n": 2}).status_code == 202
+    _time.sleep(0.5)  # alert 2 waits past max_queue_seconds behind alert 1
+    release.set()
+    _time.sleep(0.3)
+    assert calls == [1]
+    assert any(d.get("reason") == "expired_in_queue" for d in engine.recent_decisions)
+    assert engine._alert_id({"mode": "signal", "symbol": "SPY", "n": 2}) in engine.seen_alert_ids
+
+
+def test_raw_bars_are_processed_in_order_and_never_answered_202(monkeypatch):
+    import time as _time
+    from fastapi.testclient import TestClient
+    app = _ack_app(monkeypatch, ack_after_seconds=0.1, max_queue_seconds=0.1)
+    seen = []
+
+    def slow(payload, **kwargs):
+        _time.sleep(0.3)
+        seen.append(payload["n"])
+        return {"ok": True, "decisions": [{"status": "ignored", "reason": "no_qualified_velez_signal"}]}
+
+    monkeypatch.setattr(app.state.engine, "handle_payload", slow)
+    response = TestClient(app).post("/webhook/tradingview/test-secret", json={"mode": "bar", "symbol": "SPY", "n": 1})
+    assert response.status_code == 200 and seen == [1]
