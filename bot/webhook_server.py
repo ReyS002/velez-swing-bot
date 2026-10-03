@@ -2275,7 +2275,7 @@ class TradingViewWebhookEngine:
             "futures_provider": str(self.scanner_config.get("futures_provider", "polygon")).lower(),
             "futures_configured": bool(self._polygon_api_key()) or self._futures_yahoo_fallback_allowed(),
             "futures_yahoo_fallback": self._futures_yahoo_fallback_allowed(),
-            "futures_source": "polygon" if self._polygon_api_key() else ("yahoo" if self._futures_yahoo_fallback_allowed() else "none"),
+            "futures_source": self._futures_active_source(),
             "futures_contracts": self.scanner_config.get("futures_contracts", {}),
             "note": "Hybrid scanner warms up first, then scans newly closed bars and routes signals through the same Velez/risk guardrails as TradingView. Futures use Polygon when POLYGON_API_KEY is configured.",
             "symbol_cooldown_seconds": self._scanner_symbol_cooldown_seconds(),
@@ -2743,6 +2743,8 @@ class TradingViewWebhookEngine:
             except Exception as exc:
                 errors.append(f"{symbol}:{exc}")
                 continue
+            if asset_type in {"future", "futures"}:
+                self._scanner_apply_futures_source(symbol)
             closed = [bar for bar in bars if self._scanner_bar_is_closed(bar, now)]
             if not closed:
                 continue
@@ -3501,6 +3503,18 @@ class TradingViewWebhookEngine:
         rows = (data.get("bars") or {}).get(alpaca_symbol) or []
         return [self._bar_from_alpaca(item) for item in rows]
 
+    def _futures_active_source(self) -> str:
+        """Which feed the futures lanes are really on: Yahoo when there is no Polygon key, or while a Polygon
+        refusal has them on the fallback."""
+        if not self._polygon_api_key():
+            return "yahoo" if self._futures_yahoo_fallback_allowed() else "none"
+        now = datetime.now(timezone.utc)
+        blocked = self.__dict__.get("_polygon_futures_blocked_until")
+        last = self.__dict__.get("_futures_last_source") or {}
+        if (blocked and now < blocked) or (last and all(v == "yahoo" for v in last.values())):
+            return "yahoo"
+        return "polygon"
+
     def _futures_yahoo_fallback_allowed(self, timeframe: Optional[str] = None) -> bool:
         """Yahoo continuous futures may stand in for Polygon, for daily scans only: its feed is delayed about
         15 minutes, so an hourly bar could still be forming when the scanner calls it closed."""
@@ -3512,20 +3526,33 @@ class TradingViewWebhookEngine:
     def _fetch_futures_bars(self, symbol: str, timeframe: Optional[str] = None) -> List[Bar]:
         fallback = self._futures_yahoo_fallback_allowed(timeframe)
         bars, source = self._fetch_futures_bars_from(symbol, timeframe, fallback)
-        # Polygon's dated contracts and Yahoo's continuous series are different series: when the provider
-        # changes, the scanner state built from the other one is dropped and the symbol warms up again.
-        sources = self.__dict__.setdefault("_scanner_futures_source", {})
-        previous = sources.get(symbol)
-        sources[symbol] = source
+        # Remembered for the live scan, which owns the reset (read-only callers such as the quality panel
+        # fetch through here too and must not touch scanner state).
+        self.__dict__.setdefault("_futures_tls", threading.local()).source = source
+        self.__dict__.setdefault("_futures_last_source", {})[symbol] = source
+        return bars
+
+    def _scanner_apply_futures_source(self, symbol: str) -> None:
+        """Polygon's dated contracts and Yahoo's continuous series are different series: when the provider
+        behind a symbol changes between live scans, the scanner state built from the other one is dropped and
+        the symbol warms up again."""
+        source = getattr(self.__dict__.get("_futures_tls"), "source", None)
+        if not source:
+            return
+        applied = self.__dict__.setdefault("_scanner_futures_source", {})
+        previous = applied.get(symbol)
+        applied[symbol] = source
         if previous and previous != source:
             self.scanner_last_bar.pop(symbol, None)
             self.scanner_strategy.symbols.pop(symbol, None)
             log_event(self.logger, "scanner_futures_source_changed", {"symbol": symbol, "from": previous, "to": source})
-        return bars
 
     def _fetch_futures_bars_from(self, symbol: str, timeframe: Optional[str], fallback: bool):
+        now = datetime.now(timezone.utc)
         blocked_until = self.__dict__.get("_polygon_futures_blocked_until")
-        if self._polygon_api_key() and not (fallback and blocked_until and datetime.now(timezone.utc) < blocked_until):
+        contract_blocked = self.__dict__.setdefault("_polygon_futures_contract_blocked", {}).get(symbol)
+        blocked = (blocked_until and now < blocked_until) or (contract_blocked and now < contract_blocked)
+        if self._polygon_api_key() and not (fallback and blocked):
             try:
                 bars = self._fetch_polygon_futures_bars(symbol, timeframe) if timeframe else self._fetch_polygon_futures_bars(symbol)
                 if bars or not fallback:
@@ -3534,9 +3561,12 @@ class TradingViewWebhookEngine:
             except Exception as exc:
                 if not fallback:
                     raise
-                if str(exc).startswith(("polygon_data_401", "polygon_data_403", "polygon_data_404")):
-                    # Not entitled to futures (or no such route): don't ask again for an hour.
-                    self.__dict__["_polygon_futures_blocked_until"] = datetime.now(timezone.utc) + timedelta(hours=1)
+                if str(exc).startswith(("polygon_data_401", "polygon_data_403")):
+                    # Not authorised for futures: no symbol will work, so don't ask again for an hour.
+                    self.__dict__["_polygon_futures_blocked_until"] = now + timedelta(hours=1)
+                elif str(exc).startswith("polygon_data_404"):
+                    # No such contract or route: only this symbol backs off.
+                    self.__dict__["_polygon_futures_contract_blocked"][symbol] = now + timedelta(hours=1)
                 log_event(self.logger, "futures_polygon_failed_using_yahoo", {"symbol": symbol, "reason": str(exc)[:120]})
         elif not fallback:
             raise RuntimeError("missing_polygon_api_key")
@@ -3559,14 +3589,15 @@ class TradingViewWebhookEngine:
 
         # One worker, reused: a call that outlives its timeout can't be killed, so while it is still running
         # new fetches are refused instead of piling up more threads behind a stalled network.
-        pool = self.__dict__.get("_yahoo_pool")
-        if pool is None:
-            pool = self.__dict__["_yahoo_pool"] = ThreadPoolExecutor(max_workers=1, thread_name_prefix="yahoo-futures")
-        running = self.__dict__.get("_yahoo_running")
-        if running is not None and not running.done():
-            raise RuntimeError(f"yahoo_futures_stalled:{yahoo}")
-        try:
+        with self.__dict__.setdefault("_yahoo_lock", threading.Lock()):  # one request admitted at a time
+            pool = self.__dict__.get("_yahoo_pool")
+            if pool is None:
+                pool = self.__dict__["_yahoo_pool"] = ThreadPoolExecutor(max_workers=1, thread_name_prefix="yahoo-futures")
+            running = self.__dict__.get("_yahoo_running")
+            if running is not None and not running.done():
+                raise RuntimeError(f"yahoo_futures_stalled:{yahoo}")
             running = self.__dict__["_yahoo_running"] = pool.submit(fetch_bars_yfinance, yahoo, code)
+        try:
             frame = running.result(timeout=float(self.scanner_config.get("timeout_seconds", 20) or 20))
         except Exception as exc:
             raise RuntimeError(f"yahoo_futures_failed:{yahoo}:{str(exc)[:80] or type(exc).__name__}") from exc

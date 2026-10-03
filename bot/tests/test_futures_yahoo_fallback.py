@@ -98,10 +98,13 @@ def test_a_provider_change_resets_the_scanner_state(monkeypatch):
     row = {"window_start": 1_790_000_000_000_000_000, "open": 1, "high": 2, "low": 1, "close": 2, "volume": 3}
     monkeypatch.setattr(engine, "_polygon_request", lambda *a, **k: {"results": [row]})
     engine._fetch_scanner_bars(symbol="ES", asset_type="future")
+    engine._scanner_apply_futures_source("ES")
     engine.scanner_last_bar["ES"] = "warmed"
     monkeypatch.setattr(engine, "_polygon_request", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("polygon_data_503:x")))
     monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda *a, **k: _frame())
     engine._fetch_scanner_bars(symbol="ES", asset_type="future")
+    assert engine.scanner_last_bar["ES"] == "warmed"  # a read-only fetch never touches the live scanner state
+    engine._scanner_apply_futures_source("ES")
     assert "ES" not in engine.scanner_last_bar  # Yahoo's series is not stitched onto Polygon's
 
 
@@ -129,3 +132,24 @@ def test_a_stalled_yahoo_call_is_not_stacked_up(monkeypatch):
 def test_status_names_the_active_futures_source(monkeypatch):
     assert _engine(monkeypatch, key=False).scanner_public_status()["config"]["futures_source"] == "yahoo"
     assert _engine(monkeypatch, key=True).scanner_public_status()["config"]["futures_source"] == "polygon"
+
+
+def test_a_404_backs_off_only_that_contract_but_a_403_backs_off_all(monkeypatch):
+    engine = _engine(monkeypatch)
+    monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda *a, **k: _frame())
+    calls = []
+
+    def request(path, *a, **k):
+        calls.append(path)
+        raise RuntimeError("polygon_data_404:x")
+
+    monkeypatch.setattr(engine, "_polygon_request", request)
+    engine._fetch_scanner_bars(symbol="ES", asset_type="future")
+    engine._fetch_scanner_bars(symbol="NQ", asset_type="future")
+    assert len(calls) == 2  # NQ still got its own Polygon attempt
+    assert engine._futures_active_source() == "yahoo"
+    engine2 = _engine(monkeypatch)
+    monkeypatch.setattr(engine2, "_polygon_request", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("polygon_data_403:x")))
+    engine2._fetch_scanner_bars(symbol="ES", asset_type="future")
+    assert engine2._futures_active_source() == "yahoo"
+    assert _engine(monkeypatch)._futures_active_source() == "polygon"
