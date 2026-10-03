@@ -5636,7 +5636,8 @@ class TradingViewWebhookEngine:
             self._velez_prune_open_records({str(p.get("symbol") or "").upper() for p in positions})
         order_limit = self._int_env("VELEZ_LIFECYCLE_ORDER_LIMIT", 100, minimum=10, maximum=500)
         if positions_error or orders_error or len(raw_orders) >= order_limit or not self.broker.is_configured():
-            self.__dict__.pop("_claim_flat_seen", None)  # an unknown pass breaks any run of flat evidence
+            with self._claims_lock():  # serialized with pruning, which holds the same lock
+                self.__dict__.pop("_claim_flat_seen", None)  # an unknown pass breaks any run of flat evidence
         else:
             # Claims go only against a complete picture of positions and working orders.
             live = (
