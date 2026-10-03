@@ -1,9 +1,12 @@
 from __future__ import annotations
 from .desk_records import install_desk_records
 
+import asyncio
 import hashlib
 import io
+import itertools
 import json
+import queue
 from .broadcast_market import BroadcastMarketService
 from .desk_brief import DeskBriefService, brief_owner
 from .desk_workspace import broker_provider as desk_broker_provider
@@ -14,6 +17,7 @@ import re
 import secrets
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
 from collections import Counter, deque
 from contextlib import asynccontextmanager
@@ -203,6 +207,49 @@ def _set_dashboard_security_headers(response: Response) -> Response:
         "object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
     )
     return response
+
+
+class _PriorityWorker:
+    """One worker thread that runs queued calls lowest priority number first, first-in first-out within a
+    priority. Trade signals (0) go ahead of raw strategy bars (1); bars stay in order among themselves.
+    shutdown() lets everything already queued finish before the thread exits."""
+
+    def __init__(self, name: str) -> None:
+        self._queue: "queue.PriorityQueue" = queue.PriorityQueue()
+        self._seq = itertools.count()
+        self._lock = threading.Lock()
+        self._closed = False
+        self._thread = threading.Thread(target=self._run, name=name, daemon=True)  # lifespan shutdown drains it; an idle thread must not block exit
+        self._thread.start()
+
+    def submit(self, fn, *args, priority: int = 0) -> Future:
+        future: Future = Future()
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("worker is shut down")
+            self._queue.put((priority, next(self._seq), future, fn, args))
+        return future
+
+    def _run(self) -> None:
+        while True:
+            _priority, _seq, future, fn, args = self._queue.get()
+            if future is None:
+                return
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                future.set_result(fn(*args))
+            except BaseException as exc:  # noqa: BLE001 - delivered through the future
+                future.set_exception(exc)
+
+    def shutdown(self, wait: bool = True) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._queue.put((99, next(self._seq), None, None, ()))
+        if wait:
+            self._thread.join()
 
 
 class _MutationRateLimiter:
@@ -13409,9 +13456,180 @@ class OpsAuditLog:
 
 def create_app(config: dict):
     engine = TradingViewWebhookEngine(config)
+    # TradingView gives a webhook about 3 seconds. Alerts are processed one at a time (as before, so the
+    # risk checks see each order in turn) on a worker thread instead of the event loop; one that is still
+    # running after `ack_after_seconds` is answered 202 and finishes in the background (its decision is
+    # journaled as usual). An alert that waited in the queue longer than `max_queue_seconds` is dropped as
+    # stale (journaled): its bar's break has moved on, and the doctrine forbids chasing it (0 turns this off; the
+    # swing bot trades daily bars, where queue age says nothing about the break window). Raw `mode=bar`
+    # payloads are not part of this: they feed the strategy's history in order and are answered with their result.
+    webhook_settings = config.get("webhook") or {}
+    # The pools belong to one run of the app: created on first use, drained when the lifespan ends, and fresh
+    # again if the same app is started again. Nothing is accepted once shutdown has begun.
+    webhook_pools: Dict[str, Any] = {"worker": None, "notifier": None, "closing": False}
+    webhook_pools_lock = threading.Lock()
+
+    def _pool(name: str) -> ThreadPoolExecutor:
+        with webhook_pools_lock:
+            if webhook_pools["closing"]:
+                raise RuntimeError("webhook pools are shut down")
+            if webhook_pools[name] is None:
+                if name == "worker":
+                    webhook_pools[name] = _PriorityWorker("tradingview-webhook")
+                else:
+                    webhook_pools[name] = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tradingview-webhook-notify")
+            return webhook_pools[name]
+
+    def _shutdown_pools() -> None:
+        with webhook_pools_lock:
+            webhook_pools["closing"] = True
+            worker, webhook_pools["worker"] = webhook_pools["worker"], None
+        if worker is not None:
+            worker.shutdown(wait=True)  # every acknowledged alert finishes (or expires) first
+        with webhook_pools_lock:
+            notifier, webhook_pools["notifier"] = webhook_pools["notifier"], None
+        if notifier is not None:
+            notifier.shutdown(wait=True)  # then its last failure notifications go out
+    webhook_ack_after = float(webhook_settings.get("ack_after_seconds", 2.0) or 2.0)
+    webhook_max_queue = float(webhook_settings.get("max_queue_seconds", 0) or 0)  # 0 = never expire
+    webhook_max_pending = int(webhook_settings.get("max_pending", 200) or 200)
+    webhook_max_pending_bars = int(webhook_settings.get("max_pending_bars", 1000) or 1000)
+    webhook_pending = {"n": 0, "bars": 0}
+    webhook_inflight: set = set()  # alert ids queued or being processed
+    webhook_pending_lock = threading.Lock()
+
+    def _release_pending(alert_id: Optional[str] = None, is_bar: bool = False):
+        def release(_future=None) -> None:
+            with webhook_pending_lock:
+                key = "bars" if is_bar else "n"
+                webhook_pending[key] = max(0, webhook_pending[key] - 1)
+                webhook_inflight.discard(alert_id)
+        return release
+
+    def _process_alert(payload: dict, queued_at: float, kwargs: dict) -> dict:
+        waited = time.monotonic() - queued_at
+        if str(payload.get("mode", "signal")).lower() == "bar":
+            return engine.handle_payload(payload, **kwargs)  # bars feed the strategy in order: never dropped
+        if webhook_max_queue and waited > webhook_max_queue:
+            try:
+                symbol = engine._symbol(payload)
+            except Exception:
+                symbol = None
+            decision = WebhookDecision(status="ignored", reason="expired_in_queue", symbol=symbol,
+                                       metadata={"queued_seconds": round(waited, 1)})
+            alert_id = engine._alert_id(payload)
+            if alert_id not in engine.seen_alert_ids:  # repeated copies must not push real entries out of the cache
+                engine.seen_alert_ids.append(alert_id)  # a TradingView retry of this alert is a duplicate, not a new trade
+            engine._remember_decisions([decision], alert_id)
+            log_event(engine.logger, "webhook_expired_in_queue", {"symbol": symbol, "queued_seconds": round(waited, 1)})
+            return {"ok": True, "decisions": [decision.__dict__]}
+        return engine.handle_payload(payload, **kwargs)
+
+    def _notify_late_failure(detail: str) -> None:
+        log_event(engine.logger, "webhook_background_failed", {"error": detail})
+        engine._notify_event(
+            key=f"webhook-background-failed:{datetime.now(timezone.utc).isoformat()}",
+            title="TradingView alert failed after it was acknowledged",
+            detail=f"An alert answered 202 failed while being processed: {detail[:200]}",
+            severity="critical",
+            payload={"kind": "webhook_background_failed", "error": detail},
+            ignore_cooldown=True,
+        )
+
+    def _report_late_failure(future) -> None:
+        # An alert answered 202 can still fail afterwards (an exception, or an error decision such as a
+        # broker failure): TradingView won't retry it, so the operator hears. Notified on its own thread so
+        # a slow notification target never holds up the alert queue.
+        if future.cancelled():
+            return
+        exc = future.exception()
+        if exc is not None:
+            detail = f"{type(exc).__name__}: {str(exc)[:300]}"
+        else:
+            decisions = (future.result() or {}).get("decisions") or []
+            rejected = [d for d in decisions if d.get("status") == "rejected"]
+            if rejected:
+                # Not an operator alert (a rejection is a normal outcome, and it is journaled), but the 400 that
+                # TradingView would have seen is gone: leave a log line so a bad payload is not silent under load.
+                log_event(engine.logger, "webhook_rejected_after_ack", {
+                    "rejections": "; ".join(f"{d.get('symbol') or '?'}: {d.get('reason')}" for d in rejected)[:300]})
+            errors = [d for d in decisions if d.get("status") == "error"]
+            if not errors:
+                return
+            detail = "; ".join(f"{d.get('symbol') or '?'}: {d.get('reason')}" for d in errors)[:300]
+        try:
+            _pool("notifier").submit(_notify_late_failure, detail)
+        except RuntimeError:  # shutting down: send it here rather than lose it
+            _notify_late_failure(detail)
+
+    async def _tradingview_result(payload: dict, *, path_token: Optional[str] = None, header_secret: Optional[str] = None,
+                                  input_source: Optional[dict] = None) -> Any:
+        kwargs = {"path_token": path_token, "header_secret": header_secret, "input_source": input_source}
+        if engine._authorize(payload, path_token, header_secret).status != "allowed":
+            # Rejected at once (and journaled by handle_payload) instead of waiting in the queue.
+            result = await run_in_threadpool(engine.handle_payload, payload, **kwargs)
+            raise HTTPException(status_code=400, detail=result)
+        is_bar = str(payload.get("mode", "signal")).lower() == "bar"
+        alert_id = engine._alert_id(payload)
+        with webhook_pending_lock:
+            duplicate = alert_id in webhook_inflight or alert_id in engine.seen_alert_ids
+            # Signals and raw bars are bounded separately: a burst of bars can't use up the signal slots (nor
+            # the other way round), and neither can grow without limit.
+            key = "bars" if is_bar else "n"
+            limit = webhook_max_pending_bars if is_bar else webhook_max_pending
+            full = (not duplicate) and webhook_pending[key] >= limit
+            if not duplicate and not full:
+                webhook_pending[key] += 1
+                webhook_inflight.add(alert_id)
+        if duplicate:
+            # A repeat of an alert that is queued, running or done never takes a queue slot.
+            log_event(engine.logger, "webhook_duplicate_before_queue", {"alert_id": alert_id[:16]})
+            return {"ok": True, "duplicate": True, "decisions": [{"status": "ignored", "reason": "duplicate_alert"}]}
+        if full:
+            # Bounded admission: a stalled broker or data call must not let the queue grow without limit.
+            log_event(engine.logger, "webhook_queue_full", {"kind": "bar" if is_bar else "signal"})
+            try:  # journal what was dropped (not marked seen, so a retry can still succeed)
+                symbol = engine._symbol(payload)
+            except Exception:
+                symbol = None
+            try:
+                engine._remember_decisions([WebhookDecision(status="ignored", reason="webhook_queue_full", symbol=symbol,
+                                                            metadata={"kind": "bar" if is_bar else "signal",
+                                                                      "alert_id": alert_id[:16]})], alert_id)
+            except Exception:
+                pass
+            raise HTTPException(status_code=503, detail="webhook queue full")
+        try:
+            future = _pool("worker").submit(_process_alert, payload, time.monotonic(), kwargs, priority=1 if is_bar else 0)
+        except RuntimeError as exc:  # the worker was shut down: the service is stopping
+            _release_pending(alert_id, is_bar)()
+            raise HTTPException(status_code=503, detail="shutting down") from exc
+        future.add_done_callback(_release_pending(alert_id, is_bar))
+        try:
+            if is_bar:
+                # Raw bars keep the old contract: processed in order and answered with their result (no 202).
+                # Shielded so a cancelled request can't cancel a bar that is still queued.
+                result = await asyncio.shield(asyncio.wrap_future(future))
+            else:
+                result = await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(future)), timeout=webhook_ack_after)
+        except asyncio.CancelledError:
+            # The request went away (middleware, shutdown) but the alert is still running: nobody will see
+            # its result, so a late failure still has to be reported.
+            if not is_bar:
+                future.add_done_callback(_report_late_failure)
+            raise
+        except asyncio.TimeoutError:
+            future.add_done_callback(_report_late_failure)
+            log_event(engine.logger, "webhook_acknowledged_before_decision", {"ack_after_seconds": webhook_ack_after})
+            return JSONResponse(status_code=202, content={"ok": True, "queued": True})
+        if not result.get("ok") and result["decisions"][0]["status"] == "rejected":
+            raise HTTPException(status_code=400, detail=result)
+        return result
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        with webhook_pools_lock:
+            webhook_pools["closing"] = False  # a restarted app accepts alerts again
         engine.start_session_lock_worker()
         engine.start_scanner()
         engine.start_operations_worker()
@@ -13420,6 +13638,9 @@ def create_app(config: dict):
         try:
             yield
         finally:
+            # Alerts first: every acknowledged alert is processed (or expires as stale) before the safety
+            # workers below stop, so none is lost and nothing is sent after they're gone.
+            await run_in_threadpool(_shutdown_pools)
             engine.stop_operations_worker()
             engine.calendar.earnings_cache.stop()
             app.state.desk_records.stop()
@@ -14473,34 +14694,28 @@ def create_app(config: dict):
         )
 
     @app.post("/webhook/tradingview")
-    async def tradingview_webhook(request: Request, x_velez_secret: Optional[str] = Header(default=None)) -> dict:
+    async def tradingview_webhook(request: Request, x_velez_secret: Optional[str] = Header(default=None)) -> Any:
         try:
             payload = await _payload_from_request(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        result = engine.handle_payload(
+        return await _tradingview_result(
             payload,
             header_secret=x_velez_secret,
             input_source=_webhook_input_source(request, "/webhook/tradingview"),
         )
-        if not result.get("ok") and result["decisions"][0]["status"] == "rejected":
-            raise HTTPException(status_code=400, detail=result)
-        return result
 
     @app.post("/webhook/tradingview/{token}")
-    async def tradingview_webhook_with_token(request: Request, token: str) -> dict:
+    async def tradingview_webhook_with_token(request: Request, token: str) -> Any:
         try:
             payload = await _payload_from_request(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        result = engine.handle_payload(
+        return await _tradingview_result(
             payload,
             path_token=token,
             input_source=_webhook_input_source(request, "/webhook/tradingview/{token}"),
         )
-        if not result.get("ok") and result["decisions"][0]["status"] == "rejected":
-            raise HTTPException(status_code=400, detail=result)
-        return result
 
     return app
 
