@@ -109,3 +109,23 @@ def test_status_reports_a_yahoo_only_futures_scanner_as_configured(monkeypatch):
     engine = _engine(monkeypatch, key=False)
     assert engine.scanner_public_status()["config"]["futures_configured"] is True
     assert _engine(monkeypatch, key=False, fallback=False).scanner_public_status()["config"]["futures_configured"] is False
+
+
+def test_a_stalled_yahoo_call_is_not_stacked_up(monkeypatch):
+    import threading
+    engine = _engine(monkeypatch, key=False)
+    release = threading.Event()
+    started = []
+    monkeypatch.setattr(trifecta, "fetch_bars_yfinance", lambda *a, **k: started.append(1) or release.wait(5) or _frame())
+    engine.scanner_config["timeout_seconds"] = 0.2
+    with pytest.raises(RuntimeError, match="yahoo_futures_failed"):
+        engine._fetch_scanner_bars(symbol="ES", asset_type="future")
+    with pytest.raises(RuntimeError, match="yahoo_futures_stalled"):
+        engine._fetch_scanner_bars(symbol="ES", asset_type="future")
+    assert len(started) == 1  # no second request or thread while the first is still hanging
+    release.set()
+
+
+def test_status_names_the_active_futures_source(monkeypatch):
+    assert _engine(monkeypatch, key=False).scanner_public_status()["config"]["futures_source"] == "yahoo"
+    assert _engine(monkeypatch, key=True).scanner_public_status()["config"]["futures_source"] == "polygon"

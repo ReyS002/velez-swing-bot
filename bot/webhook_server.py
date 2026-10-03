@@ -2275,6 +2275,7 @@ class TradingViewWebhookEngine:
             "futures_provider": str(self.scanner_config.get("futures_provider", "polygon")).lower(),
             "futures_configured": bool(self._polygon_api_key()) or self._futures_yahoo_fallback_allowed(),
             "futures_yahoo_fallback": self._futures_yahoo_fallback_allowed(),
+            "futures_source": "polygon" if self._polygon_api_key() else ("yahoo" if self._futures_yahoo_fallback_allowed() else "none"),
             "futures_contracts": self.scanner_config.get("futures_contracts", {}),
             "note": "Hybrid scanner warms up first, then scans newly closed bars and routes signals through the same Velez/risk guardrails as TradingView. Futures use Polygon when POLYGON_API_KEY is configured.",
             "symbol_cooldown_seconds": self._scanner_symbol_cooldown_seconds(),
@@ -3556,13 +3557,19 @@ class TradingViewWebhookEngine:
         limit = max(50, min(int(self.scanner_config.get("history_bars", 260) or 260), 1000))
         from .core.trifecta import fetch_bars_yfinance
 
-        pool = ThreadPoolExecutor(max_workers=1)
+        # One worker, reused: a call that outlives its timeout can't be killed, so while it is still running
+        # new fetches are refused instead of piling up more threads behind a stalled network.
+        pool = self.__dict__.get("_yahoo_pool")
+        if pool is None:
+            pool = self.__dict__["_yahoo_pool"] = ThreadPoolExecutor(max_workers=1, thread_name_prefix="yahoo-futures")
+        running = self.__dict__.get("_yahoo_running")
+        if running is not None and not running.done():
+            raise RuntimeError(f"yahoo_futures_stalled:{yahoo}")
         try:
-            frame = pool.submit(fetch_bars_yfinance, yahoo, code).result(timeout=float(self.scanner_config.get("timeout_seconds", 20) or 20))
+            running = self.__dict__["_yahoo_running"] = pool.submit(fetch_bars_yfinance, yahoo, code)
+            frame = running.result(timeout=float(self.scanner_config.get("timeout_seconds", 20) or 20))
         except Exception as exc:
-            raise RuntimeError(f"yahoo_futures_failed:{yahoo}:{str(exc)[:80]}") from exc
-        finally:
-            pool.shutdown(wait=False)
+            raise RuntimeError(f"yahoo_futures_failed:{yahoo}:{str(exc)[:80] or type(exc).__name__}") from exc
         if frame is None or frame.empty:
             raise RuntimeError(f"yahoo_futures_no_data:{yahoo}")
         try:
